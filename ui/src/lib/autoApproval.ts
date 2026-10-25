@@ -253,7 +253,7 @@ export const putBands = (body: WriteBands) =>
 
 export const revertBands = (id: string) => api<void>(`/v1/approval-bands/${id}`, { method: 'DELETE' })
 
-export type RoleRef = { role_id: string; name: string }
+export type RoleRef = { role_id: string; name: string; members: string[] }
 export type Routes = { high: RoleRef[]; answerers: RoleRef[]; may_write: boolean }
 
 export const getRoutes = () => api<Routes>('/v1/approval-routes')

@@ -68,6 +68,9 @@ pub fn targets(risk: Risk, named: &[Uuid], answerers: &[Uuid]) -> Vec<Target> {
 pub struct RoleRef {
     pub role_id: Uuid,
     pub name: String,
+    /// Who holds the role here, by display name: a role is chosen, but the
+    /// question is who that turns out to be.
+    pub members: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,8 +87,15 @@ async fn names(
     workspace_id: Uuid,
     ids: &[Uuid],
 ) -> Result<Vec<RoleRef>, ApiError> {
-    let rows: Vec<(Uuid, String)> = sqlx::query_as(
-        "select id, name from roles where workspace_id = $1 and id = any($2) order by name",
+    let rows: Vec<(Uuid, String, Vec<String>)> = sqlx::query_as(
+        "select r.id, r.name, \
+                coalesce(array_agg(u.display_name order by u.display_name) \
+                         filter (where u.id is not null), '{}') \
+         from roles r \
+         left join user_workspace_roles m on m.workspace_id = r.workspace_id and m.role_id = r.id \
+         left join users u on u.id = m.user_id \
+         where r.workspace_id = $1 and r.id = any($2) \
+         group by r.id, r.name order by r.name",
     )
     .bind(workspace_id)
     .bind(ids)
@@ -94,7 +104,11 @@ async fn names(
     .map_err(internal)?;
     Ok(rows
         .into_iter()
-        .map(|(role_id, name)| RoleRef { role_id, name })
+        .map(|(role_id, name, members)| RoleRef {
+            role_id,
+            name,
+            members,
+        })
         .collect())
 }
 

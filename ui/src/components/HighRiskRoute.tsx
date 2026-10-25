@@ -58,7 +58,7 @@ export default function HighRiskRoute() {
         Who is asked about high-risk requests
       </h2>
       <p className="mt-1 text-sm text-surface-600 dark:text-surface-400">
-        A high-risk request asks the roles chosen here. With none chosen, or none of them left able to answer,
+        A high-risk request asks the workspace roles chosen here, of those able to answer approvals. With none chosen, or none of them left able to answer,
         it asks everybody who answers approvals, as a medium-risk request does.
       </p>
       {error && (
@@ -73,7 +73,7 @@ export default function HighRiskRoute() {
         <fieldset disabled={!routes.may_write || busy} className="mt-3 space-y-1.5">
           <legend className="sr-only">Roles asked about high-risk requests</legend>
           {routes.answerers.map((role) => (
-            <label key={role.role_id} className="flex items-center gap-2 text-sm text-surface-800 dark:text-surface-200">
+            <label key={role.role_id} className="flex items-start gap-2 text-sm text-surface-800 dark:text-surface-200">
               <input
                 type="checkbox"
                 checked={chosen.has(role.role_id)}
@@ -84,8 +84,14 @@ export default function HighRiskRoute() {
                   setChosen(next)
                   setSaved(false)
                 }}
+                className="mt-1"
               />
-              {role.name}
+              <span className="min-w-0">
+                The {role.name} role
+                <span className="block text-xs text-surface-600 dark:text-surface-400">
+                  {role.members.length === 0 ? 'Nobody holds it here.' : role.members.join(', ')}
+                </span>
+              </span>
             </label>
           ))}
         </fieldset>
