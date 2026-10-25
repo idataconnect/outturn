@@ -3,6 +3,9 @@
 A fast and secure foundation for companies that want to build and run their
 own agent platform.
 
+Early, and under active development: interfaces may change. Built and
+supported by [i Data Connect!](https://www.idataconnect.com/products/outturn)
+
 <!-- The walkthrough: scripts/demo-video.sh records it, and GitHub plays it
      from an upload's user-attachments URL on the line below. -->
 https://github.com/user-attachments/assets/6536e4ad-234b-469b-abcd-19c1365ceb6b
@@ -48,21 +51,19 @@ circuit breaker that does not let one tenant's failures trip another's. The
 work left is the part that is yours: what your agents know, and what they can
 reach.
 
-## Take it for a spin
+## Try it
 
-[docs/take-it-for-a-spin.md](docs/take-it-for-a-spin.md) — half an hour, from a
-cold Mac to an agent booking rooms at a guesthouse you are also running.
+Everything runs in a local Kubernetes cluster. The model can be a hosted one,
+with an API key you already have, or a local one, which is free but needs a
+capable machine.
 
-## Prerequisites
+### Prerequisites
 
-Rust (stable, edition 2024), Node 22 or newer, `kubectl`, `skaffold`, and a
-container runtime. On a Mac, ollama as well. Everything else the build needs
-it fetches itself.
+A container runtime, a local cluster (kind, Docker Desktop's own Kubernetes,
+or colima), `kubectl`, `skaffold`, Node 22 or newer, and Rust (stable,
+edition 2024). Everything else the build needs it fetches itself.
 
-## Running locally on a Mac
-
-You need ollama (`brew install ollama`) and a local cluster. Docker Desktop's
-own Kubernetes or kind will do, and so will colima, which is lighter:
+On a Mac, colima is the lightest cluster:
 
 ```
 colima start --kubernetes --cpu 8 --memory 16
@@ -71,59 +72,75 @@ colima start --kubernetes --cpu 8 --memory 16
 skaffold config set -k colima local-cluster true
 ```
 
-Then:
+### With an API key (quickest)
+
+No GPU and no model download. You need a key from Anthropic, OpenAI or Gemini.
 
 ```
-scripts/dev-mac.sh
+scripts/dev.sh            # on a Mac: scripts/dev-mac.sh
 ```
 
-The first run asks which model, at what context window, and how much of a
-conversation to send it, and keeps the answers. The suggestions come from what
-it can see of the machine. qwen3.8:27b-mlx is 18-23GB loaded and was chosen on
-a 64GB M4, so below 48GB the suggestion is qwen3.5 at half the window. Then it
-starts ollama if it is not running, pulls the model if it is missing, loads it
-at the window you chose, writes the overlay for this run, and hands it to
-skaffold. The gateway reaches ollama on the host through
-`host.docker.internal`. What each answer drives, and how to change one, is in
-[docs/local-development.md](docs/local-development.md).
+The first run asks whether the model is hosted or local; answer `hosted`. In
+another terminal, `scripts/build.sh` builds and deploys, and
+`cd ui && npm run dev` starts the UI. Open http://localhost:3000 and sign in
+as `admin@outturn.local`, with the password `scripts/dev-secrets.sh --print`
+shows.
+
+Then go to Platform → Models and paste the key. The setup there offers
+recipes, each a chain of models with a fallback, and makes a test call when
+it is done. A provider without a recipe is an account, a model and a chain
+added by hand on the same page. The key is sealed in the browser to the
+gateway, so it is never written to a file, the environment or a manifest.
+
+### Free and local
+
+A local model through ollama, or llama.cpp, on this machine or another on
+the network. Answer `local` to the first question, then which model, at what
+context window, and how much of a conversation to send it. The suggestions
+come from what can be seen of the machine.
+
+- **On a Mac**, `scripts/dev-mac.sh` needs ollama (`brew install ollama`),
+  starts it if it is not running, pulls the model and loads it at the window
+  you chose. The suggestion is qwen3.8:27b-mlx, 18-23GB loaded, which wants a
+  64GB machine; below 48GB it is qwen3.5 at half the window. The gateway
+  reaches ollama on the host through `host.docker.internal`.
+- **On Linux**, `scripts/dev.sh` expects ollama already running, listening
+  beyond loopback, and reaches it across the Docker bridge. The suggestion is
+  qwen3.5, which fits an 8GB card with ollama's 8-bit KV cache.
+
+The cluster comes up with a chain to that model already made, so there is
+nothing to configure on the Models page.
+[docs/local-development.md](docs/local-development.md) has what each answer
+drives, which models can be relied on to call a tool, and why thinking is
+left on. [docs/take-it-for-a-spin.md](docs/take-it-for-a-spin.md) is half an
+hour from a cold Mac to an agent booking rooms at a guesthouse you are also
+running.
+
+### Either way
 
 Two flags, and anything else goes to skaffold:
 
 ```
-scripts/dev-mac.sh --with tika          # plus document extraction
-scripts/dev-mac.sh --with tika,petstore
-scripts/dev-mac.sh --reconfigure        # ask the model questions again
+scripts/dev.sh --with tika          # plus document extraction
+scripts/dev.sh --with tika,petstore
+scripts/dev.sh --reconfigure        # ask the model questions again
 ```
 
-`--with` takes anything in `k8s/components`, and `scripts/dev.sh` on Linux
-takes it too -- both scripts are thin wrappers over `scripts/lib/dev.sh`.
-They are kustomize components, so they compose: the script writes an overlay
-listing whichever were asked for, and adding a third component needs no
-change to the script. The overlay
-is generated rather than committed because the alternative is one per
-combination -- and two features already make four.
+`--with` takes anything in `k8s/components`, and `scripts/dev-mac.sh` takes
+it too -- both scripts are thin wrappers over `scripts/lib/dev.sh`. They are
+kustomize components, so they compose: the script writes an overlay listing
+whichever were asked for, and adding a third component needs no change to the
+script. The overlay is generated rather than committed because the
+alternative is one per combination -- and two features already make four.
 
-Then start the UI with `cd ui && npm run dev`, open http://localhost:3000, and
-sign in as `admin@outturn.local`. The password is this clone's own -- the
-script prints it the first time it generates one, and
-`scripts/dev-secrets.sh --print` shows it again. To rebuild and redeploy
-after a change:
-
-```
-curl -X POST http://localhost:50052/v1/execute -d '{"build":true,"deploy":true}'
-```
-
-On Linux, `scripts/dev.sh` does the same with ollama left to you to start.
-It reaches ollama across the Docker bridge and suggests qwen3.5.
-[docs/local-development.md](docs/local-development.md) covers both in more depth, including which models can
-be relied on to call a tool and why thinking is left on.
+`scripts/build.sh` is one build-and-deploy round after a change.
 
 ## Keys
 
 The local cluster's keys are generated per clone, never committed:
 
 ```
-scripts/dev-secrets.sh           # generate if absent; scripts/dev-mac.sh does this for you
+scripts/dev-secrets.sh           # generate if absent; the dev scripts do this for you
 scripts/dev-secrets.sh --print   # what the seeded admin signs in with
 scripts/dev-secrets.sh --force   # rotate, signing out existing sessions
 ```

@@ -62,7 +62,9 @@ scripts/dev-secrets.sh --print   # the seeded admin@outturn.local password
   reconnect and pushes skaffold onto other ports.
 - Keep the API at `/v1` behind the proxy; a prefix breaks session refresh,
   whose cookie is path-scoped.
-- Use **qwen3.5** through ollama locally, with thinking on; off makes its tool
+- The first run asks hosted or local. Hosted starts no model server and
+  configures no models: the key goes on Platform → Models, sealed. Local:
+  use **qwen3.5** through ollama, with thinking on; off makes its tool
   calling erratic. On a Mac, `scripts/dev-mac.sh`.
 - When behavior contradicts the source, check pod age: pods can predate your
   edits.

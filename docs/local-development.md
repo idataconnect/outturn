@@ -6,7 +6,7 @@ Running the whole platform on one machine: the cluster, the UI, and the model.
 
 On a machine that has never run this, `.agents/skills/onboarding/SKILL.md`
 lists requirements — the tools, a reachable cluster, the container
-daemon, ollama (or compatible) and its model — and the one trap worth knowing
+daemon, and for a local model ollama (or compatible) and its model — and the one trap worth knowing
 before it bites:
 skaffold decides whether to push images by guessing from the kube-context
 name, so a local cluster under an unfamiliar name means four images pushed to
@@ -98,6 +98,31 @@ Secret. Set it to a role with `SELECT` on `jobs` only before applying.
 
 ## Models
 
+The first run asks whether the model is hosted or local.
+
+### A hosted model
+
+The quickest way to try it: no GPU and no download, only a key from
+Anthropic, OpenAI or Gemini. Answer `hosted`, and the dev scripts check,
+install, pull and start nothing, open no address on this machine to the
+gateway, and leave the `platform-settings` Job out of the overlay, so the
+cluster comes up with no models configured and the code's own
+`context_budget`.
+
+Once signed in, Platform → Models says no chain answers assistant traffic
+and offers setup from a recipe: a chain with a fallback, its keys, and a test
+call. A provider no recipe covers is an account, a model and a chain added by
+hand on the same page. Either way the key is pasted there and sealed in the
+browser to the gateway ([sealed-credentials.md](sealed-credentials.md)); the
+scripts never ask for one, and nothing on this machine or in a manifest holds
+it. Models reached this way are on the internet, which the gateway's network
+policy already allows.
+
+Switching an existing cluster from local to hosted leaves the chain the Job
+made in place; change or remove it on the same page.
+
+### A local model
+
 Local development runs against ollama through the OpenAI protocol, with no
 key. **Use qwen3.5.** It works well enough for most
 tasks, including tool use. It fits in an 8Gi card when using 8-bit quantized
@@ -111,8 +136,8 @@ The `platform-settings` Job gives assistant and background traffic a chain
 to it on a cluster's first start -- an account at the model server's address
 from inside the cluster, the model described by hand, and a chain of one --
 and leaves it alone once anything answers assistant traffic. Change it on
-Platform → Models like any other chain; trying a hosted model locally is an
-account, a key and a chain on that page rather than a manifest
+Platform → Models like any other chain; trying a hosted model beside it is
+an account, a key and a chain on that page rather than a manifest
 ([models.md](models.md)). An address is the gateway's, not the browser's:
 `localhost` there is the gateway pod, so the Job uses the Docker bridge
 (`172.18.0.1`) or `host.docker.internal`, and a private address needs its
@@ -124,7 +149,7 @@ ollama on the host through `host.docker.internal`, and **qwen3.8:27b-mlx** as
 the suggestion. Both scripts share `scripts/lib/dev.sh`, so `--with` and
 everything else behave the same on either.
 
-Which model, its context window and `context_budget` are this machine's
+Hosted or local, which model, its context window and `context_budget` are this machine's
 answers rather than the overlay's: asked on the first run, kept in the
 gitignored `k8s/overlays/local/dev-machine.env`, and changed with
 `scripts/dev-setup.sh --reconfigure`. With ollama the model is served as a tag
@@ -135,8 +160,9 @@ That tag is the only thing that sets the window whatever
 
 ## This machine's model
 
-A local cluster needs three facts that belong to the machine rather than to
-the code: which model answers, how large a context window it runs at, and
+A local cluster needs a few facts that belong to the machine rather than to
+the code: whether the model is hosted or local and, for a local one, which
+model answers, how large a context window it runs at, and
 how much of a conversation outturn sends it. The first run of `scripts/dev.sh`
 or `scripts/dev-mac.sh` asks for them and keeps the answers; later runs use
 them without asking.
@@ -154,6 +180,7 @@ Or edit `k8s/overlays/local/dev-machine.env` by hand; it is plain
 
 | Answer | Drives |
 |---|---|
+| `OUTTURN_DEV_MODELS` | `hosted` or `local`. Hosted ignores every answer below, which are kept for switching back |
 | `OUTTURN_DEV_SERVER` | `ollama`, `llama.cpp`, or `other` -- which server the script prepares |
 | `OUTTURN_DEV_MODEL` | What is pulled, and what the served model is made from |
 | `OUTTURN_DEV_CONTEXT_WINDOW` | The window that model is served at |
@@ -161,6 +188,9 @@ Or edit `k8s/overlays/local/dev-machine.env` by hand; it is plain
 | `OUTTURN_DEV_OLLAMA_URL` | Where the script reaches ollama from this machine, when that is the server |
 | `OUTTURN_DEV_LLAMA_URL` | Where the script reaches llama-server from this machine, when that is the server |
 | `OUTTURN_DEV_OTHER_URL` | Where another OpenAI-compatible server is, when that is the server; empty means the overlay's own address. Written into the generated overlay, so a server on another machine is not an edit to a committed file |
+
+A file from before hosted models were a choice has no `OUTTURN_DEV_MODELS`,
+and is read as local, which is what it meant.
 
 A file from before there was a choice of server has no `OUTTURN_DEV_SERVER`,
 and is read as it always meant: ollama where it names an ollama address, some
@@ -268,6 +298,10 @@ the `platform-settings` Job from the answers:
   nothing answers assistant traffic yet
 
 and adds the model server's address to `OUTTURN_INTERNAL_HOSTS`.
+
+With a hosted answer the overlay instead deletes the Job and the
+`outturn-local-ollama` network policy, and sets `OUTTURN_INTERNAL_HOSTS` to
+only what the `--with` components need.
 
 The committed overlays keep their own values as fallbacks, so
 `kubectl apply -k k8s/overlays/local` and `skaffold dev -p mac` still work with
