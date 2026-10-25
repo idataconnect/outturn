@@ -82,6 +82,23 @@ describe('loadBrand', () => {
     expect(settled).toBe(true)
   })
 
+  // main.tsx renders only after this settles, so a sheet that never loads
+  // must not mean a page that never draws.
+  it('gives up on a theme still loading at the deadline, and removes it', async () => {
+    const brand = await fresh()
+    const deadline = new AbortController()
+    const done = brand.loadBrand(
+      respond(JSON.stringify({ name: 'Acme Desk', theme: 'hollowbrook' })),
+      document,
+      deadline.signal,
+    )
+    await vi.waitFor(() => expect(document.querySelector('link[rel="stylesheet"]')).not.toBeNull())
+    deadline.abort()
+    await done
+    expect(document.querySelectorAll('link[rel="stylesheet"]')).toHaveLength(0)
+    expect(brand.productName).toBe('Acme Desk')
+  })
+
   it('loads nothing for the theme already compiled in', async () => {
     const brand = await fresh()
     await brand.loadBrand(respond(JSON.stringify({ theme: 'outturn' })))

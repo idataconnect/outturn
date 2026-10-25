@@ -45,11 +45,14 @@ export interface RuntimeBrand {
 }
 
 /**
- * How long a missing or hung config may hold up the page. It is a small file
- * from the same origin, so this is only ever reached when something is wrong,
- * and then the build's own branding is better than a blank page.
+ * How long branding may hold up the first render, config and theme together.
+ * Both are small files from this origin, so the deadline is only ever reached
+ * when something is wrong, and then the build's own branding is better than a
+ * blank page. One deadline rather than one per request, because what a person
+ * waits on is the sum: a config answered in 2.9s followed by a sheet that
+ * hangs would otherwise be a page that never draws.
  */
-const CONFIG_TIMEOUT_MS = 3000
+const BOOT_TIMEOUT_MS = 3000
 
 /**
  * Where a theme's stylesheet is. A shipped theme is named, and the build
@@ -70,7 +73,11 @@ function sameOrigin(url: string): boolean {
 }
 
 /** Puts a loaded config into effect. Exported for the tests. */
-export async function applyBrand(brand: RuntimeBrand, doc: Document = document) {
+export async function applyBrand(
+  brand: RuntimeBrand,
+  doc: Document = document,
+  deadline?: AbortSignal,
+) {
   if (brand.name) productName = brand.name
   if (brand.logo && sameOrigin(brand.logo)) logoUrl = brand.logo
   if (brand.tagline !== undefined) productTagline = brand.tagline || null
@@ -80,21 +87,36 @@ export async function applyBrand(brand: RuntimeBrand, doc: Document = document) 
   if (icon && logoUrl !== '/favicon.svg') icon.href = logoUrl
 
   const href = brand.theme && brand.theme !== builtTheme ? themeHref(brand.theme) : null
-  if (href) await loadStylesheet(href, doc)
+  if (href) await loadStylesheet(href, doc, deadline)
 }
 
 /**
  * Waits for the stylesheet as well as adding it: rendering before it applies
  * is the one frame of the wrong colors this is all here to prevent. A sheet
  * that fails to load leaves the built-in theme, which is at least a whole one.
+ *
+ * So does one still loading at the deadline: the link is taken out rather
+ * than left to apply whenever it arrives, because a sheet landing mid-session
+ * repaints the page someone is already using -- the very swap of colors this
+ * waits to prevent, only later and larger.
  */
-function loadStylesheet(href: string, doc: Document): Promise<void> {
+function loadStylesheet(href: string, doc: Document, deadline?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const link = doc.createElement('link')
+    const giveUp = () => {
+      link.remove()
+      resolve()
+    }
+    if (deadline?.aborted) return giveUp()
+    deadline?.addEventListener('abort', giveUp, { once: true })
+    const settle = () => {
+      deadline?.removeEventListener('abort', giveUp)
+      resolve()
+    }
     link.rel = 'stylesheet'
     link.href = href
-    link.onload = () => resolve()
-    link.onerror = () => resolve()
+    link.onload = settle
+    link.onerror = settle
     doc.head.appendChild(link)
   })
 }
@@ -103,15 +125,17 @@ function loadStylesheet(href: string, doc: Document): Promise<void> {
  * Reads `/config.json` and applies it. Never rejects: any failure -- no file,
  * a dev server answering with index.html, malformed JSON, a timeout -- leaves
  * the build's branding, which is right for `npm run dev` and survivable
- * anywhere else.
+ * anywhere else. `deadline` bounds the whole of it; the tests pass their own
+ * so a timeout is something they cause rather than wait for.
  */
-export async function loadBrand(fetchFn: typeof fetch = fetch, doc: Document = document) {
+export async function loadBrand(
+  fetchFn: typeof fetch = fetch,
+  doc: Document = document,
+  deadline: AbortSignal = AbortSignal.timeout(BOOT_TIMEOUT_MS),
+) {
   let brand: RuntimeBrand = {}
   try {
-    const res = await fetchFn('/config.json', {
-      cache: 'no-cache',
-      signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS),
-    })
+    const res = await fetchFn('/config.json', { cache: 'no-cache', signal: deadline })
     const type = res.headers.get('content-type') ?? ''
     if (res.ok && type.includes('json')) {
       const body: unknown = await res.json()
@@ -120,7 +144,7 @@ export async function loadBrand(fetchFn: typeof fetch = fetch, doc: Document = d
   } catch {
     // The build's branding stands.
   }
-  await applyBrand(brand, doc)
+  await applyBrand(brand, doc, deadline)
 }
 
 /** Keeps only string fields, so a typo'd config cannot put an object in the title. */
