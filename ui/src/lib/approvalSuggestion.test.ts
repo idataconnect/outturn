@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { approvalYaml, choiceFrom } from './approvalSuggestion'
+import { approvalYaml, cannotWrite, choiceFrom, pathParams } from './approvalSuggestion'
 import type { SuggestedApproval } from './skills'
 
 const suggested: SuggestedApproval = {
@@ -56,5 +56,43 @@ describe('the approval rule the page writes', () => {
       '  amount: { field: amount_pence, currency: GBP, minor_units: 2, currency_field: currency }',
     )
     expect(yaml).toContain('  binds: [payment_account_id, booking_id, amount_pence, currency]')
+  })
+
+  /// The same text `crates/api/src/skill/wizard/tests.rs` publishes beside the
+  /// operation the wizard generates (DELETE_INVOICE_RULE), so what the page
+  /// writes for a delete by path is what the parser reads.
+  it('writes a delete by path as a rule binding its id', () => {
+    const remove: SuggestedApproval = {
+      risk: 'high',
+      gate: true,
+      requires: 'delete',
+      matches_path: '/invoices/{id}',
+      binds: ['id'],
+      numbers: [],
+      reason: 'a delete cannot be taken back',
+    }
+    const yaml = approvalYaml(
+      {
+        name: 'delete_invoice',
+        category: 'Invoices',
+        method: 'DELETE',
+        path: '/invoices/{id}',
+        suggested_approval: remove,
+      },
+      choiceFrom(remove),
+      'https://books.example.com/v1',
+    )
+    expect(yaml).toBe(
+      [
+        'approval:',
+        '  requires: delete',
+        '  matches: DELETE /v1/invoices/{id}',
+        '  binds: [id]',
+        '  risk: high',
+        '  numbers: []',
+      ].join('\n'),
+    )
+    expect(cannotWrite(remove)).toBeNull()
+    expect(pathParams(remove.matches_path)).toEqual(['id'])
   })
 })

@@ -36,12 +36,30 @@ export function basePath(baseUrl: string | null): string {
   }
 }
 
+/** The path parameters a gate's path names, `id` in `/invoices/{id}`. */
+export function pathParams(matchesPath: string): string[] {
+  return matchesPath
+    .split('/')
+    .map((segment) => /^\{(\w+)\}$/.exec(segment)?.[1])
+    .filter((name): name is string => name !== undefined)
+}
+
 /** Why a rule cannot be written for this operation, or null if one can. A rule
- *  is keyed on body fields, and one with none would cover every request. */
+ *  is keyed on body fields and path parameters, and one with neither would
+ *  cover every request. */
 export function cannotWrite(s: SuggestedApproval): string | null {
   return s.binds.length === 0
-    ? 'It sends no body fields for a rule to be about, so a rule cannot be written.'
+    ? 'It sends no body fields or path parameters for a rule to be about, so a rule cannot be written.'
     : null
+}
+
+/** The fields an amount may be: the bound body fields. A path parameter is
+ *  not money anybody can be shown. */
+export function amountFields(s: SuggestedApproval): string[] {
+  const path = pathParams(s.matches_path)
+  return [...new Set([...s.binds, ...(s.amount ? [s.amount.field] : [])])].filter(
+    (f) => !path.includes(f),
+  )
 }
 
 /** The `approval` frontmatter for a confirmed choice. Only what the operator
@@ -50,7 +68,8 @@ export function cannotWrite(s: SuggestedApproval): string | null {
 export function approvalYaml(op: Operation, c: Choice, baseUrl: string | null): string {
   const s = op.suggested_approval!
   const currencyField = c.amount ? c.currencyField.trim() : ''
-  // Both are read from the body, so both are bound.
+  // Both are read from the body, so both are bound. The path parameters come
+  // first in the suggestion's binds already.
   const binds = [...s.binds]
   for (const f of [c.amount, currencyField]) if (f && !binds.includes(f)) binds.push(f)
   const numbers = c.amount && !s.numbers.includes(c.amount) ? [...s.numbers, c.amount] : s.numbers

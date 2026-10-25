@@ -20,12 +20,13 @@ pub struct SuggestedApproval {
     pub gate: bool,
     /// The act word the rule asks for.
     pub requires: String,
-    /// The gate's path as the specification writes it: literal, or cut at the
-    /// first parameter and starred, since a gate cannot match a `{id}`. The
-    /// page puts the base URL's own path in front.
+    /// The gate's path as the specification writes it, named segments and
+    /// all, so a rule can bind them; cut at the first parameter and starred
+    /// where a parameter's name is not one a rule can say. The page puts the
+    /// base URL's own path in front.
     pub matches_path: String,
-    /// The body fields the rule is about. A rule needs at least one, so an
-    /// operation with none (a delete by path) cannot have one written.
+    /// The path parameters and body fields the rule is about. A rule needs at
+    /// least one, so an operation with neither cannot have one written.
     pub binds: Vec<String>,
     /// The bound fields that are numbers, which a policy may compare.
     pub numbers: Vec<String>,
@@ -164,6 +165,19 @@ pub fn suggest(op: &Operation) -> SuggestedApproval {
     if binds.is_empty() {
         binds = fields.iter().map(|f| f.name.clone()).collect();
     }
+    // Which invoice a delete is of is what a person deciding it needs to see,
+    // and for `DELETE /invoices/{id}` it is all there is to bind. First, in
+    // the order the path has them, since they name what the body is about.
+    let path = path_params(&op.path);
+    if let Some(path) = &path {
+        let mut named: Vec<String> = path
+            .iter()
+            .filter(|p| !binds.contains(p))
+            .cloned()
+            .collect();
+        named.append(&mut binds);
+        binds = named;
+    }
     let numbers = fields
         .iter()
         .filter(|f| matches!(f.schema.type_name.as_str(), "integer" | "number"))
@@ -175,7 +189,10 @@ pub fn suggest(op: &Operation) -> SuggestedApproval {
         risk,
         gate,
         requires: requires.unwrap_or_else(|| op.name.clone()),
-        matches_path: gate_path(&op.path),
+        matches_path: match path {
+            Some(_) => op.path.clone(),
+            None => gate_path(&op.path),
+        },
         binds,
         numbers,
         amount,
@@ -242,6 +259,29 @@ pub(super) fn is_form_of(token: &str, word: &str) -> bool {
     }) || token
         .strip_prefix(stem)
         .is_some_and(|rest| matches!(rest, "ing" | "ed"))
+}
+
+/// The path's parameters, where every one is a name a rule can bind -- letters,
+/// digits and underscores, as an operation's url takes them -- and `None` where
+/// there are none or one is not.
+fn path_params(path: &str) -> Option<Vec<String>> {
+    let names: Vec<String> = path
+        .split('/')
+        .filter(|s| s.contains('{') || s.contains('}'))
+        .map(|s| {
+            s.strip_prefix('{')
+                .and_then(|s| s.strip_suffix('}'))
+                .filter(|n| {
+                    !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                })
+                .map(str::to_string)
+        })
+        .collect::<Option<_>>()?;
+    let unique = names
+        .iter()
+        .enumerate()
+        .all(|(i, n)| !names[..i].contains(n));
+    (!names.is_empty() && unique).then_some(names)
 }
 
 /// The path a gate can say: whole, or up to the first parameter with a star.

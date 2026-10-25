@@ -46,10 +46,25 @@ const remove: Operation = {
     risk: 'high',
     gate: true,
     requires: 'delete',
-    matches_path: '/customers/*',
-    binds: [],
+    matches_path: '/customers/{id}',
+    binds: ['id'],
     numbers: [],
     reason: 'a delete cannot be taken back',
+  },
+}
+const ping: Operation = {
+  name: 'send_ping',
+  category: 'Health',
+  method: 'POST',
+  path: '/ping',
+  suggested_approval: {
+    risk: 'high',
+    gate: true,
+    requires: 'ping',
+    matches_path: '/ping',
+    binds: [],
+    numbers: [],
+    reason: 'the specification declares x-risk',
   },
 }
 
@@ -57,7 +72,7 @@ function setup(annotations: Annotation[] = []) {
   const onConfirm = vi.fn()
   render(
     <SuggestedApprovals
-      operations={[charge, list, remove]}
+      operations={[charge, list, remove, ping]}
       annotations={annotations}
       baseUrl="https://api.example.com/v1"
       busy={false}
@@ -108,15 +123,33 @@ describe('suggested approvals', () => {
   it('cannot confirm what is not gated or has nothing for a rule to be about', () => {
     setup()
     expect(screen.getByRole('button', { name: 'Confirm list_charges' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Confirm delete_customer' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Confirm send_ping' })).toBeDisabled()
     expect(screen.getAllByText(/cannot be written/).length).toBeGreaterThan(0)
+  })
+
+  it('confirms a delete by path as a rule binding its id', () => {
+    const onConfirm = setup()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete_customer' }))
+    const [[rules]] = onConfirm.mock.calls
+    expect(rules[0].value).toContain('  matches: DELETE /v1/customers/{id}')
+    expect(rules[0].value).toContain('  binds: [id]')
+  })
+
+  it('offers no path parameter as the amount', () => {
+    setup()
+    fireEvent.click(screen.getByRole('button', { name: 'Change delete_customer' }))
+    const options = within(screen.getByLabelText('Amount field')).getAllByRole('option')
+    expect(options.map((o) => o.textContent)).toEqual(['No amount'])
   })
 
   it('accepts every suggestion that is gated and can have a rule', () => {
     const onConfirm = setup()
-    fireEvent.click(screen.getByRole('button', { name: /Accept all suggested \(1\)/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Accept all suggested \(2\)/ }))
     const [[rules]] = onConfirm.mock.calls
-    expect(rules.map((r: { target: string }) => r.target)).toEqual(['create_charge'])
+    expect(rules.map((r: { target: string }) => r.target)).toEqual([
+      'create_charge',
+      'delete_customer',
+    ])
   })
 
   it('leaves an operation that already has a rule alone', () => {
@@ -130,7 +163,8 @@ describe('suggested approvals', () => {
         created_at: '',
       },
     ])
-    expect(screen.getByRole('button', { name: /Accept all suggested \(0\)/ })).toBeDisabled()
+    // Only the delete is left for a bulk accept.
+    expect(screen.getByRole('button', { name: /Accept all suggested \(1\)/ })).toBeEnabled()
     expect(screen.queryByRole('button', { name: 'Confirm create_charge' })).not.toBeInTheDocument()
     expect(onConfirm).not.toHaveBeenCalled()
   })

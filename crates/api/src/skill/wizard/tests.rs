@@ -1707,13 +1707,14 @@ fn a_rule_binds_required_fields_and_the_amount_and_compares_the_numbers() {
 }
 
 #[test]
-fn a_gate_stops_at_the_first_path_parameter() {
-    assert_eq!(suggestion("refund_charge").matches_path, "/charges/*");
-    // Nothing in the body to bind: a rule cannot be written, and says so by
-    // having no binds rather than by inventing one.
+fn a_gate_names_the_path_parameters_and_binds_them() {
+    let refund = suggestion("refund_charge");
+    assert_eq!(refund.matches_path, "/charges/{id}/refund");
+    assert_eq!(refund.binds.first().map(String::as_str), Some("id"));
+    // Nothing in the body to bind, and the id is what is being deleted.
     let delete = suggestion("delete_customer");
-    assert_eq!(delete.matches_path, "/customers/*");
-    assert!(delete.binds.is_empty());
+    assert_eq!(delete.matches_path, "/customers/{id}");
+    assert_eq!(delete.binds, ["id"]);
 }
 
 fn payments_input(annotations: Vec<Annotation>) -> WizardInput {
@@ -1840,4 +1841,69 @@ fn the_rule_the_page_writes_with_a_currency_field_is_read() {
     let rule = charge_with(&rule).expect("the rule is kept");
     let declared = rule.amount.expect("an amount");
     assert_eq!(declared.amount.currency_field.as_deref(), Some("currency"));
+}
+
+/// The rule the page writes for a delete by path, as
+/// `ui/src/lib/approvalSuggestion.test.ts` expects `approvalYaml` to write it
+/// from the suggestion below: the id the only thing bound.
+const DELETE_INVOICE_RULE: &str = "approval:
+  requires: delete
+  matches: DELETE /v1/invoices/{id}
+  binds: [id]
+  risk: high
+  numbers: []";
+
+fn invoices_spec() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "openapi": "3.0.0",
+        "info": {"title": "Books", "version": "1"},
+        "paths": {"/invoices/{id}": {"delete": {
+            "operationId": "deleteInvoice", "summary": "Delete an invoice", "tags": ["Invoices"],
+            "parameters": [{"name": "id", "in": "path", "required": true,
+                            "schema": {"type": "string"}}]
+        }}}
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_delete_by_path_is_suggested_a_rule_binding_its_id() {
+    let op = outline(&invoices_spec())
+        .unwrap()
+        .operations
+        .into_iter()
+        .find(|o| o.name == "delete_invoice")
+        .expect("the delete");
+    let s = op.suggested_approval;
+    assert!(s.gate);
+    assert_eq!(s.requires, "delete");
+    assert_eq!(s.matches_path, "/invoices/{id}");
+    assert_eq!(s.binds, ["id"]);
+    assert!(s.numbers.is_empty());
+}
+
+/// What the page writes for it is a rule the parser reads beside the
+/// operation the wizard generates -- which is where a pattern naming another
+/// segment than the url's would be refused.
+#[test]
+fn the_rule_the_page_writes_for_a_delete_by_path_is_read() {
+    let output = generate(&WizardInput {
+        spec_json: invoices_spec(),
+        slug: "books".into(),
+        base_url: "https://books.example.com/v1".into(),
+        auth_header: None,
+        annotations: vec![Annotation {
+            target: Target::Operation("delete_invoice".into()),
+            kind: AnnotationKind::Approval(DELETE_INVOICE_RULE.into()),
+        }],
+    })
+    .unwrap();
+    let parsed = crate::skill::parse(&output.files["delete_invoice.md"]).unwrap();
+    let rule = parsed.approval.expect("the rule is kept");
+    assert_eq!(rule.matches, "DELETE /v1/invoices/{id}");
+    assert_eq!(rule.binds, ["id"]);
+    assert_eq!(
+        parsed.operation.expect("the operation").path_params(),
+        ["id"]
+    );
 }

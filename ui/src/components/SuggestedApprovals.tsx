@@ -2,6 +2,7 @@ import { useState } from 'react'
 
 import {
   acceptable,
+  amountFields,
   approvalYaml,
   basePath,
   cannotWrite,
@@ -167,7 +168,7 @@ export default function SuggestedApprovals({
                     className={`${FIELD} font-mono`}
                   >
                     <option value="">No amount</option>
-                    {[...new Set([...s.binds, ...(s.amount ? [s.amount.field] : [])])].map((f) => (
+                    {amountFields(s).map((f) => (
                       <option key={f} value={f}>
                         {f}
                       </option>

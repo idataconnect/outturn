@@ -271,19 +271,15 @@ pub fn operation_block(
     if !query.is_empty() {
         writeln!(out, "  query: [{}]", query.join(", ")).unwrap();
     }
-    // The operator's identity, kept to the fields this write sends in its body
-    // or query -- a field the specification no longer has would otherwise
-    // make a file that publishing refuses, and cost the operation its tool.
-    let path: Vec<String> = op
-        .parameters
-        .iter()
-        .filter(|p| p.location == "path")
-        .map(|p| p.name.clone())
-        .collect();
+    // The operator's identity, kept to the fields this write sends in its
+    // path, body or query -- a field the specification no longer has would
+    // otherwise make a file that publishing refuses, and cost the operation
+    // its tool. A path parameter is one: voiding `/invoices/{id}` twice is one
+    // write.
     let sent: Vec<&String> = identity
         .unwrap_or_default()
         .iter()
-        .filter(|f| schema["properties"].get(f.as_str()).is_some() && !path.contains(f))
+        .filter(|f| schema["properties"].get(f.as_str()).is_some())
         .collect();
     if !sent.is_empty() && !matches!(op.method.to_ascii_uppercase().as_str(), "GET" | "HEAD") {
         let names: Vec<&str> = sent.iter().map(|f| f.as_str()).collect();
