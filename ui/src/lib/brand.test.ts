@@ -47,16 +47,31 @@ describe('loadBrand', () => {
     expect(brand.productName).toBe('outturn')
   })
 
-  it('keeps the build branding when the fetch fails', async () => {
+  it('keeps the build branding when the fetch fails, and says so', async () => {
     const brand = await fresh()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     await brand.loadBrand(vi.fn(async () => Promise.reject(new TypeError('offline'))))
     expect(brand.productName).toBe('outturn')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('/config.json'), expect.anything())
+    warn.mockRestore()
   })
 
-  it('refuses a logo from another host', async () => {
+  it('refuses a logo from another host, and says so', async () => {
     const brand = await fresh()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     await brand.loadBrand(respond(JSON.stringify({ logo: 'https://example.com/x.svg' })))
     expect(brand.logoUrl).toBe('/favicon.svg')
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('logo'))
+    warn.mockRestore()
+  })
+
+  it('refuses a theme from another host, and says so', async () => {
+    const brand = await fresh()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await brand.loadBrand(respond(JSON.stringify({ theme: 'https://example.com/x.css' })))
+    expect(document.querySelectorAll('link[rel="stylesheet"]')).toHaveLength(0)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('theme'))
+    warn.mockRestore()
   })
 
   it('ignores fields that are not strings', async () => {

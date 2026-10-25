@@ -79,7 +79,12 @@ export async function applyBrand(
   deadline?: AbortSignal,
 ) {
   if (brand.name) productName = brand.name
-  if (brand.logo && sameOrigin(brand.logo)) logoUrl = brand.logo
+  // A refusal is said aloud, here and for the theme below: the deployer who
+  // set it sees only the default and has no other way to learn why.
+  if (brand.logo) {
+    if (sameOrigin(brand.logo)) logoUrl = brand.logo
+    else console.warn(`brand: logo ${brand.logo} refused; only same-origin paths are served`)
+  }
   if (brand.tagline !== undefined) productTagline = brand.tagline || null
 
   doc.title = productName
@@ -87,6 +92,9 @@ export async function applyBrand(
   if (icon && logoUrl !== '/favicon.svg') icon.href = logoUrl
 
   const href = brand.theme && brand.theme !== builtTheme ? themeHref(brand.theme) : null
+  if (brand.theme && brand.theme !== builtTheme && !href) {
+    console.warn(`brand: theme ${brand.theme} refused; a theme is a shipped name or a same-origin path`)
+  }
   if (href) await loadStylesheet(href, doc, deadline)
 }
 
@@ -141,8 +149,10 @@ export async function loadBrand(
       const body: unknown = await res.json()
       if (body && typeof body === 'object') brand = pickStrings(body as Record<string, unknown>)
     }
-  } catch {
-    // The build's branding stands.
+  } catch (err) {
+    // The build's branding stands. `npm run dev` never lands here -- Vite
+    // answers, with index.html -- so in a deployment it earns a console line.
+    console.warn('brand: /config.json unavailable, using the built-in branding', err)
   }
   await applyBrand(brand, doc, deadline)
 }
