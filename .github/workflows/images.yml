@@ -37,7 +37,7 @@ jobs:
       github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
@@ -62,7 +62,7 @@ jobs:
 
       # The container driver, for a layer cache kept between runs. The Rust
       # builder stage is shared by the three tiers, so it is built once here.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Sign in to the registry
         env:

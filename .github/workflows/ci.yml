@@ -39,7 +39,7 @@ jobs:
     name: Rust
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Stable, tracking whatever that is -- to agree with the Dockerfile,
       # which builds `FROM rust:1`. Pinning a version here would mean CI could
@@ -72,7 +72,7 @@ jobs:
       run:
         working-directory: ui
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:
