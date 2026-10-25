@@ -280,16 +280,26 @@ Platform page.
 
 1. **The catalog** is the shipped snapshot or something newer, with its age
    shown, and the file import and hand entry offered beside it.
-2. **A recipe**, each a chain with its accounts and models filled in. What is
-   built pairs the same tier from two vendors, so a fallback answers about as
-   well as what it stands in for:
+2. **A recipe**, each a chain with its accounts and models filled in. One
+   provider's each comes first, for a deployment with one key, with a second
+   chain of that provider's fast model for titles and summaries
+   (`session-name` and `compaction`). Then pairs of the same tier from two
+   vendors, so a fallback answers about as well as what it stands in for:
 
-   | Recipe | Chain |
-   |---|---|
-   | High tier | Claude Opus (Latest) → Gemini Pro (Latest) |
-   | Medium tier | Claude Sonnet (Latest) → Gemini Flash (Latest) |
-   | Low tier | Claude Haiku (Latest) → Gemini Flash-Lite (Latest) |
-   | Local | one model on an OpenAI-protocol server -- ollama, llama.cpp -- which says it has no fallback |
+   | Recipe | Chain | Titles and summaries |
+   |---|---|---|
+   | Anthropic | Claude Sonnet (Latest) | Claude Haiku (Latest) |
+   | OpenAI | GPT Sol (Latest) | GPT mini (Latest) |
+   | Google Gemini | Gemini Flash (Latest) | Gemini Flash-Lite (Latest) |
+   | High tier | Claude Opus (Latest) → Gemini Pro (Latest) | the chain |
+   | Medium tier | Claude Sonnet (Latest) → Gemini Flash (Latest) | the chain |
+   | Low tier | Claude Haiku (Latest) → Gemini Flash-Lite (Latest) | the chain |
+   | Local | one model on an OpenAI-protocol server -- ollama, llama.cpp | the chain |
+
+   A one-provider recipe, and Local, say they have no fallback. OpenAI's
+   main line is the catalog's `gpt-sol` family because that is where it
+   files GPT-5.6 itself; the catalog says nothing about price, so which
+   family is the fast one is the recipe's to name.
 
    A recipe names families, never models: the API resolves each to the
    newest chat model in that family in the catalog held
@@ -300,7 +310,11 @@ Platform page.
    ordinary configuration, edited afterwards on the Models page, and an
    account already configured at the same provider is used rather than made
    again. The same-model "two doors" recipe waits on Bedrock (phase 8).
-3. **Keys**, one per provider the recipe uses, sealed in the browser.
+3. **Keys**, one per provider the recipe uses, sealed in the browser. Any
+   one is enough: a two-vendor recipe with a key for only one of them is set
+   up without the other's link, and the page says so before it is. The API
+   does the dropping (`GET /v1/platform/recipes?with=anthropic`), each
+   recipe answered as it becomes with only the vendors named.
 4. **A test call** through the chain, which shows what answered:
    `POST /v1/platform/test-call`, a few words sent through the gateway as the
    platform's own traffic of a class, with a turn token that reaches the

@@ -23,13 +23,21 @@ import { buttonPrimary, buttonQuiet, field, sectionBox } from '../components/mod
 /** A provider a recipe needs an account at, as the API describes it. */
 type Vendor = { key: string; name: string; protocol: Protocol; base_url: string; env: string }
 
-/** A recipe: pairs of one tier from two vendors, each model the catalog's
- *  newest in its family today, resolved by the API. */
+type Link = { vendor: Vendor; base_url: string; model: string | null; name: string | null }
+
+/** A recipe: one provider's models, or one tier from two vendors, each model
+ *  the catalog's newest in its family today, resolved by the API. */
 type Recipe = {
   id: string
   title: string
   summary: string
-  links: { vendor: Vendor; base_url: string; model: string | null; name: string | null }[]
+  /** Every vendor the whole recipe uses, at its address: what a key is asked for. */
+  vendors: { vendor: Vendor; base_url: string }[]
+  links: Link[]
+  /** The chain for titles and summaries; empty when they go where `links` does. */
+  small: Link[]
+  /** Vendors left out for want of a key, their links dropped. */
+  dropped: Vendor[]
   /** Not yet tried end to end against the provider it names. */
   untried: boolean
   /** Every link the same model, so a fallback changes the door, not the voice. */
@@ -47,7 +55,10 @@ export default function PlatformSetup() {
   const [held, setHeld] = useState<HeldCatalog | null>(null)
   const [recipes, setRecipes] = useState<Recipe[]>([])
   const [config, setConfig] = useState<Configured | null>(null)
-  const [choice, setChoice] = useState<string>('medium')
+  const [choice, setChoice] = useState<string>('anthropic')
+  // The recipes again, as each becomes with only the vendors there are keys
+  // for: what is set up.
+  const [trimmed, setTrimmed] = useState<Recipe[]>([])
   const [keys, setKeys] = useState<Record<string, string>>({})
   const [envs, setEnvs] = useState<Record<string, string>>({})
   // No default address: localhost here would be the gateway's own pod, not
@@ -70,20 +81,41 @@ export default function PlatformSetup() {
   }, [region])
 
   const recipe = recipes.find((r) => r.id === choice)
-  // Each vendor once, at the address this recipe resolved for it.
-  const vendors = recipe
-    ? recipe.links
-        .map((l) => ({ ...l.vendor, base_url: l.base_url }))
-        .filter((v, i, all) => all.findIndex((w) => w.key === v.key) === i)
-    : []
+  const vendors = recipe ? recipe.vendors.map((v) => ({ ...v.vendor, base_url: v.base_url })) : []
   const usesBedrock = vendors.some((v) => v.protocol === 'bedrock')
   const existing = (v: Vendor): Account | undefined =>
     config?.accounts.find((a) => a.protocol === v.protocol && a.base_url === v.base_url)
+  // Bedrock needs no key here: without one the gateway signs with its own
+  // AWS credentials.
+  const keyed = (v: Vendor) =>
+    v.protocol === 'bedrock' || !!existing(v) || !!keys[v.key]?.trim() || !!envs[v.key]?.trim()
+  const withKeys = recipes
+    .flatMap((r) => r.vendors.map((v) => ({ ...v.vendor, base_url: v.base_url })))
+    .filter(keyed)
+    .map((v) => v.key)
+    .filter((k, i, all) => all.indexOf(k) === i)
+    .join(',')
+  useEffect(() => {
+    let current = true
+    api<Recipe[]>(
+      `/v1/platform/recipes?region=${encodeURIComponent(region.trim())}&with=${encodeURIComponent(withKeys)}`,
+    )
+      .then((r) => current && setTrimmed(r))
+      .catch(() => current && setTrimmed([]))
+    return () => {
+      current = false
+    }
+  }, [region, withKeys])
+  const planned = trimmed.find((r) => r.id === choice)
+  const used = planned
+    ? vendors.filter((v) => [...planned.links, ...planned.small].some((l) => l.vendor.key === v.key))
+    : []
   // A family the catalog has no chat model for cannot be set up from it.
-  const complete = recipe?.links.every((l) => l.model) ?? true
+  const complete = planned ? [...planned.links, ...planned.small].every((l) => l.model) : false
   const running = steps?.some((s) => s.state === 'running') ?? false
 
   async function setUp() {
+    if (recipe && !planned) return
     const plan: Step[] = []
     const run = async (label: string, what: () => Promise<unknown>) => {
       plan.push({ label, state: 'running' })
@@ -102,9 +134,10 @@ export default function PlatformSetup() {
     setTested(null)
     try {
       const modelIds: string[] = []
-      if (recipe) {
+      const smallIds: string[] = []
+      if (recipe && planned) {
         const accounts = new Map<string, Account>()
-        for (const v of vendors) {
+        for (const v of used) {
           let account = existing(v)
           if (!account) {
             const env = envs[v.key]?.trim()
@@ -124,11 +157,16 @@ export default function PlatformSetup() {
           }
           accounts.set(v.key, account)
         }
-        for (const link of recipe.links) {
-          const model = (await run(`Add ${link.name ?? link.model} (tracking the latest)`, () =>
-            createModel({ account_id: accounts.get(link.vendor.key)!.id, model: link.model!, tracks: true }),
-          )) as { id: string }
-          modelIds.push(model.id)
+        for (const [links, ids] of [
+          [planned.links, modelIds],
+          [planned.small, smallIds],
+        ] as const) {
+          for (const link of links) {
+            const model = (await run(`Add ${link.name ?? link.model} (tracking the latest)`, () =>
+              createModel({ account_id: accounts.get(link.vendor.key)!.id, model: link.model!, tracks: true }),
+            )) as { id: string }
+            ids.push(model.id)
+          }
         }
       } else {
         const account = (await run('Add the local account', () =>
@@ -149,6 +187,15 @@ export default function PlatformSetup() {
         await assign('assistant', chain.id)
         await assign('background', chain.id)
       })
+      if (smallIds.length > 0) {
+        const small = (await run(`Make the chain "${name}, titles and summaries"`, () =>
+          createChain(`${name}, titles and summaries`, smallIds),
+        )) as { id: string }
+        await run('Assign it to naming and summarizing', async () => {
+          await assign('session-name', small.id)
+          await assign('compaction', small.id)
+        })
+      }
       const result = (await run('Make a test call', () => testCall('assistant'))) as Tested
       setTested(result)
     } catch {
@@ -157,14 +204,11 @@ export default function PlatformSetup() {
     }
   }
 
+  // Any one vendor with a key is enough: the rest of the recipe is dropped,
+  // and said so below.
   const ready =
     recipe !== undefined
-      ? complete &&
-        vendors.every(
-          // Bedrock needs no key here: without one the gateway signs with
-          // its own AWS credentials.
-          (v) => v.protocol === 'bedrock' || existing(v) || keys[v.key]?.trim() || envs[v.key]?.trim(),
-        )
+      ? planned !== undefined && planned.links.length > 0 && complete
       : local.url.trim() !== '' && local.model.trim() !== ''
 
   return (
@@ -198,12 +242,16 @@ export default function PlatformSetup() {
           {[
             ...recipes.map((r) => ({
               ...r,
-              caveat: r.links.some((l) => !l.model)
+              caveat: [...r.links, ...r.small].some((l) => !l.model)
                 ? 'The catalog held has no model for part of this.'
-                : `Today: ${r.links.map((l) => l.name ?? l.model).join(', then ')}. ${
-                    r.same_model
-                      ? 'The same model answers on fallback.'
-                      : 'A different family answers on fallback.'
+                : `Today: ${r.links.map((l) => l.name ?? l.model).join(', then ')}${
+                    r.small.length > 0 ? `, and ${r.small.map((l) => l.name ?? l.model).join(', then ')}` : ''
+                  }. ${
+                    r.links.length === 1
+                      ? `No fallback: when ${r.links[0].vendor.name} is down, nothing answers.`
+                      : r.same_model
+                        ? 'The same model answers on fallback.'
+                        : 'A different family answers on fallback.'
                   }${r.untried ? ' Not yet tried against the provider itself.' : ''}`,
             })),
             {
@@ -296,6 +344,19 @@ export default function PlatformSetup() {
               </div>
             )
           })}
+        {recipe && planned && planned.dropped.length > 0 && (
+          <p className="text-sm text-surface-700 dark:text-surface-300">
+            {planned.links.length === 0
+              ? vendors.length === 1
+                ? `A key for ${vendors[0].name} is needed.`
+                : `A key for at least one of ${vendors.map((v) => v.name).join(' and ')} is needed.`
+              : `Without a key for ${planned.dropped.map((v) => v.name).join(' and ')}, this is set up without ${
+                  planned.dropped.length === 1 ? 'it' : 'them'
+                }: ${planned.links.map((l) => l.name ?? l.model).join(', then ')}${
+                  planned.links.length === 1 ? ', with no fallback' : ''
+                }.`}
+          </p>
+        )}
         {recipe && (
           <p className="text-xs text-surface-500">
             A key typed here is sealed in this browser, usable only at its provider's host and only as that
