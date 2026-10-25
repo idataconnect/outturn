@@ -38,8 +38,9 @@ spec:
               type: RuntimeDefault
           containers:
             - name: dump
-              # The client's major version must be at least the server's.
-              image: postgres:17-alpine
+              # The client's major version must be at least the server's, and
+              # the server is 18 (docs/deployment.md). Raise this with it.
+              image: postgres:18-alpine
               command:
                 - /bin/sh
                 - -c

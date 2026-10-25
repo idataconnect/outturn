@@ -31,6 +31,12 @@ budgets and network policies -- and no Postgres, no object store and no mocks.
 Those are yours, named in a Secret. The development cluster's `k8s/base` is
 separate and keeps its own.
 
+**PostgreSQL 18, with pgvector.** The migrations call `uuidv7()`, which is new
+in 18, and create the `vector` extension, so an older server or one without
+the extension fails the API's first start rather than some later query. 18 is
+what the development cluster runs and the only major tested; a later one is
+expected to work.
+
 ## Secrets to generate
 
 Five keys, generated once per deployment and never shared with another:
@@ -220,7 +226,9 @@ say, follow it anyway.
 
 The database is the deployment: workspaces, transcripts, sealed credentials,
 usage. `k8s/deploy/examples/backup-cronjob.yaml` is a nightly `pg_dump` in the
-custom format to a volume, keeping fourteen, with its network policy. Add it
+custom format to a volume, keeping fourteen, with its network policy. Its
+client is Postgres 18, and `pg_dump` refuses a server newer than itself, so
+raise the image when the server moves. Add it
 to the infrastructure kustomization's resources and change where the dumps go:
 a volume beside the database survives a bad migration but not the loss of the
 cluster. A managed database's own snapshots are as good, and better if they
