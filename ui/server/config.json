@@ -1,0 +1,6 @@
+{
+  "name": {{env "OUTTURN_BRAND_NAME" | toJson}},
+  "logo": {{env "OUTTURN_BRAND_LOGO" | toJson}},
+  "tagline": {{env "OUTTURN_BRAND_TAGLINE" | toJson}},
+  "theme": {{env "OUTTURN_THEME" | toJson}}
+}
