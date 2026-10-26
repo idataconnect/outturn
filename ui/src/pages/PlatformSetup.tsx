@@ -6,6 +6,7 @@ import { heldCatalog, type HeldCatalog } from '../lib/catalog'
 import {
   assign,
   configured,
+  updateChain,
   createAccount,
   createChain,
   createModel,
@@ -133,17 +134,40 @@ export default function PlatformSetup() {
     }
     setTested(null)
     try {
+      // Read afresh rather than from when the page loaded: a run that failed
+      // part way made things, and this one reuses them rather than making a
+      // second of each under the same name.
+      const now = (await run('Read what is configured', configured)) as Configured
+      setConfig(now)
       const modelIds: string[] = []
       const smallIds: string[] = []
+      const model = async (
+        account: Account,
+        id: string,
+        label: string,
+        input: Parameters<typeof createModel>[0],
+      ): Promise<string> => {
+        const had = now.models.find((m) => m.account_id === account.id && m.model === id)
+        if (had) return had.id
+        return ((await run(label, () => createModel(input))) as { id: string }).id
+      }
+      const chain = async (name: string, ids: string[]): Promise<string> => {
+        const had = now.chains.find((c) => c.name === name)
+        if (had) {
+          await run(`Update the chain "${name}"`, () => updateChain(had.id, name, ids))
+          return had.id
+        }
+        return ((await run(`Make the chain "${name}"`, () => createChain(name, ids))) as { id: string }).id
+      }
       if (recipe && planned) {
         const accounts = new Map<string, Account>()
         for (const v of used) {
-          let account = existing(v)
+          let account = now.accounts.find((a) => a.protocol === v.protocol && a.base_url === v.base_url)
           if (!account) {
             const env = envs[v.key]?.trim()
             account = (await run(`Add the ${v.name} account`, () =>
               createAccount({
-                name: v.name,
+                name: freeName(v.name, now),
                 protocol: v.protocol,
                 base_url: v.base_url,
                 ...(env && !keys[v.key] ? { credential_env: env } : {}),
@@ -162,38 +186,43 @@ export default function PlatformSetup() {
           [planned.small, smallIds],
         ] as const) {
           for (const link of links) {
-            const model = (await run(`Add ${link.name ?? link.model} (tracking the latest)`, () =>
-              createModel({ account_id: accounts.get(link.vendor.key)!.id, model: link.model!, tracks: true }),
-            )) as { id: string }
-            ids.push(model.id)
+            const account = accounts.get(link.vendor.key)!
+            ids.push(
+              await model(account, link.model!, `Add ${link.name ?? link.model} (tracking the latest)`, {
+                account_id: account.id,
+                model: link.model!,
+                tracks: true,
+              }),
+            )
           }
         }
       } else {
-        const account = (await run('Add the local account', () =>
-          createAccount({ name: 'Local', protocol: 'openai', base_url: local.url.trim() }),
-        )) as Account
-        const model = (await run(`Add ${local.model}`, () =>
-          createModel({
+        const url = local.url.trim()
+        const account =
+          now.accounts.find((a) => a.protocol === 'openai' && a.base_url === url) ??
+          ((await run('Add the local account', () =>
+            createAccount({ name: freeName('Local', now), protocol: 'openai', base_url: url }),
+          )) as Account)
+        const id = local.model.trim()
+        modelIds.push(
+          await model(account, id, `Add ${id}`, {
             account_id: account.id,
-            model: local.model.trim(),
+            model: id,
             facts: { reasoning: true, tool_call: true, temperature: true },
           }),
-        )) as { id: string }
-        modelIds.push(model.id)
+        )
       }
       const name = recipe?.title ?? 'Local'
-      const chain = (await run(`Make the chain "${name}"`, () => createChain(name, modelIds))) as { id: string }
+      const main = await chain(name, modelIds)
       await run('Assign it to assistant and background traffic', async () => {
-        await assign('assistant', chain.id)
-        await assign('background', chain.id)
+        await assign('assistant', main)
+        await assign('background', main)
       })
       if (smallIds.length > 0) {
-        const small = (await run(`Make the chain "${name}, titles and summaries"`, () =>
-          createChain(`${name}, titles and summaries`, smallIds),
-        )) as { id: string }
+        const small = await chain(`${name}, titles and summaries`, smallIds)
         await run('Assign it to naming and summarizing', async () => {
-          await assign('session-name', small.id)
-          await assign('compaction', small.id)
+          await assign('session-name', small)
+          await assign('compaction', small)
         })
       }
       const result = (await run('Make a test call', () => testCall('assistant'))) as Tested
@@ -439,4 +468,14 @@ export default function PlatformSetup() {
       </section>
     </div>
   )
+}
+
+/** An account name nobody has yet: names are unique, and a second account for
+ *  a vendor is a different endpoint, so it takes a number rather than fail. */
+function freeName(name: string, config: Configured): string {
+  const taken = new Set(config.accounts.map((a) => a.name))
+  for (let n = 1; ; n++) {
+    const candidate = n === 1 ? name : `${name} (${n})`
+    if (!taken.has(candidate)) return candidate
+  }
 }

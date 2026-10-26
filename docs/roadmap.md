@@ -19,10 +19,10 @@ Everything below it is the longer view. An item leaves this list when it is
 committed and verified, and new work goes in where it belongs, not at the end.
 
 1. **What the review of 2026-10-20 left** (*From the review*, below): the
-   ten fixes, the retention sweeps and the indexes are in; name uniqueness
-   (in the order given there) goes next, then reviewing the wizard's
-   suggestions (*Undesigned, and wanted*, below), then the prompt and sandbox
-   boundaries and the rest in the order given there.
+   ten fixes, the retention sweeps, the indexes and name uniqueness are in;
+   reviewing the wizard's suggestions (*Undesigned, and wanted*, below) goes
+   next, then the prompt and sandbox boundaries and the rest in the order
+   given there.
 2. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
 3. **A first real call to Amazon Bedrock**, by whoever first has an AWS
@@ -46,18 +46,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### Indexes and constraints
 
-- No `(workspace_id, name)` uniqueness on `models`, `provider_accounts` or
-  `chains`, though the UI lists and picks by name, and none on
-  `credentials.name` for either the platform's or a workspace's. Not a
-  migration alone: duplicates are a state the code makes today. 0041 named
-  each migrated model after the model it asks for, so one served for two
-  traffic types became two of the same name; a model's name defaults to the
-  catalog's, so one model at two accounts is two; and Platform → Set up
-  models makes a "Local" account and chain afresh on every run, including the
-  run after one that failed at the test call. Needs, in order: the create and
-  rename endpoints answering 409 on a taken name, Set up reusing what an
-  earlier run made, a migration renaming existing duplicates (a suffix,
-  oldest keeps the name), then the unique indexes.
 - Index migrations on `events`, `agent_messages` or `jobs` carry
   `-- no-transaction` and `create index concurrently`, one statement to a
   file (0061, 0063, 0065); 0024, 0026 and 0031 took SHARE locks under every

@@ -49,6 +49,9 @@ function recipes(path: string) {
 }
 
 const asked: { path: string; body?: unknown }[] = []
+const EMPTY = { accounts: [], models: [], chains: [], assignments: {} }
+/** What the API says is configured; a test sets it to what a run left. */
+let held: unknown = EMPTY
 
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<typeof import('../lib/api')>('../lib/api')
@@ -57,7 +60,7 @@ vi.mock('../lib/api', async () => {
     api: vi.fn(async (path: string, init?: RequestInit) => {
       asked.push({ path, body: init?.body ? JSON.parse(init.body as string) : undefined })
       if (path.startsWith('/v1/platform/recipes')) return recipes(path)
-      if (path === '/v1/platform/models' && !init) return { accounts: [], models: [], chains: [], assignments: {} }
+      if (path === '/v1/platform/models' && !init) return held
       if (path === '/v1/platform/catalog') return { models: 1, providers: 1, source: 'shipped' }
       if (path === '/v1/platform/provider-accounts') return { id: 'acct', name: 'x', protocol: 'anthropic' }
       if (path === '/v1/platform/models') return { id: `m${asked.length}` }
@@ -79,6 +82,31 @@ function show() {
 describe('PlatformSetup', () => {
   beforeEach(() => {
     asked.length = 0
+    held = EMPTY
+  })
+
+  it('reuses what an earlier run made, rather than a second of each by the same name', async () => {
+    held = {
+      ...EMPTY,
+      accounts: [{ id: 'a1', name: 'Anthropic', protocol: 'anthropic', base_url: ANTHROPIC.base_url }],
+      models: [{ id: 'm1', account_id: 'a1', name: 'Claude Sonnet 5.5', model: 'claude-sonnet-5-5' }],
+      chains: [{ id: 'c1', name: 'Anthropic', models: ['m1'] }],
+    }
+    show()
+    const button = await screen.findByRole('button', { name: /Set up Anthropic/ })
+    await waitFor(() => expect(button).toBeEnabled())
+    await userEvent.click(button)
+    await screen.findByRole('status')
+    const made = asked.filter((a) => a.body !== undefined)
+    expect(made.filter((a) => a.path === '/v1/platform/provider-accounts')).toHaveLength(0)
+    // The haiku was never made, so it is; the sonnet was, so it is not.
+    expect(made.filter((a) => a.path === '/v1/platform/models').map((a) => (a.body as { model: string }).model)).toEqual([
+      'claude-haiku-5-5',
+    ])
+    expect(made.filter((a) => a.path === '/v1/platform/chains/c1')).toHaveLength(1)
+    expect(made.filter((a) => a.path === '/v1/platform/chains').map((a) => (a.body as { name: string }).name)).toEqual([
+      'Anthropic, titles and summaries',
+    ])
   })
 
   it('sets up a one-provider recipe with its one key', async () => {
