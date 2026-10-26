@@ -264,6 +264,22 @@ pub async fn upload(
     // request held open for them is a failure the uploader cannot act on.
     super::extract::enqueue(&state.pool, claims.workspace_id, &key, &scoped).await;
 
+    // Putting a file into a conversation is using it. Session files are swept
+    // once a session has been idle (`storage_sweep`), and one dropped into a
+    // session swept before would otherwise never be swept at all; it also
+    // brings the conversation up the recent list, where the person who just
+    // added to it will look for it.
+    if s == Scope::Session {
+        let _ = sqlx::query(
+            "update agent_sessions set last_active_at = now() \
+             where id = $1 and workspace_id = $2",
+        )
+        .bind(session_id)
+        .bind(claims.workspace_id)
+        .execute(&state.pool)
+        .await;
+    }
+
     tracing::info!(
         actor = %claims.subject,
         session_id = %session_id,

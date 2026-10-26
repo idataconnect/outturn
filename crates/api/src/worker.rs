@@ -1834,6 +1834,8 @@ impl Worker {
     pub fn spawn_reaper(self: Arc<Self>, shutdown: Arc<tokio::sync::Notify>) {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(jobs::LEASE_HEARTBEAT);
+            let ttl_days = super::storage_sweep::ttl_days();
+            let mut last_storage_sweep: Option<std::time::Instant> = None;
             loop {
                 tokio::select! {
                     _ = shutdown.notified() => return,
@@ -1912,6 +1914,19 @@ impl Worker {
                         // gateway shares the database.
                         let _ =
                             outturn_core::breaker::forget_stale_sightings(&self.pool).await;
+
+                        // Files nobody will read again: idle sessions' and
+                        // deleted things'. Hourly, since the window is days
+                        // and each pass lists storage. Every API replica runs
+                        // it; two passes over one prefix delete it once and
+                        // find nothing the second time, which costs a listing.
+                        if let Some(storage) = &self.storage
+                            && last_storage_sweep
+                                .is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(3600))
+                        {
+                            last_storage_sweep = Some(std::time::Instant::now());
+                            super::storage_sweep::sweep(&self.pool, storage, ttl_days).await;
+                        }
 
                         // The model catalog, when its week is up. Here for the
                         // same reason as the sweeps: the tick is already the

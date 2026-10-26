@@ -15217,3 +15217,130 @@ async fn names_the_platform_picks_by_are_unique() {
     let (status, body) = h.post("/v1/platform/chains", Some(&operator), &chain).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
 }
+
+/// Session files are swept from the session's last activity, not their age:
+/// an idle session's go, with the text read out of them; one with work still
+/// to come keeps them however idle it looks; and a deleted session's go too,
+/// though its row is no longer there to say when it was active.
+#[tokio::test]
+async fn files_are_swept_by_activity_and_by_deletion() {
+    use outturn::storage::{MemoryStorage, StorageBackend};
+
+    let h = harness_or_skip!();
+    let pool = &h.db.pool;
+    let workspace = h.make_workspace("Acme", "acme").await;
+    let agent = h
+        .agents
+        .create(
+            workspace,
+            outturn::api::agent::CreateAgent {
+                name: "Clerk".into(),
+                slug: "clerk".into(),
+                description: String::new(),
+                system_prompt: String::new(),
+                policy: None,
+            },
+        )
+        .await
+        .expect("agent")
+        .id;
+    let store: Arc<dyn StorageBackend> = Arc::new(MemoryStorage::new());
+    let session = |idle_days: i32| async move {
+        let id = Uuid::now_v7();
+        sqlx::query(
+            "insert into agent_sessions (id, workspace_id, agent_id, last_active_at) \
+             values ($1, $2, $3, now() - make_interval(days => $4))",
+        )
+        .bind(id)
+        .bind(workspace)
+        .bind(agent)
+        .bind(idle_days)
+        .execute(pool)
+        .await
+        .expect("session");
+        id
+    };
+    let file = |id: Uuid| format!("sessions/{workspace}/{agent}/{id}/notes.txt");
+    let text = |id: Uuid| format!("extracted/{}", file(id));
+    let there = |key: String| {
+        let store = store.clone();
+        async move { store.read(&key, 0, u32::MAX).await.is_ok() }
+    };
+
+    let idle = session(40).await;
+    let lively = session(1).await;
+    let waiting = session(40).await;
+    let deleted = session(1).await;
+    for id in [idle, lively, waiting, deleted] {
+        store.write(&file(id), b"notes").await.unwrap();
+        store.write(&text(id), b"notes").await.unwrap();
+    }
+    // A wakeup it asked for: idle by its messages, not by what is to come.
+    sqlx::query(
+        "insert into jobs (id, workspace_id, kind, payload) values ($1, $2, 'chat.wake', $3)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(workspace)
+    .bind(serde_json::json!({ "session_id": waiting }))
+    .execute(pool)
+    .await
+    .expect("job");
+    sqlx::query("delete from agent_sessions where id = $1")
+        .bind(deleted)
+        .execute(pool)
+        .await
+        .expect("delete");
+
+    outturn::api::storage_sweep::sweep(pool, &store, 30).await;
+
+    assert!(!there(file(idle)).await, "an idle session's file stayed");
+    assert!(!there(text(idle)).await, "an idle session's text stayed");
+    assert!(there(file(lively)).await, "a lively session's file went");
+    assert!(
+        there(file(waiting)).await,
+        "a session waiting to wake lost its file"
+    );
+    assert!(
+        !there(file(deleted)).await,
+        "a deleted session's file stayed"
+    );
+    assert!(
+        !there(text(deleted)).await,
+        "a deleted session's text stayed"
+    );
+    let left: i64 = sqlx::query_scalar("select count(*) from storage_deletions")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0, "a swept deletion was kept");
+
+    // Used again after a sweep, it keeps what it makes now; idle for the
+    // window once more, it is swept once more.
+    let set_idle = |days: i32| async move {
+        sqlx::query(
+            "update agent_sessions set last_active_at = now() - make_interval(days => $2) \
+             where id = $1",
+        )
+        .bind(idle)
+        .bind(days)
+        .execute(pool)
+        .await
+        .unwrap();
+    };
+    set_idle(0).await;
+    store.write(&file(idle), b"new notes").await.unwrap();
+    outturn::api::storage_sweep::sweep(pool, &store, 30).await;
+    assert!(there(file(idle)).await, "a session in use again was swept");
+    // Its last sweep was a moment ago, and now it was last active before
+    // that by more than the window: what a month of quiet looks like.
+    sqlx::query(
+        "update agent_sessions set files_swept_at = now() - interval '41 days' where id = $1",
+    )
+    .bind(idle)
+    .execute(pool)
+    .await
+    .unwrap();
+    set_idle(40).await;
+    outturn::api::storage_sweep::sweep(pool, &store, 30).await;
+    assert!(!there(file(idle)).await, "idle again, and not swept again");
+}

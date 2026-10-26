@@ -34,9 +34,18 @@ version is immutable, and what it said has to stay readable
 `skill/<slug>/<path>`, read-only, through the table its turn was sent rather
 than by listing the prefix, which holds every version's content by hash.
 
-Session files are swept by a lifecycle rule the runtime installs on the bucket
-at startup, after `OUTTURN_SESSION_FILE_TTL_DAYS` (default 30). One rule for
-every workspace, because the scope is the prefix.
+Session files are swept by the API once the session has been idle for
+`OUTTURN_SESSION_FILE_TTL_DAYS` (default 30) with nothing queued, parked or
+waiting to wake it -- from its last activity, not from a file's age. A bucket
+lifecycle rule did this before and could count only age, so a conversation
+older than the window lost its uploads mid-conversation. The text read out of
+those files goes with them, so a file the listing no longer shows is not still
+readable.
+
+Deleting a session, an agent or a workspace writes its prefixes into
+`storage_deletions` from a trigger, which catches cascades too, and the same
+hourly sweep empties them (`api::storage_sweep`). The bucket's own lifecycle
+keeps only the cleanup of uploads nobody finished.
 
 Buckets are not the partition because buckets are a limited resource: a hundred
 per AWS account by default, a thousand at the ceiling. A limit on buckets would

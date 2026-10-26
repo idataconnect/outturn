@@ -124,38 +124,21 @@ impl S3Storage {
         .map_err(classify)
     }
 
-    /// Sweeps session-scope files after `days`, with a rule the store applies
-    /// on its own. One rule for every workspace, because the scope is the prefix
-    /// (see docs/storage.md); a hierarchy laid out the obvious way would need
-    /// a rule per agent and hit the per-bucket cap almost at once.
+    /// The bucket's lifecycle: only the cleanup of uploads nobody finished.
     ///
-    /// Best effort: some S3-compatible stores do not do lifecycle, and a
-    /// missing sweep is a growing bill rather than a broken agent.
-    pub async fn ensure_session_lifecycle(&self, days: u32) -> Result<(), StorageError> {
+    /// It used to sweep session files too, by their age -- which is all a
+    /// lifecycle rule can count, so a conversation older than the window lost
+    /// its uploads however lively it was. The API sweeps them now, from the
+    /// session's last activity (`api::storage_sweep`). Setting this replaces
+    /// the whole document, so a bucket still carrying the old sweeps loses
+    /// them here.
+    ///
+    /// Best effort: some S3-compatible stores do not do lifecycle.
+    pub async fn ensure_lifecycle(&self) -> Result<(), StorageError> {
         use s3::serde_types::{
-            AbortIncompleteMultipartUpload, BucketLifecycleConfiguration, Expiration,
-            LifecycleFilter, LifecycleRule,
+            AbortIncompleteMultipartUpload, BucketLifecycleConfiguration, LifecycleFilter,
+            LifecycleRule,
         };
-        let sweep = |id: &str, prefix: String| LifecycleRule {
-            id: Some(id.into()),
-            status: "Enabled".into(),
-            filter: Some(LifecycleFilter {
-                prefix: Some(prefix),
-                ..Default::default()
-            }),
-            expiration: Some(Expiration {
-                days: Some(days),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let session = super::scope::Scope::Session.bucket_prefix().to_string();
-        let sweeps = vec![
-            sweep("sweep-session-files", session.clone()),
-            // The text read out of session documents lives under its own
-            // prefix and would otherwise outlive what it was read from.
-            sweep("sweep-session-text", crate::extract::text_key(&session)),
-        ];
         // Parts of an upload no writer completed or aborted -- a pod that died
         // mid-write. Invisible, but stored and billed until removed.
         let abandoned = LifecycleRule {
@@ -170,29 +153,29 @@ impl S3Storage {
             }),
             ..Default::default()
         };
-
-        let mut rules = sweeps.clone();
-        rules.push(abandoned);
         match self
             .bucket
-            .put_bucket_lifecycle(BucketLifecycleConfiguration::new(rules))
+            .put_bucket_lifecycle(BucketLifecycleConfiguration::new(vec![abandoned]))
             .await
             .map_err(classify)
         {
             Ok(_) => Ok(()),
             // MinIO refuses the abort rule outright -- it expires stale
-            // uploads on its own -- and a bucket has one lifecycle document,
-            // so a refusal of that rule would cost the sweeps with it. They
-            // go in alone, and the store is left to its own cleanup.
+            // uploads on its own. With nothing else to say, the document is
+            // removed, which is what takes an old sweep off such a bucket.
             Err(StorageError::Io(e)) if e.contains("InvalidArgument") => {
                 tracing::info!(
                     "storage refused the rule for abandoned uploads; leaving those to the store"
                 );
-                self.bucket
-                    .put_bucket_lifecycle(BucketLifecycleConfiguration::new(sweeps))
+                match self
+                    .bucket
+                    .delete_bucket_lifecycle()
                     .await
-                    .map(|_| ())
                     .map_err(classify)
+                {
+                    Ok(_) | Err(StorageError::NotFound) => Ok(()),
+                    Err(e) => Err(e),
+                }
             }
             Err(e) => Err(e),
         }

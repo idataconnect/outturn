@@ -81,15 +81,11 @@ async fn main() {
                             Err(e) => panic!("object storage bucket: {e}"),
                         }
                     }
-                    // Session files are scratch and are swept. How soon is
-                    // the operator's call; the runtime holds no database, so
-                    // it is an environment variable rather than a setting.
-                    let days = std::env::var("OUTTURN_SESSION_FILE_TTL_DAYS")
-                        .ok()
-                        .and_then(|d| d.parse().ok())
-                        .unwrap_or(30);
-                    if let Err(e) = store.ensure_session_lifecycle(days).await {
-                        tracing::warn!(error = %e, "could not set the session file lifecycle; session files will not be swept");
+                    // Session files are swept by the API, from each
+                    // session's last activity; the bucket keeps only the
+                    // cleanup of abandoned uploads.
+                    if let Err(e) = store.ensure_lifecycle().await {
+                        tracing::warn!(error = %e, "could not set the bucket's lifecycle");
                     }
                     tracing::info!(endpoint, bucket, "object storage enabled");
                     Some(Arc::new(store))

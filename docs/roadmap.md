@@ -61,11 +61,6 @@ can be picked up without rereading the review. Ordered by what it protects.
   turns are not, and nothing counts what a workspace holds. Needs the bytes
   each workspace stores kept as files are written and deleted, read by the API
   when it hands out a turn, and the turn's remaining allowance sent with it.
-- Session files expire by object age, not session activity
-  (`crates/core/src/storage/s3.rs`, the lifecycle rule). A session older than
-  the TTL loses its uploads mid-conversation, and `sleep` permits exactly that
-  span. Expire on last activity, and sweep `extracted/sessions/` on the same
-  clock so a file the listing no longer shows is not still readable.
 
 ### The gateway
 

@@ -39,6 +39,7 @@ pub mod settings;
 pub mod skill;
 mod skill_sources;
 mod skills;
+pub mod storage_sweep;
 pub mod tracking;
 pub mod trigger;
 pub mod triggers;
