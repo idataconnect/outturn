@@ -606,6 +606,14 @@ pub struct AgentHost {
     /// Model calls made so far this turn, counted host-side so a guest that
     /// ignores `limits` still cannot exceed them.
     rounds_used: u32,
+    /// Requests through the gateway and listings of storage made so far this
+    /// turn, each against its own fixed limit; see `MAX_FETCHES_PER_TURN`.
+    fetches_used: u32,
+    lists_used: u32,
+    /// Bytes written to files so far this turn, against `max_written_bytes`.
+    bytes_written: u64,
+    /// The workspace's limit on that; zero for none.
+    max_written_bytes: u64,
     /// What the user has said since this turn began, as reported by the
     /// gateway on the responses it was already sending. Drained when the guest
     /// asks, so each message is injected once. Each keeps the id of the
@@ -975,6 +983,7 @@ impl outturn::agent::host::HostObjectWriter for AgentHost {
         writer: wasmtime::component::Resource<WriterState>,
         chunk: Vec<u8>,
     ) -> Result<(), String> {
+        self.take_bytes(chunk.len() as u64)?;
         let state = self.table.get_mut(&writer).map_err(|e| e.to_string())?;
         match state.inner.write(&chunk).await {
             Ok(()) => Ok(()),
@@ -1037,10 +1046,51 @@ impl outturn::agent::host::HostObjectReader for AgentHost {
     }
 }
 
+/// Requests through the gateway one turn may make, and listings of storage.
+///
+/// Fixed rather than settings: they are runaway guards, set far above what a
+/// turn doing real work reaches, and a model call already bounds how many a
+/// sane turn asks for. `chat` rounds have their own limit, which a workspace
+/// sets; without these, a turn with unbounded rounds -- allowed, for long work
+/// -- had nothing at all between one looping tool call and the next.
+pub const MAX_FETCHES_PER_TURN: u32 = 1_000;
+pub const MAX_LISTS_PER_TURN: u32 = 1_000;
+
+/// Bytes a turn may write when the API did not say: the setting's default.
+pub const DEFAULT_MAX_WRITTEN_BYTES: u64 = 1 << 30;
+
 /// What a model call made after the turn was stopped is told.
 const STOPPED: &str = "this turn has been stopped; no more model calls may be made in it";
 
 impl AgentHost {
+    /// Counts one more of something against a fixed per-turn limit.
+    fn count(used: &mut u32, limit: u32, what: &str) -> Result<(), String> {
+        *used += 1;
+        if *used > limit {
+            return Err(format!("this turn has made {limit} {what}, its limit"));
+        }
+        Ok(())
+    }
+
+    /// Counts bytes about to be written against the turn's limit, before
+    /// they are sent: a write refused afterwards has already filled the store.
+    fn take_bytes(&mut self, bytes: u64) -> Result<(), String> {
+        let after = self.bytes_written.saturating_add(bytes);
+        if self.max_written_bytes > 0 && after > self.max_written_bytes {
+            tracing::warn!(
+                session_id = %self.session_id,
+                limit = self.max_written_bytes,
+                "guest reached its limit on bytes written"
+            );
+            return Err(format!(
+                "this turn may write {} bytes to files, and this would take it past that",
+                self.max_written_bytes
+            ));
+        }
+        self.bytes_written = after;
+        Ok(())
+    }
+
     /// Counts a model call against the turn's limit, before it is made.
     ///
     /// Before rather than after: the limit is on what may be spent, and a
@@ -1327,6 +1377,7 @@ impl outturn::agent::host::Host for AgentHost {
     /// about the workspace's settings, and that one resolves inside the cluster is
     /// a fact it already had to guess to ask.
     async fn fetch(&mut self, request: HttpRequest) -> Result<HttpResponse, String> {
+        Self::count(&mut self.fetches_used, MAX_FETCHES_PER_TURN, "requests")?;
         let token = self.current_token().await;
         let gates = self.gates.clone();
         let (sent, dispatched) = self.dispatch(request, token, gates).await?;
@@ -1633,6 +1684,7 @@ impl outturn::agent::host::Host for AgentHost {
         // The bytes are already here; held against admission while they are
         // sent on, as a writer's part is while it is open.
         let _charge = self.charge(data.len() as u64, "write a file")?;
+        self.take_bytes(data.len() as u64)?;
         let written = storage
             .write(&resolved, &data)
             .await
@@ -1704,6 +1756,7 @@ impl outturn::agent::host::Host for AgentHost {
             "render a PDF",
         )?;
         let pdf = crate::render::render(&self.http, self.renderer_url.as_deref(), markdown).await?;
+        self.take_bytes(pdf.len() as u64)?;
         let size = storage
             .write(&resolved, &pdf)
             .await
@@ -1735,6 +1788,11 @@ impl outturn::agent::host::Host for AgentHost {
 
     async fn list_objects(&mut self, prefix: String) -> Result<Vec<ObjectInfo>, String> {
         use outturn_core::storage::scope::{self, Scope};
+        Self::count(
+            &mut self.lists_used,
+            MAX_LISTS_PER_TURN,
+            "listings of files",
+        )?;
         let Some(storage) = self.storage.clone() else {
             return Err("no object storage is configured".to_string());
         };
@@ -2689,6 +2747,8 @@ pub struct RunOptions {
     pub traffic_type: String,
     /// Model calls permitted in this turn; zero is unbounded.
     pub max_tool_rounds: u32,
+    /// Bytes this turn may write to files; zero for no limit.
+    pub max_written_bytes: u64,
     /// Tools to offer from the first round, by name; empty defers every tool
     /// to an explicit request from the guest. Names the component does not
     /// have are ignored, so a stale policy is harmless.
@@ -2841,6 +2901,10 @@ impl AgentRunner {
             temperature: options.temperature,
             traffic_type: options.traffic_type,
             max_tool_rounds: options.max_tool_rounds,
+            max_written_bytes: options.max_written_bytes,
+            fetches_used: 0,
+            lists_used: 0,
+            bytes_written: 0,
             eager_tools: options.eager_tools,
             skill_operations: options.skill_operations,
             rounds_used: 0,

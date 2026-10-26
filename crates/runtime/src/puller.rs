@@ -431,6 +431,9 @@ impl Puller {
                 Some(n) => u32::try_from(n).unwrap_or(u32::MAX),
                 None => super::router::DEFAULT_MAX_TOOL_ROUNDS,
             },
+            max_written_bytes: request
+                .max_written_bytes
+                .unwrap_or(super::component::DEFAULT_MAX_WRITTEN_BYTES),
             // A template agent's, chosen by its operator; empty for every other
             // agent, which reaches each tool through the guest's loader.
             eager_tools: request.eager_tools.clone(),

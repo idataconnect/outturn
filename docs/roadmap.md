@@ -56,10 +56,11 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### Prompt and sandbox boundaries
 
-- Only `chat` rounds are capped. `fetch`, `list_objects` and `describe_image`
-  have no per-turn count, and no workspace has a storage quota, so one turn can
-  fill the bucket. A per-turn count on each, and a quota on `write_object`
-  and `open_writer` read from workspace settings.
+- No workspace has a storage quota. One turn is bounded now -- a thousand
+  requests, a thousand listings, and `max_written_bytes` written -- but many
+  turns are not, and nothing counts what a workspace holds. Needs the bytes
+  each workspace stores kept as files are written and deleted, read by the API
+  when it hands out a turn, and the turn's remaining allowance sent with it.
 - Session files expire by object age, not session activity
   (`crates/core/src/storage/s3.rs`, the lifecycle rule). A session older than
   the TTL loses its uploads mid-conversation, and `sleep` permits exactly that

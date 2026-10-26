@@ -2561,6 +2561,7 @@ impl Worker {
                 signed,
                 traffic_type: Some(traffic),
                 max_tool_rounds: Some(i64::from(settings.max_tool_rounds)),
+                max_written_bytes: Some(settings.max_written_bytes),
                 reply_id: placeholder.message.id,
                 egress,
                 egress_commitment,

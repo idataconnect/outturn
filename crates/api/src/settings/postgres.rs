@@ -383,6 +383,7 @@ impl SettingsStore for PostgresSettingsStore {
                 .as_u64()
                 .map(|n| u32::try_from(n).unwrap_or(u32::MAX))
                 .unwrap_or(100),
+            max_written_bytes: get("max_written_bytes").as_u64().unwrap_or(1 << 30),
             context_budget: get("context_budget")
                 .as_u64()
                 .map(|n| usize::try_from(n).unwrap_or(usize::MAX))

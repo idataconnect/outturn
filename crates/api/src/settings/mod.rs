@@ -272,6 +272,20 @@ fn settings() -> Vec<Setting> {
             per_model: false,
         },
         Setting {
+            key: "max_written_bytes",
+            label: "File writes per turn",
+            description: "How many bytes one turn may write to files, in bytes. \
+                          A runaway guard: an agent looping on a write could \
+                          otherwise fill the store in one turn. Zero means no limit.",
+            kind: Kind::Integer {
+                min: 0,
+                max: 1 << 40,
+            },
+            default: serde_json::json!(1u64 << 30),
+            owner: Owner::WorkspaceOverridable,
+            per_model: false,
+        },
+        Setting {
             key: "context_budget",
             label: "Conversation size sent to the model",
             description: "How much of a conversation is sent, in bytes. A long \
@@ -449,6 +463,8 @@ pub struct Resolved {
     /// stored message stays as typed. See `worker::repeated`.
     pub repeat_prompt: bool,
     pub max_tool_rounds: u32,
+    /// Bytes one turn may write to files; zero for no limit.
+    pub max_written_bytes: u64,
     /// How many bytes of conversation may be sent, before the trim starts
     /// dropping the oldest tool results to fit.
     pub context_budget: usize,

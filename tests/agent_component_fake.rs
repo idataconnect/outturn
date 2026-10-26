@@ -88,6 +88,7 @@ fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Syn
         temperature: None,
         traffic_type: "assistant".into(),
         max_tool_rounds: 100,
+        max_written_bytes: 0,
         reply_id: Uuid::now_v7(),
         // Production waits five minutes; a test cannot.
         idle_timeout: std::time::Duration::from_secs(2),
@@ -1552,6 +1553,44 @@ async fn storage_is_scoped_to_the_workspace_and_traversal_is_refused() {
         .await
         .expect("still there");
     assert_eq!(theirs_still, b"not yours");
+}
+
+/// A write that would take the turn past its limit on bytes is refused before
+/// anything is stored, and one inside it is not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_past_the_turns_limit_is_refused_before_it_lands() {
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
+
+    for (limit, lands) in [(10, false), (100, true)] {
+        let store = Arc::new(MemoryStorage::new());
+        let gateway = FakeGateway::start(Behavior::ToolThenReply {
+            name: "write_object".into(),
+            arguments:
+                r#"{"path":"session/big.txt","content":"twenty bytes exactly","action":"Saving"}"#
+                    .into(),
+            reply: "Done.".into(),
+        })
+        .await;
+        let mut options = options(&gateway, None);
+        options.storage = Some(store.clone());
+        options.max_written_bytes = limit;
+        let space = scope::Space {
+            workspace_id: options.workspace_id,
+            agent_id: options.agent_id,
+            session_id: options.session_id,
+        };
+        runner()
+            .run(&component(), user("Save it."), String::new(), options)
+            .await
+            .expect("run");
+
+        let key = scope::resolve(&space, "session/big.txt").unwrap();
+        assert_eq!(
+            store.read(&key, 0, u32::MAX).await.is_ok(),
+            lands,
+            "a 20-byte write under a {limit}-byte limit"
+        );
+    }
 }
 
 /// A path that names no scope is answered with how to write one.

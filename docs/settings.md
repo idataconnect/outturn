@@ -120,6 +120,7 @@ below is workspace-overridable, and so overridable per agent too.
 | `workspace_file_access` | Workspace files | `read` | `none`, `read`, `read_write` |
 | `approve_new_hosts` | Approve new hosts | `reach_freely` | `reach_freely` (Reach freely), `approve_new_hosts` (Ask for approval) |
 | `max_tool_rounds` | Model calls per turn | 100 | 0 to 10,000; zero is no limit |
+| `max_written_bytes` | File writes per turn | 1 GiB | 0 to 1 TiB, in bytes; zero is no limit |
 | `context_budget` | Conversation size sent to the model | 400,000 bytes | 1,000 to 100,000,000 bytes |
 | `session_naming` | When to name a conversation | `after_first_turn` | `after_message`, `after_first_turn`, `after_second_turn` |
 | `dictation` | Dictation | `on` | `off`, `on`; an operator ceiling, per workspace only |
@@ -134,6 +135,10 @@ Where each is explained in depth:
 - `approve_new_hosts`: [above](#a-setting-that-is-a-ceiling), and
   [egress.md](egress.md).
 - `max_tool_rounds`: a runaway guard, not a budget; nothing more to it.
+- `max_written_bytes`: the same, for files. Counted as bytes are sent, so a
+  write that would cross it is refused before anything lands. Requests through
+  the gateway and listings of storage have fixed limits of their own, a
+  thousand each per turn, in the runtime rather than here.
 - `context_budget`: [compaction.md](compaction.md).
 - `session_naming`: [below](#session-naming), since nothing else covers it.
 - `dictation`: the microphone in the message box, using the browser's own

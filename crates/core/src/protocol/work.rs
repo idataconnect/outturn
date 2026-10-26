@@ -58,6 +58,10 @@ pub struct ExecuteRequest {
     /// limit, for work that legitimately runs long.
     #[serde(default)]
     pub max_tool_rounds: Option<i64>,
+    /// Bytes this turn may write to files. Zero disables the limit; absent,
+    /// from an older API, is the runtime's default.
+    #[serde(default)]
+    pub max_written_bytes: Option<u64>,
     /// The reply this turn is writing, so a message absorbed mid-turn can
     /// name what took it.
     pub reply_id: Uuid,
