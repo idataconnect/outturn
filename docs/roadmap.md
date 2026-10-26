@@ -64,10 +64,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### The gateway
 
-- Fail-open controls: the breaker, cancel and the spend-cap hold all proceed
-  when Postgres is unreachable (`router.rs`, `crates/core/src/breaker.rs`).
-  Argued in comments; say it in the operator docs, since the kill switch is
-  one of them.
 - One shared runtime key for every pod. Sound as designed, but a leak takes
   every workspace's turns from outside the cluster. Per-pod keys issued at
   registration, or mTLS, when there is a second cluster to care about.

@@ -261,6 +261,32 @@ running deployment would be a way around them.
 for local development, and `scripts/deploy-prod.sh` refuses manifests that set
 it.
 
+## When the database is unreachable
+
+Four controls are checked by the gateway against Postgres while a turn is
+running, and all four *fail open*: if the gateway cannot reach the database, it
+carries on as though nothing had been asked.
+
+- **Stop.** A person pressing stop is not seen, and the turn runs to its end.
+- **Holds and the kill switch.** A hold taken on a workspace or session does
+  not cut a stream already running.
+- **Spend caps.** A cap reached mid-turn does not cut the stream either.
+- **The provider breaker.** A failing provider is not rested, and every
+  replica keeps calling it.
+
+This is deliberate: refusing every model call because the database blinked
+would turn a short outage into a total one, and the thing being guarded
+against is usually rarer than the blip. What bounds it is that only turns
+*already running* are affected. A new turn cannot start without the database
+-- the API hands out work from it, and checks holds and caps before it does --
+so the exposure is the turns in flight when it went, each bounded by its
+round, request and write limits.
+
+If you pull the kill switch during a database outage, scale the runtime to zero
+as well: `kubectl -n outturn scale deployment outturn-runtime --replicas=0`.
+A runtime stopping waits for its turns up to the deployment's grace period,
+then ends them.
+
 ## Upgrades
 
 Take a backup first. Then, in this order:
