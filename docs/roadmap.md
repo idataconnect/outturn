@@ -19,9 +19,9 @@ Everything below it is the longer view. An item leaves this list when it is
 committed and verified, and new work goes in where it belongs, not at the end.
 
 1. **What the review of 2026-10-20 left** (*From the review*, below): the
-   ten fixes, the retention sweeps, the indexes and name uniqueness are in;
-   the prompt and sandbox boundaries go next, then the rest in the order
-   given there.
+   ten fixes, the retention sweeps, the indexes, name uniqueness, the prompt
+   and sandbox boundaries and the gateway's findings are in; the rest goes in
+   the order given there.
 2. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
 3. **A first real call to Amazon Bedrock**, by whoever first has an AWS
@@ -572,6 +572,20 @@ tier that validates.
 ## Undesigned, and wanted
 
 Named by other work rather than chosen, which is the usual way a gap is found.
+
+**Signing in by email.** Today an account signs in with a password and
+nothing else. Wanted: a link sent by email that signs the person in -- a
+magic link -- chosen by the operator at the platform level as password only,
+email only, or either. Email needs the platform able to send it, so choosing
+it means configuring outgoing mail first: a sender address and a relay, with
+the credential sealed like any other, and a test message before the choice
+is allowed to take effect, since a deployment that switches to email with
+mail that does not arrive has locked everybody out. Once mail can be sent it
+also carries what passwords cannot do alone: setting a first password from an
+invitation rather than having an admin choose one, and resetting a forgotten
+one. A link is single-use, short-lived, and bound to the browser that asked
+for it where that can be done without making a phone that opens mail in
+another app useless.
 
 **Fixed headers on a connection.** Some APIs want a constant on every call
 besides the credential -- an organization or tenant header, an API version.
