@@ -298,6 +298,7 @@ are near before changing it.
   [personalities.md](docs/personalities.md),
   [admin-agent.md](docs/admin-agent.md).
 - Running a release: [deployment.md](docs/deployment.md).
+- Sending mail (designed, not built): [mail.md](docs/mail.md).
 - Storage and search: [storage.md](docs/storage.md),
   [streaming-storage.md](docs/streaming-storage.md),
   [document-extraction.md](docs/document-extraction.md),

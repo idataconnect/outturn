@@ -93,6 +93,7 @@ nav:
       - Reaching the outside:
           - Egress: egress.md
           - Integrations: integrations.md
+          - Mail: mail.md
           - Credential bindings: credential-bindings.md
           - Client credentials: client-credentials.md
           - Sealed credentials: sealed-credentials.md

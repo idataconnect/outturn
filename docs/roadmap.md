@@ -573,6 +573,11 @@ tier that validates.
 
 Named by other work rather than chosen, which is the usual way a gap is found.
 
+**Sending mail.** Designed in [mail.md](mail.md): outgoing mail as a platform
+capability -- the existing job queue, sent by the gateway over SMTP, tested
+before anything relies on it -- then approval notifications, then signing in
+by email, below.
+
 **Signing in by email.** Today an account signs in with a password and
 nothing else. Wanted: a link sent by email that signs the person in -- a
 magic link -- chosen by the operator at the platform level as password only,
