@@ -39,10 +39,14 @@ workspaces and hosts is what [credential-bindings.md](credential-bindings.md)
 adds, and the gateway refuses a variable nobody bound.
 
 And the check a workspace cannot waive: `resolve_and_vet` resolves the name and
-refuses the request if the address is not plainly on the public internet. Every
-private range, loopback, link-local, carrier-grade NAT. The list is of what is
-*not* public rather than of the cluster's own addresses -- a list of ours would
-need maintaining and would be wrong the first time something moved.
+refuses the request if the address is not plainly on the public internet.
+That is decided by what an address may be rather than what it may not: IPv6
+only in global unicast (2000::/3), less the special-purpose blocks inside it
+such as 6to4 and Teredo, and IPv4 only outside every block in IANA's
+special-purpose registry. A list of forbidden ranges came first and kept
+missing some -- NAT64, 6to4, the benchmarking block -- each a way back into the
+network. Nor is it a list of the cluster's own addresses, which would need
+maintaining and would be wrong the first time something moved.
 
 ## Two different concerns, enforced in two places
 

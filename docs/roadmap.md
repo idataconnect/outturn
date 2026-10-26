@@ -64,10 +64,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### The gateway
 
-- The private-address denylist (`crates/core/src/egress/rule.rs`) misses
-  NAT64, 6to4, IPv4-compatible, Teredo and site-local ranges, and 198.18/15
-  and 192.0.0.0/24. Replace it with "global unicast only"; a denylist keeps
-  missing ranges.
 - Fail-open controls: the breaker, cancel and the spend-cap hold all proceed
   when Postgres is unreachable (`router.rs`, `crates/core/src/breaker.rs`).
   Argued in comments; say it in the operator docs, since the kill switch is

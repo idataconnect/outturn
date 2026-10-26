@@ -344,6 +344,14 @@ pub fn rule_for<'a>(rules: &'a [EgressRule], host: &str) -> Option<&'a EgressRul
 /// would be wrong the first time something moved. Everything that is not
 /// plainly on the public internet is refused instead, so a new internal
 /// service is covered by having been born.
+///
+/// "Plainly on the public internet" is decided by what an address is allowed
+/// to be rather than by what it must not be. A list of forbidden ranges was
+/// how this began, and it kept missing some: NAT64 and 6to4, which carry an
+/// IPv4 address inside a v6 one, the v4-compatible and site-local ranges, the
+/// benchmarking block. IPv6 is accepted only in global unicast, 2000::/3, and
+/// not in the special-purpose blocks inside it; IPv4 only outside every block
+/// IANA's special-purpose registry names.
 pub fn is_forbidden(addr: IpAddr) -> bool {
     match addr {
         IpAddr::V4(v4) => is_forbidden_v4(v4),
@@ -358,31 +366,61 @@ pub fn is_forbidden(addr: IpAddr) -> bool {
     }
 }
 
+/// IPv4's special-purpose blocks, from IANA's registry, as (network, length).
+/// Some are globally reachable in principle -- AS112, AMT -- and none is
+/// anything an agent has a reason to reach.
+const SPECIAL_V4: &[([u8; 4], u8)] = &[
+    ([0, 0, 0, 0], 8),       // "this network", which some stacks route home
+    ([10, 0, 0, 0], 8),      // private
+    ([100, 64, 0, 0], 10),   // carrier-grade NAT, which a cluster may sit behind
+    ([127, 0, 0, 0], 8),     // loopback
+    ([169, 254, 0, 0], 16),  // link local, where the metadata services are
+    ([172, 16, 0, 0], 12),   // private
+    ([192, 0, 0, 0], 24),    // IETF protocol assignments
+    ([192, 0, 2, 0], 24),    // documentation
+    ([192, 31, 196, 0], 24), // AS112
+    ([192, 52, 193, 0], 24), // AMT
+    ([192, 88, 99, 0], 24),  // the old 6to4 relay anycast
+    ([192, 168, 0, 0], 16),  // private
+    ([192, 175, 48, 0], 24), // direct delegation AS112
+    ([198, 18, 0, 0], 15),   // benchmarking
+    ([198, 51, 100, 0], 24), // documentation
+    ([203, 0, 113, 0], 24),  // documentation
+    ([224, 0, 0, 0], 4),     // multicast
+    ([240, 0, 0, 0], 4),     // reserved, and the broadcast address
+];
+
 fn is_forbidden_v4(addr: Ipv4Addr) -> bool {
-    let [a, b, ..] = addr.octets();
-    addr.is_loopback()
-        || addr.is_private()
-        || addr.is_link_local()
-        || addr.is_broadcast()
-        || addr.is_multicast()
-        || addr.is_documentation()
-        || addr.is_unspecified()
-        // Carrier-grade NAT, which a cluster may sit behind.
-        || (a == 100 && (64..128).contains(&b))
-        // Reserved, and 0.0.0.0/8, which some stacks route to localhost.
-        || a == 0
-        || a >= 240
+    let addr = u32::from(addr);
+    SPECIAL_V4.iter().any(|(net, len)| {
+        let mask = u32::MAX << (32 - u32::from(*len));
+        addr & mask == u32::from(Ipv4Addr::from(*net)) & mask
+    })
 }
 
+/// The special-purpose blocks inside 2000::/3, as (network, length).
+const SPECIAL_V6: &[(u128, u8)] = &[
+    // IETF protocol assignments: Teredo (2001::/32), benchmarking, ORCHID.
+    (0x2001_0000_0000_0000_0000_0000_0000_0000, 23),
+    // Documentation.
+    (0x2001_0db8_0000_0000_0000_0000_0000_0000, 32),
+    // 6to4, an IPv4 address inside a v6 one.
+    (0x2002_0000_0000_0000_0000_0000_0000_0000, 16),
+    // Documentation, the newer block.
+    (0x3fff_0000_0000_0000_0000_0000_0000_0000, 20),
+];
+
 fn is_forbidden_v6(addr: Ipv6Addr) -> bool {
-    let first = addr.segments()[0];
-    addr.is_loopback()
-        || addr.is_multicast()
-        || addr.is_unspecified()
-        // Unique local, fc00::/7 -- the v6 equivalent of a private range.
-        || (first & 0xfe00) == 0xfc00
-        // Link local, fe80::/10, which carries the metadata services.
-        || (first & 0xffc0) == 0xfe80
+    let addr = u128::from(addr);
+    let within = |net: u128, len: u8| {
+        let mask = u128::MAX << (128 - u32::from(len));
+        addr & mask == net & mask
+    };
+    // Global unicast is 2000::/3. Everything outside it -- loopback, unique
+    // local, link and site local, multicast, NAT64's 64:ff9b::/96, the
+    // v4-compatible ::/96 -- is refused by not being inside it.
+    !within(0x2000_0000_0000_0000_0000_0000_0000_0000, 3)
+        || SPECIAL_V6.iter().any(|&(net, len)| within(net, len))
 }
 
 /// What every variable a rule names must start with.
@@ -750,21 +788,21 @@ mod tests {
         // Spelled as a URL spells it, because that is what a rule is matched
         // against.
         for typed in [
-            "2001:db8::1",
-            "[2001:db8::1]",
-            "[2001:db8::1]:8080",
-            "https://[2001:DB8::1]:443/v1",
-            "2001:0db8:0:0:0:0:0:1",
+            "2606:4700::1",
+            "[2606:4700::1]",
+            "[2606:4700::1]:8080",
+            "https://[2606:4700::1]:443/v1",
+            "2606:4700:0:0:0:0:0:1",
         ] {
-            assert_eq!(normalize_host(typed).expect(typed), "[2001:db8::1]");
+            assert_eq!(normalize_host(typed).expect(typed), "[2606:4700::1]");
         }
-        assert!(host_matches("[2001:db8::1]", "[2001:db8::1]"));
+        assert!(host_matches("[2606:4700::1]", "[2606:4700::1]"));
         for typed in [
             "[::1]:8080",
             "::1",
             "[fd00::1]",
-            "[2001:db8::1",
-            "[2001:db8::1]x",
+            "[2606:4700::1",
+            "[2606:4700::1]x",
             "1:2:3",
         ] {
             assert!(normalize_host(typed).is_err(), "{typed:?} was accepted");
@@ -824,7 +862,24 @@ mod tests {
 
     #[test]
     fn the_v6_private_ranges_are_refused() {
-        for addr in ["::1", "fc00::1", "fd12:3456::1", "fe80::1", "::"] {
+        for addr in [
+            "::1",
+            "fc00::1",
+            "fd12:3456::1",
+            "fe80::1",
+            "::",
+            // Site local, deprecated and still routed by some stacks.
+            "fec0::1",
+            // NAT64 and 6to4, each carrying loopback inside.
+            "64:ff9b::7f00:1",
+            "2002:7f00:1::",
+            // IPv4-compatible, and Teredo.
+            "::127.0.0.1",
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+            "2001:db8::1",
+            "3fff::1",
+            "ff02::1",
+        ] {
             assert!(
                 is_forbidden(addr.parse().expect("addr")),
                 "{addr} was allowed"
@@ -864,8 +919,45 @@ mod tests {
     }
 
     #[test]
+    fn the_v4_special_purpose_blocks_are_refused() {
+        for addr in [
+            "0.1.2.3",
+            "10.0.0.1",
+            "100.64.0.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.0.0.8",
+            "192.0.2.1",
+            "192.88.99.1",
+            "192.168.1.1",
+            "198.18.0.1",
+            "198.19.255.255",
+            "198.51.100.1",
+            "203.0.113.1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "255.255.255.255",
+        ] {
+            assert!(
+                is_forbidden(addr.parse().expect("addr")),
+                "{addr} was allowed"
+            );
+        }
+    }
+
+    #[test]
     fn ordinary_public_addresses_are_allowed() {
-        for addr in ["1.1.1.1", "93.184.216.34", "2606:4700::1111"] {
+        for addr in [
+            "1.1.1.1",
+            "93.184.216.34",
+            "172.32.0.1",
+            "198.20.0.1",
+            "2606:4700::1111",
+            "2001:4860:4860::8888",
+            "2a00:1450:4001::1",
+        ] {
             assert!(
                 !is_forbidden(addr.parse().expect("addr")),
                 "{addr} was refused"
