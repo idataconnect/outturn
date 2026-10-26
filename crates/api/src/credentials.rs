@@ -205,6 +205,14 @@ pub async fn create(
     .fetch_one(&state.pool)
     .await
     .map_err(|e| match &e {
+        sqlx::Error::Database(db)
+            if db.is_unique_violation() && db.constraint() == Some("credentials_name_unique") =>
+        {
+            (
+                StatusCode::CONFLICT,
+                format!("there is already a credential named \"{name}\"; choose another name"),
+            )
+        }
         sqlx::Error::Database(db) if db.is_unique_violation() => (
             StatusCode::CONFLICT,
             "a credential with that id already exists".to_string(),

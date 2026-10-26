@@ -13151,7 +13151,12 @@ async fn a_recipe_sets_up_with_one_key() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let account = json(&body)["id"].as_str().unwrap().to_string();
     let mut chains = Vec::new();
-    for links in [&openai["links"], &openai["small"]] {
+    // Named as Set up names them: chain names are unique.
+    let title = openai["title"].as_str().unwrap();
+    for (links, name) in [
+        (&openai["links"], title.to_string()),
+        (&openai["small"], format!("{title}, titles and summaries")),
+    ] {
         let mut ids = Vec::new();
         for model in models_of(links) {
             let (status, body) = h
@@ -13171,7 +13176,7 @@ async fn a_recipe_sets_up_with_one_key() {
             .post(
                 "/v1/platform/chains",
                 Some(&operator),
-                &serde_json::json!({"name": openai["title"], "models": ids}).to_string(),
+                &serde_json::json!({"name": name, "models": ids}).to_string(),
             )
             .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -15130,3 +15135,85 @@ async fn an_invoked_skill_is_stored_beside_the_message_and_brought_into_the_turn
 // it uses.
 #[path = "api/auto_approval.rs"]
 mod auto_approval;
+
+/// Accounts, models and chains are picked by name, so a second of one name is
+/// refused as a conflict -- except a model's name nobody typed, the
+/// catalog's, which takes its account's name after it instead.
+#[tokio::test]
+async fn names_the_platform_picks_by_are_unique() {
+    let h = harness_or_skip!();
+    outturn::api::catalog::at_startup(&h.db.pool).await;
+    let (_acme, operator, _admin) = template_people(&h).await;
+    let json = |body: &str| -> Value { serde_json::from_str(body).unwrap() };
+    let account = |name: &str, url: &str| {
+        serde_json::json!({"name": name, "protocol": "anthropic", "base_url": url}).to_string()
+    };
+
+    let (status, body) = h
+        .post(
+            "/v1/platform/provider-accounts",
+            Some(&operator),
+            &account("Anthropic", "https://api.anthropic.com"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let first = json(&body)["id"].as_str().unwrap().to_string();
+    let (status, body) = h
+        .post(
+            "/v1/platform/provider-accounts",
+            Some(&operator),
+            &account("Anthropic", "https://proxy.example.com"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.contains("\"Anthropic\""), "{body}");
+    let (status, body) = h
+        .post(
+            "/v1/platform/provider-accounts",
+            Some(&operator),
+            &account("Proxy", "https://api.anthropic.com"),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let second = json(&body)["id"].as_str().unwrap().to_string();
+    let (status, body) = send_as(
+        &h,
+        "PATCH",
+        &format!("/v1/platform/provider-accounts/{second}"),
+        &operator,
+        r#"{"name":"Anthropic"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    let model = |account: &str| {
+        serde_json::json!({"account_id": account, "model": "claude-sonnet-5-5"}).to_string()
+    };
+    let (status, body) = h
+        .post("/v1/platform/models", Some(&operator), &model(&first))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let a = json(&body);
+    assert_eq!(a["name"], "Claude Sonnet 5.5");
+    let (status, body) = h
+        .post("/v1/platform/models", Some(&operator), &model(&second))
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let b = json(&body);
+    assert_eq!(b["name"], "Claude Sonnet 5.5 (Proxy)");
+    let (status, body) = send_as(
+        &h,
+        "PATCH",
+        &format!("/v1/platform/models/{}", b["id"].as_str().unwrap()),
+        &operator,
+        r#"{"name":"Claude Sonnet 5.5"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    let chain = serde_json::json!({"name": "assistant", "models": [a["id"]]}).to_string();
+    let (status, body) = h.post("/v1/platform/chains", Some(&operator), &chain).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = h.post("/v1/platform/chains", Some(&operator), &chain).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+}

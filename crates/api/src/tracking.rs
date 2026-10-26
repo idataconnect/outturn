@@ -314,11 +314,17 @@ async fn apply(
         }
     }
     // The name follows the version where it was the catalog's name for the
-    // old one; a name somebody chose stays.
+    // old one; a name somebody chose stays. So does one whose new name another
+    // model has already, since names are unique and the upgrade matters more
+    // than the label.
     sqlx::query(
         "update models set previous_model = model, previous_facts = facts, changed_at = now(), \
              model = $2, catalog_model = $2, snapshot_id = $3, facts = $4, \
-             name = case when name = facts->>'name' then coalesce($4->>'name', name) else name end, \
+             name = case when name = facts->>'name' and not exists ( \
+                             select 1 from models o \
+                             where o.workspace_id is not distinct from models.workspace_id \
+                               and o.name = $4->>'name' and o.id <> models.id) \
+                         then coalesce($4->>'name', name) else name end, \
              pending_model = null, pending_reason = null, \
              pending_adjustments = null, pending_since = null \
          where id = $1",

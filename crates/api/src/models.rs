@@ -198,6 +198,25 @@ pub async fn view(
     }))
 }
 
+/// A write refused by one of the `*_name_unique` indexes, said as a conflict
+/// over the name; anything else stays an internal error. Things here are
+/// listed and picked by name, so two of one name could not be told apart.
+fn name_taken(what: &'static str, name: &str) -> impl FnOnce(sqlx::Error) -> ApiError {
+    let name = name.to_string();
+    move |e| match &e {
+        sqlx::Error::Database(db)
+            if db.is_unique_violation()
+                && db.constraint().is_some_and(|c| c.ends_with("_name_unique")) =>
+        {
+            (
+                StatusCode::CONFLICT,
+                format!("there is already {what} named \"{name}\"; choose another name"),
+            )
+        }
+        _ => internal(e),
+    }
+}
+
 // -- Accounts ------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -244,7 +263,7 @@ pub async fn create_account(
     .bind(&env)
     .execute(&state.pool)
     .await
-    .map_err(internal)?;
+    .map_err(name_taken("an account", &input.name))?;
     tracing::info!(%actor, account = %id, protocol = %input.protocol, "provider account created");
     Ok((
         StatusCode::CREATED,
@@ -318,7 +337,7 @@ pub async fn seal_account_key(
     .bind(actor)
     .execute(&mut *tx)
     .await
-    .map_err(internal)?;
+    .map_err(name_taken("a key", &input.name))?;
     // An id that is a workspace's credential writes nothing, and the account
     // must not be pointed at it: its key is not the platform's to use.
     if written.rows_affected() != 1 {
@@ -397,6 +416,10 @@ pub async fn update_account(
             "this account's key is sealed; it has one key or the other".into(),
         ));
     }
+    let name = input
+        .name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty());
     let r = sqlx::query(
         "update provider_accounts set \
              name = coalesce($2, name), base_url = coalesce($3, base_url), \
@@ -406,17 +429,15 @@ pub async fn update_account(
          returning id, name, protocol, base_url, credential_env, credential_id",
     )
     .bind(id)
-    .bind(
-        input
-            .name
-            .map(|n| n.trim().to_string())
-            .filter(|n| !n.is_empty()),
-    )
+    .bind(&name)
     .bind(&base_url)
     .bind(&env)
     .fetch_one(&state.pool)
     .await
-    .map_err(internal)?;
+    .map_err(name_taken(
+        "an account",
+        name.as_deref().unwrap_or_default(),
+    ))?;
     tracing::info!(%actor, account = %id, "provider account changed");
     Ok(Json(Account {
         id: r.get("id"),
@@ -555,11 +576,28 @@ pub async fn create_model(
             )));
         }
     }
-    let name = input
-        .name
-        .filter(|n| !n.trim().is_empty())
+    let typed = input.name.filter(|n| !n.trim().is_empty());
+    let mut name = typed
+        .clone()
         .or_else(|| facts.as_ref()?["name"].as_str().map(str::to_string))
         .unwrap_or_else(|| asked.clone());
+    // A name nobody typed is the catalog's, which one model at two accounts
+    // shares; the second takes its account's name after it rather than being
+    // refused over a name its operator never chose. A typed name is theirs,
+    // and a clash in it is said.
+    if typed.is_none() {
+        let (taken, account): (bool, Option<String>) = sqlx::query_as(
+            "select exists (select 1 from models where workspace_id is null and name = $1),                     (select name from provider_accounts where id = $2)",
+        )
+        .bind(&name)
+        .bind(input.account_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(internal)?;
+        if let (true, Some(account)) = (taken, account) {
+            name = format!("{name} ({account})");
+        }
+    }
     let id = Uuid::now_v7();
     let (catalog_provider, snapshot) = link.map_or((None, None), |(p, s)| (Some(p), Some(s)));
     let catalog_model = catalog_provider.as_ref().map(|_| asked.clone());
@@ -580,7 +618,7 @@ pub async fn create_model(
     .bind(&tracks)
     .execute(&state.pool)
     .await
-    .map_err(internal)?;
+    .map_err(name_taken("a model", &name))?;
     tracing::info!(%actor, model = %id, name = %asked, tracking = tracks.is_some(), "model configured");
     Ok((
         StatusCode::CREATED,
@@ -628,6 +666,7 @@ pub async fn update_model(
     }
     // Tracking takes the family from the facts it already has; a model
     // entered by hand has none, and is refused rather than tracking nothing.
+    let name = input.name.filter(|n| !n.trim().is_empty());
     let done = sqlx::query(
         "update models set name = coalesce($2, name), overrides = coalesce($3, overrides), \
              tracks = case $4::bool when true then facts->>'family' when false then null \
@@ -636,12 +675,12 @@ pub async fn update_model(
            and ($4::bool is not true or (catalog_provider is not null and facts ? 'family'))",
     )
     .bind(id)
-    .bind(input.name.filter(|n| !n.trim().is_empty()))
+    .bind(&name)
     .bind(input.overrides)
     .bind(input.tracks)
     .execute(&state.pool)
     .await
-    .map_err(internal)?;
+    .map_err(name_taken("a model", name.as_deref().unwrap_or_default()))?;
     if done.rows_affected() == 0 {
         return Err(if input.tracks == Some(true) {
             (
@@ -771,7 +810,7 @@ pub async fn create_chain(
         .bind(&input.name)
         .execute(&mut *tx)
         .await
-        .map_err(internal)?;
+        .map_err(name_taken("a chain", &input.name))?;
     write_links(&mut tx, id, &input.models).await?;
     tx.commit().await.map_err(internal)?;
     tracing::info!(%actor, chain = %id, "chain created");
@@ -798,7 +837,7 @@ pub async fn update_chain(
         .bind(&input.name)
         .execute(&mut *tx)
         .await
-        .map_err(internal)?;
+        .map_err(name_taken("a chain", &input.name))?;
     if done.rows_affected() == 0 {
         return Err(not_found("chain"));
     }
