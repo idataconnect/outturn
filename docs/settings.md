@@ -121,7 +121,7 @@ below is workspace-overridable, and so overridable per agent too.
 | `approve_new_hosts` | Approve new hosts | `reach_freely` | `reach_freely` (Reach freely), `approve_new_hosts` (Ask for approval) |
 | `max_tool_rounds` | Model calls per turn | 100 | 0 to 10,000; zero is no limit |
 | `max_written_bytes` | File writes per turn | 1 GiB | 0 to 1 TiB, in bytes; zero is no limit |
-| `context_budget` | Conversation size sent to the model | 400,000 bytes | 1,000 to 100,000,000 bytes |
+| `context_budget` | Conversation size sent to the model | 400,000 bytes, or two bytes a token of the model's window where less | 1,000 to 100,000,000 bytes; at most two bytes a token of the window |
 | `session_naming` | When to name a conversation | `after_first_turn` | `after_message`, `after_first_turn`, `after_second_turn` |
 | `dictation` | Dictation | `on` | `off`, `on`; an operator ceiling, per workspace only |
 | `auto_approve_max_risk` | Auto-approval | `none` | `none`, `low`, `medium`, `high`; an operator ceiling, per workspace only |

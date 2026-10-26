@@ -2,7 +2,10 @@
 
 Built: `api::chat::summarize`, `worker::summarized` and `worker::store_summary`,
 under the `context_budget` setting, with the trim below it as the floor. The
-design, so it is not rediscovered:
+budget is per model and taken for the chain, the smallest of its models';
+unset, it is 400,000 bytes or two bytes a token of the model's window where
+that is less, and a chosen one larger than that is passed over for the model
+(`model_settings::default_budget`). The design, so it is not rediscovered:
 
 A transcript outlives any model's window, and the window is a property of the
 route rather than of the session — so a turn can arrive at a smaller context

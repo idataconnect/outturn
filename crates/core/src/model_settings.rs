@@ -34,6 +34,29 @@ pub const PLATFORM_WORKSPACE: Uuid = Uuid::from_u128(1);
 pub const DEFAULT_REASONING_EFFORT: &str = "low";
 pub const DEFAULT_CONTEXT_BUDGET: u64 = 400_000;
 
+/// Bytes of conversation a model's window holds with room to spare: two to a
+/// token. Text runs three to four bytes a token, so this is about two thirds of
+/// the window, and the rest is for what the budget does not count -- the
+/// reply, tool results arriving mid-turn, the request's own framing.
+pub const BYTES_PER_WINDOW_TOKEN: u64 = 2;
+
+/// The largest conversation a model with this window should be sent, in
+/// bytes; `None` where nobody said how large its window is.
+pub fn largest_budget(facts: &ModelFacts) -> Option<u64> {
+    facts
+        .context_window
+        .map(|tokens| u64::from(tokens) * BYTES_PER_WINDOW_TOKEN)
+}
+
+/// The budget when nobody chose one: the catalog's default, or less for a
+/// model whose window would not hold that. A 32k-token model sent the default
+/// was a turn refused for its length, or a conversation cut by the provider.
+pub fn default_budget(facts: &ModelFacts) -> u64 {
+    largest_budget(facts).map_or(DEFAULT_CONTEXT_BUDGET, |most| {
+        most.min(DEFAULT_CONTEXT_BUDGET)
+    })
+}
+
 /// The `reasoning_effort` value that turns thinking off and repeats the
 /// turn's prompt to the model. Never reaches a provider.
 pub const REPEAT_PROMPT: &str = "none_repeat_prompt";
@@ -70,10 +93,11 @@ pub fn valid_for(key: &str, value: &Value, facts: &ModelFacts) -> bool {
             Some(level) => facts.efforts.is_empty() || facts.efforts.iter().any(|e| e == level),
             None => false,
         },
-        // Bytes against tokens: four to a token is generous for any text, so
-        // only a budget no model could hold is refused.
-        "context_budget" => match (value.as_u64(), facts.context_window) {
-            (Some(bytes), Some(tokens)) => bytes <= u64::from(tokens) * 4,
+        // Bytes against tokens, with the window's room for the reply kept:
+        // four to a token once passed here, which on code or JSON filled the
+        // window and left the reply nowhere to go.
+        "context_budget" => match (value.as_u64(), largest_budget(facts)) {
+            (Some(bytes), Some(most)) => bytes <= most,
             (Some(_), None) => true,
             _ => false,
         },
@@ -98,10 +122,7 @@ pub fn adjust(key: &str, value: &Value, facts: &ModelFacts) -> Value {
                 .min_by_key(|(distance, i, _)| (*distance, *i))
                 .map_or(Value::from("none"), |(_, _, e)| Value::from(e.as_str()))
         }
-        "context_budget" => match facts.context_window {
-            Some(tokens) => Value::from(u64::from(tokens) * 4),
-            None => value.clone(),
-        },
+        "context_budget" => largest_budget(facts).map_or_else(|| value.clone(), Value::from),
         _ => value.clone(),
     }
 }
@@ -194,7 +215,7 @@ fn cascade(
         },
         context_budget: pick("context_budget")
             .and_then(|v| v.as_u64())
-            .unwrap_or(DEFAULT_CONTEXT_BUDGET),
+            .unwrap_or_else(|| default_budget(facts)),
     }
 }
 
@@ -226,6 +247,28 @@ mod tests {
         assert_eq!(s.reasoning_effort, DEFAULT_REASONING_EFFORT);
         assert_eq!(s.temperature, None);
         assert_eq!(s.context_budget, DEFAULT_CONTEXT_BUDGET);
+    }
+
+    /// Unset, the budget follows the model: a window too small for the
+    /// default gets two bytes a token of it, a large one the default, and one
+    /// nobody described the default.
+    #[test]
+    fn an_unset_budget_follows_the_models_window() {
+        let window = |tokens| ModelFacts {
+            context_window: tokens,
+            ..ModelFacts::default()
+        };
+        let budget = |facts: &ModelFacts| cascade(Vec::new(), None, facts).context_budget;
+        assert_eq!(budget(&window(Some(32_768))), 65_536);
+        assert_eq!(budget(&window(Some(1_000_000))), DEFAULT_CONTEXT_BUDGET);
+        assert_eq!(budget(&window(None)), DEFAULT_CONTEXT_BUDGET);
+        // A chosen budget the window cannot hold is passed over, here for the
+        // default the window allows.
+        let chosen = rows(&[("context_budget", json!(300_000), 5)]);
+        assert_eq!(
+            cascade(chosen, None, &window(Some(32_768))).context_budget,
+            65_536
+        );
     }
 
     /// Nearer wins, and at one level the model's own row beats the row for
@@ -281,7 +324,7 @@ mod tests {
             json!("high")
         );
         assert_eq!(adjust("temperature", &json!(0.4), &two), Value::Null);
-        assert_eq!(adjust("context_budget", &json!(9000), &two), json!(4000));
+        assert_eq!(adjust("context_budget", &json!(9000), &two), json!(2000));
     }
 
     #[test]

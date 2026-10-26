@@ -293,7 +293,9 @@ fn settings() -> Vec<Setting> {
                           decides when the oldest tool results start being dropped \
                           to make room. Set it well under the model's real window: \
                           the reply, tool results arriving mid-turn and the request \
-                          itself all need space that this does not count.",
+                          itself all need space that this does not count. Unset, \
+                          it follows the model: this default, or two bytes a token \
+                          of the model's window where that is less.",
             // Bytes rather than tokens, because nothing here counts tokens and
             // a per-model tokeniser is wrong for every model it was not built
             // for. Roughly three bytes to a token is the pessimistic end, so
