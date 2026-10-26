@@ -67,7 +67,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 - One shared runtime key for every pod. Sound as designed, but a leak takes
   every workspace's turns from outside the cluster. Per-pod keys issued at
   registration, or mTLS, when there is a second cluster to care about.
-- Small: the Gemini translation ignores `reasoning_effort`.
 
 ### Shape of the code
 

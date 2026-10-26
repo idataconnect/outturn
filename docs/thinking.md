@@ -74,6 +74,13 @@ The Anthropic translation sends, on a model that thinks:
 - **No sampling parameters** to a model that refuses them, and no forced tool
   choice to one that refuses that; `required` becomes `auto`.
 
+The Gemini translation sends the effort as
+`generationConfig.thinkingConfig.thinkingLevel`, from the levels the catalog
+says the model offers: `none` and `minimal` are its lowest, since no Gemini 3
+model turns thinking off, `xhigh` and `max` its highest, and a level it does
+not offer is left to its default rather than sent to be refused. A 2.5 model,
+which takes a token budget rather than a level, is sent nothing.
+
 Which model is which comes from the [model catalog](models.md): always-on
 thinking, the effort levels offered, whether sampling and forced tool choice
 are accepted, whether mid-conversation system messages are, and the output

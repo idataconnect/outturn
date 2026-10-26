@@ -2059,11 +2059,42 @@ pub fn openai_to_gemini_for(
     if let Some(max) = req.max_tokens {
         generation.insert("maxOutputTokens".into(), serde_json::json!(max));
     }
+    if let Some(level) = gemini_thinking_level(req) {
+        generation.insert(
+            "thinkingConfig".into(),
+            serde_json::json!({ "thinkingLevel": level }),
+        );
+    }
     if !generation.is_empty() {
         body["generationConfig"] = serde_json::Value::Object(generation);
     }
 
     Ok(body)
+}
+
+/// The thinking level to ask a Gemini model for, from the effort asked of it
+/// and the levels the catalog says it offers.
+///
+/// Clamped as Anthropic's is: "none" and "minimal" are its lowest, since no
+/// Gemini 3 model turns thinking off; "xhigh" and "max" its highest; and a
+/// level it does not offer otherwise is left to its default rather than sent
+/// to be refused. A model the catalog gives no levels -- 2.5, which takes a
+/// token budget instead -- is left alone.
+fn gemini_thinking_level(req: &ChatCompletionRequest) -> Option<String> {
+    let asked = req.reasoning_effort.as_deref()?;
+    let offered = &req.facts.as_ref()?.efforts;
+    let level = match asked {
+        "none" | "minimal" => offered.first(),
+        "xhigh" | "max" => offered.last(),
+        asked => offered.iter().find(|e| *e == asked),
+    };
+    if level.is_none() && !offered.is_empty() {
+        tracing::warn!(
+            effort = asked,
+            "an effort this model does not offer; left to its default"
+        );
+    }
+    level.cloned()
 }
 
 /// Gemini's usage object, in the canonical shape.
@@ -3061,6 +3092,36 @@ mod gemini_tests {
         );
         assert_eq!(body["contents"].as_array().expect("contents").len(), 1);
         assert_eq!(body["contents"][0]["role"], "user");
+    }
+
+    /// The effort asked for becomes Gemini's thinking level, clamped to the
+    /// levels the model offers, and nothing is sent for a model with none.
+    #[test]
+    fn an_effort_becomes_a_thinking_level_the_model_offers() {
+        let ask = |effort: &str, offered: &[&str]| {
+            let request: ChatCompletionRequest = serde_json::from_value(serde_json::json!({
+                "model": "gemini-x",
+                "messages": [{"role": "user", "content": "hi"}],
+                "reasoning_effort": effort,
+            }))
+            .expect("request");
+            let mut request = request;
+            request.facts = Some(std::sync::Arc::new(outturn_core::facts::ModelFacts {
+                efforts: offered.iter().map(|e| e.to_string()).collect(),
+                ..Default::default()
+            }));
+            openai_to_gemini(&request).expect("translate")["generationConfig"]["thinkingConfig"]
+                ["thinkingLevel"]
+                .clone()
+        };
+        let flash = ["minimal", "low", "medium", "high"];
+        let pro = ["low", "medium", "high"];
+        assert_eq!(ask("medium", &flash), "medium");
+        assert_eq!(ask("none", &flash), "minimal");
+        assert_eq!(ask("none", &pro), "low");
+        assert_eq!(ask("max", &pro), "high");
+        assert_eq!(ask("medium", &["low", "high"]), serde_json::Value::Null);
+        assert_eq!(ask("high", &[]), serde_json::Value::Null);
     }
 
     /// The assistant is called "model" here, and a turn that used tools has
