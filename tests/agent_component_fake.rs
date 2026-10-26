@@ -1433,6 +1433,49 @@ async fn a_look_at_an_image_counts_toward_the_round_limit() {
     );
 }
 
+/// A stopped turn makes no more paid calls, whatever the component does. The
+/// stop arrives with a round that asks to look at an image; the default guest
+/// runs the round's tools before it next checks the flag, and the host refuses
+/// the look rather than trusting a component to have checked first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stopped_turn_is_refused_its_next_model_call() {
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let gateway = FakeGateway::start(Behavior::ToolThenStopped {
+        name: "describe_image".into(),
+        arguments: r#"{"path":"session/cat.png","question":"what animal?","action":"Looking at the picture"}"#.into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+    let key = scope::resolve(&space, "session/cat.png").unwrap();
+    store
+        .write(&key, b"\x89PNG\r\n\x1a\n not really a picture")
+        .await
+        .expect("seed");
+
+    let _ = runner()
+        .run(
+            &component(),
+            user("What animal is in cat.png?"),
+            String::new(),
+            options,
+        )
+        .await;
+
+    assert_eq!(
+        gateway.requests().len(),
+        1,
+        "the look was made after the turn was stopped"
+    );
+}
+
 // -- Object storage -----------------------------------------------------------
 
 /// An agent reads and writes only within its own workspace's space.

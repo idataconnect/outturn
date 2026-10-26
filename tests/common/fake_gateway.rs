@@ -72,6 +72,10 @@ pub enum Behavior {
         steer: String,
         reply: String,
     },
+    /// Ask for a tool, and report that somebody stopped the turn, on every
+    /// request. A guest that heeds the stop makes one call; one that runs
+    /// the tool anyway is what the host has to refuse.
+    ToolThenStopped { name: String, arguments: String },
     /// Ask for a tool in a reply that was cut off at the token limit, so the
     /// arguments cannot be trusted.
     TruncatedToolCall { name: String, arguments: String },
@@ -383,6 +387,18 @@ async fn completions_stream(
             ndjson(lines)
         }
 
+        Behavior::ToolThenStopped { name, arguments } => ndjson(vec![
+            format!(
+                "{}\n",
+                tool_chunk(Some("call_stop"), Some(&name), &arguments)
+            ),
+            format!("{}\n", chunk_json("", Some("tool_calls"))),
+            format!(
+                "{}\n",
+                serde_json::json!({ "outturn": { "cancelled": true } })
+            ),
+        ]),
+
         Behavior::TextThenSteer {
             first,
             steer,
@@ -588,6 +604,7 @@ async fn completions(
         Behavior::LoadThenToolThenReply { reply, .. } => reply,
         Behavior::AlwaysToolCall { content, .. } => content,
         Behavior::TruncatedToolCall { .. } => String::new(),
+        Behavior::ToolThenStopped { .. } => String::new(),
         Behavior::ToolThenSteer { reply, .. } => reply,
         Behavior::TextThenSteer { reply, .. } => reply,
         Behavior::TruncateAfter { text, .. } => text,

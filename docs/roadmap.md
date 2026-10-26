@@ -56,10 +56,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### Prompt and sandbox boundaries
 
-- Cancellation is not enforced by the host: `chat` in
-  `crates/runtime/src/component.rs` never checks `cancelled`; only the
-  default guest's loop does. Refuse a `chat` call once the turn is cancelled,
-  so a component that ignores the flag still stops.
 - Only `chat` rounds are capped. `fetch`, `list_objects` and `describe_image`
   have no per-turn count, and no workspace has a storage quota, so one turn can
   fill the bucket. A per-turn count on each, and a quota on `write_object`

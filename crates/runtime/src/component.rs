@@ -1037,6 +1037,9 @@ impl outturn::agent::host::HostObjectReader for AgentHost {
     }
 }
 
+/// What a model call made after the turn was stopped is told.
+const STOPPED: &str = "this turn has been stopped; no more model calls may be made in it";
+
 impl AgentHost {
     /// Counts a model call against the turn's limit, before it is made.
     ///
@@ -1045,7 +1048,18 @@ impl AgentHost {
     /// politely asked again. Every paid call takes a round -- a look at an
     /// image as much as a round of the conversation -- or a model looping on
     /// one of them is unbounded on the other.
+    ///
+    /// A stopped turn is refused here too. The default guest checks the flag
+    /// between rounds, but a component is workspace code: one that ignores it
+    /// would otherwise go on spending after somebody pressed stop.
     fn take_round(&mut self) -> Result<(), String> {
+        if self.cancelled {
+            tracing::warn!(
+                session_id = %self.session_id,
+                "guest asked for a model call after its turn was stopped"
+            );
+            return Err(STOPPED.into());
+        }
         self.rounds_used += 1;
         if self.max_tool_rounds > 0 && self.rounds_used > self.max_tool_rounds {
             tracing::warn!(
