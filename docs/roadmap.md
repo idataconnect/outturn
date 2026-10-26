@@ -20,21 +20,12 @@ committed and verified, and new work goes in where it belongs, not at the end.
 
 1. **What the review of 2026-10-20 left** (*From the review*, below): the
    ten fixes, the retention sweeps and the indexes are in; name uniqueness
-   (in the order given there) and the prompt and sandbox boundaries go next,
-   then the rest in the order given there.
-2. **Deployable outturn**: what an operator needs to run a release rather
-   than a checkout. Images published from CI to the registry, tagged by
-   commit and by release; a production build of the UI in an image of its
-   own, serving the built files and proxying `/v1`; branding read at startup
-   rather than baked in at build time, so one public image serves every
-   deployment; a deployable base (`k8s/deploy`) of the three tiers and their
-   policies, pointed at a Postgres and an object store rather than running
-   them; and `docs/deployment.md` -- the secrets to generate, an infra
-   repository pinning a commit, upgrades (roll the gateway before the API,
-   since it reads what the API commits), backups and rollback.
-3. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
+   (in the order given there) goes next, then reviewing the wizard's
+   suggestions (*Undesigned, and wanted*, below), then the prompt and sandbox
+   boundaries and the rest in the order given there.
+2. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
-4. **A first real call to Amazon Bedrock**, by whoever first has an AWS
+3. **A first real call to Amazon Bedrock**, by whoever first has an AWS
    account: everything in [bedrock.md](bedrock.md) is tried against
    stand-ins only, and the two-doors recipe says so until then.
 
