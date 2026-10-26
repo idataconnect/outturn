@@ -43,6 +43,7 @@ import Login from './pages/Login'
 import Agents from './pages/Agents'
 import Skills from './pages/Skills'
 import SkillEditor from './pages/SkillEditor'
+import SkillReview from './pages/SkillReview'
 import SkillImport from './pages/SkillImport'
 import AgentEditor from './pages/AgentEditor'
 import Chat from './pages/Chat'
@@ -604,6 +605,14 @@ function Shell() {
             element={
               <RequireAuthority authority="skills:write">
                 <SkillImport />
+              </RequireAuthority>
+            }
+          />
+          <Route
+            path="/skills/:id/review"
+            element={
+              <RequireAuthority authority="skills:write">
+                <SkillReview />
               </RequireAuthority>
             }
           />

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router'
 import { FileCode, RefreshCw, Trash2 } from 'lucide-react'
 
 import { ApiError } from '../lib/api'
@@ -11,7 +12,7 @@ import {
   type Regenerated,
   type SkillSource as Source,
 } from '../lib/skills'
-import SuggestedApprovals from './SuggestedApprovals'
+import { acceptable } from '../lib/approvalSuggestion'
 
 const KIND: Record<Annotation['kind'], string> = {
   note: 'Note',
@@ -281,27 +282,23 @@ export default function SkillSource({
         </form>
       )}
 
-      {editable && outline && (
-        <SuggestedApprovals
-          operations={outline.operations}
-          annotations={source.annotations}
-          baseUrl={source.base_url}
-          busy={busy}
-          onConfirm={(rules) =>
-            void run(async () => {
-              for (const r of rules) {
-                await annotate(skillId, {
-                  level: 'operation',
-                  target: r.target,
-                  kind: 'approval',
-                  value: r.value,
-                })
-              }
-              setProposal(null)
-              await load()
-            })
-          }
-        />
+      {editable && outline && outline.operations.some((o) => o.suggested_approval) && (
+        <div className="mt-4 rounded-md border border-surface-200 dark:border-surface-800 p-3 text-xs">
+          <p className="text-surface-700 dark:text-surface-300">
+            {(() => {
+              const left = acceptable(outline.operations, source.annotations).length
+              return left === 0
+                ? 'Every guess at how risky an operation is has been confirmed or changed.'
+                : `${left} of this skill's operations have a guessed risk still to confirm.`
+            })()}
+          </p>
+          <Link
+            to={`/skills/${skillId}/review`}
+            className="mt-2 inline-block rounded-md border border-surface-300 dark:border-surface-700 px-2 py-1"
+          >
+            Review the guesses
+          </Link>
+        </div>
       )}
 
       {editable && (

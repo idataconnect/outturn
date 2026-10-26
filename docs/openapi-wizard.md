@@ -467,8 +467,10 @@ Each one changes exactly one thing in the output, and says which:
   `x-risk` extension in the specification taking precedence, and the amount
   field and currency read from the body's field names and what the
   specification says of them ([auto-approval.md](auto-approval.md), "Where the
-  wizard comes in"). Each is confirmed or changed one at a time, or all
-  together. A rule binds the operation's path parameters as well as its body
+  wizard comes in"). They are confirmed on a page of their own,
+  `/skills/{id}/review`, which walks them in groups -- money, deletes,
+  changes, then reads, folded away -- with each confirmed or changed one at a
+  time or a group's guesses at once, written one by one so the count moves. A rule binds the operation's path parameters as well as its body
   fields, with its `matches` naming them (`DELETE /invoices/{id}`), so a delete
   by id is bound by the id; an operation with neither has nothing for a rule to
   bind, so it is shown but cannot be confirmed.

@@ -107,3 +107,46 @@ export function acceptable(
       o.suggested_approval?.gate && !cannotWrite(o.suggested_approval) && !ruled.has(o.name),
   )
 }
+
+/** The groups a review walks, in the order it walks them: what moves money
+ *  first, what is lost if it goes wrong next, and what only reads last. */
+export const GROUPS = [
+  {
+    key: 'money',
+    title: 'Money',
+    about: 'Operations that send an amount: payments, invoices, refunds and the like.',
+  },
+  {
+    key: 'delete',
+    title: 'Deletes',
+    about: 'Operations that remove something, which usually cannot be undone.',
+  },
+  {
+    key: 'write',
+    title: 'Changes',
+    about: 'Operations that create or change something.',
+  },
+  {
+    key: 'read',
+    title: 'Reads',
+    about: 'Operations that only look things up. They are not asked about unless you choose to.',
+  },
+] as const
+
+export type Group = (typeof GROUPS)[number]['key']
+
+export function groupOf(o: Operation): Group {
+  const s = o.suggested_approval
+  if (s?.amount) return 'money'
+  const method = o.method.toUpperCase()
+  if (method === 'DELETE') return 'delete'
+  if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return 'read'
+  return 'write'
+}
+
+/** What each risk means, without the vocabulary behind it. */
+export const RISK_WORDS: Record<Risk, string> = {
+  low: 'Routine',
+  medium: 'Worth a look',
+  high: 'Serious',
+}

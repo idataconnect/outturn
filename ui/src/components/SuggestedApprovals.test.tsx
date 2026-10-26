@@ -90,12 +90,15 @@ describe('suggested approvals', () => {
   it('shows each operation with its risk, whether it is gated, and its amount', () => {
     setup()
     const row = within(screen.getByTestId('suggestion-create_charge'))
-    expect(row.getByText('high')).toBeInTheDocument()
-    expect(row.getByText('Gated')).toBeInTheDocument()
+    expect(row.getByText(/Serious/)).toBeInTheDocument()
+    expect(row.getByText('Asks first')).toBeInTheDocument()
     expect(row.getByText(/amount_pence · GBP/)).toBeInTheDocument()
+    // Reads are folded away until asked for.
+    expect(screen.queryByTestId('suggestion-list_charges')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show the reads (1)' }))
     const read = within(screen.getByTestId('suggestion-list_charges'))
-    expect(read.getByText('low')).toBeInTheDocument()
-    expect(read.getByText('Not gated')).toBeInTheDocument()
+    expect(read.getByText(/Routine/)).toBeInTheDocument()
+    expect(read.getByText('Goes without asking')).toBeInTheDocument()
   })
 
   it('writes nothing until a suggestion is confirmed', () => {
@@ -126,6 +129,7 @@ describe('suggested approvals', () => {
 
   it('cannot confirm what is not gated or has nothing for a rule to be about', () => {
     setup()
+    fireEvent.click(screen.getByRole('button', { name: 'Show the reads (1)' }))
     expect(screen.getByRole('button', { name: 'Confirm list_charges' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Confirm send_ping' })).toBeDisabled()
     expect(screen.getAllByText(/cannot be written/).length).toBeGreaterThan(0)
@@ -146,14 +150,28 @@ describe('suggested approvals', () => {
     expect(options.map((o) => o.textContent)).toEqual(['No amount'])
   })
 
-  it('accepts every suggestion that is gated and can have a rule', () => {
+  it('walks the guesses in groups, money first, and confirms a group at once', () => {
     const onConfirm = setup()
-    fireEvent.click(screen.getByRole('button', { name: /Accept all suggested \(2\)/ }))
+    const titles = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)
+    expect(titles).toEqual(['Money (1)', 'Deletes (1)', 'Changes (1)', 'Reads (1)'])
+    expect(screen.getByRole('status')).toHaveTextContent('0 of 2 confirmed.')
+    fireEvent.click(screen.getAllByRole('button', { name: 'Confirm the 1 left as guessed' })[1])
     const [[rules]] = onConfirm.mock.calls
-    expect(rules.map((r: { target: string }) => r.target)).toEqual([
-      'create_charge',
-      'delete_customer',
-    ])
+    expect(rules.map((r: { target: string }) => r.target)).toEqual(['delete_customer'])
+  })
+
+  it('says how far a confirm has got while it writes', () => {
+    render(
+      <SuggestedApprovals
+        operations={[charge, remove]}
+        annotations={[]}
+        baseUrl={null}
+        busy
+        progress={{ done: 1, total: 2 }}
+        onConfirm={vi.fn()}
+      />,
+    )
+    expect(screen.getByRole('status')).toHaveTextContent('Writing 1 of 2…')
   })
 
   it('leaves an operation that already has a rule alone', () => {
@@ -167,8 +185,9 @@ describe('suggested approvals', () => {
         created_at: '',
       },
     ])
-    // Only the delete is left for a bulk accept.
-    expect(screen.getByRole('button', { name: /Accept all suggested \(1\)/ })).toBeEnabled()
+    // Only the delete is left to confirm.
+    expect(screen.getAllByRole('button', { name: /Confirm the \d+ left/ })).toHaveLength(1)
+    expect(screen.getByRole('status')).toHaveTextContent('1 of 2 confirmed.')
     expect(screen.queryByRole('button', { name: 'Confirm create_charge' })).not.toBeInTheDocument()
     expect(onConfirm).not.toHaveBeenCalled()
   })
@@ -176,7 +195,7 @@ describe('suggested approvals', () => {
   it('writes the override the operator chose instead of the guess', () => {
     const onConfirm = setup()
     fireEvent.click(screen.getByRole('button', { name: 'Change create_charge' }))
-    fireEvent.change(screen.getByLabelText('Risk'), { target: { value: 'medium' } })
+    fireEvent.click(screen.getByLabelText(/Worth a look/))
     fireEvent.change(screen.getByLabelText('Currency'), { target: { value: 'usd' } })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm as changed' }))
     const [[rules]] = onConfirm.mock.calls
@@ -209,6 +228,7 @@ describe('suggested approvals', () => {
         onConfirm={onConfirm}
       />,
     )
+    fireEvent.click(screen.getByRole('button', { name: 'Show the reads (1)' }))
     fireEvent.click(screen.getByRole('button', { name: 'Change list_charges' }))
     fireEvent.click(screen.getByLabelText('Needs approval'))
     fireEvent.click(screen.getByRole('button', { name: 'Confirm as changed' }))

@@ -20,8 +20,7 @@ committed and verified, and new work goes in where it belongs, not at the end.
 
 1. **What the review of 2026-10-20 left** (*From the review*, below): the
    ten fixes, the retention sweeps, the indexes and name uniqueness are in;
-   reviewing the wizard's suggestions (*Undesigned, and wanted*, below) goes
-   next, then the prompt and sandbox boundaries and the rest in the order
+   the prompt and sandbox boundaries go next, then the rest in the order
    given there.
 2. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
@@ -605,19 +604,6 @@ tier that validates.
 ## Undesigned, and wanted
 
 Named by other work rather than chosen, which is the usual way a gap is found.
-
-**Reviewing what an import suggests, as a page of its own.** Driving the
-wizard on a real specification (Bigcapital, about three hundred operations)
-on 2026-10-25: *Accept all suggested* is the right idea and the wrong shape.
-It writes every rule at once with no progress shown, so a long list sits
-silent until it finishes; it reads as "approve everything" when what is
-being asked is "confirm how risky each operation is"; and it is a section
-at the foot of the skill's source rather than a step of its own. Wanted: a
-review page that walks the suggestions in groups (reads, writes, money,
-deletes), says plainly that each risk is a guess to confirm, shows progress
-while it writes, and works on a phone, which nobody has checked yet. Plain
-words throughout: an operator should not need to know what a gate, a bind or
-a risk band is to finish it.
 
 **Fixed headers on a connection.** Some APIs want a constant on every call
 besides the credential -- an organization or tenant header, an API version.
