@@ -68,7 +68,7 @@ impl LlmProvider for AnthropicProvider {
             .json(&anthropic_req)
             .send()
             .await
-            .map_err(|e| ProviderError::transport(&e))?;
+            .map_err(|e| ProviderError::sending(&e))?;
 
         if !resp.status().is_success() {
             return Err(ProviderError::from_response(resp).await);
@@ -80,7 +80,7 @@ impl LlmProvider for AnthropicProvider {
             .map_err(|e| ProviderError::transport(&e))?;
 
         translate::anthropic_to_openai(&anthropic_resp)
-            .map_err(|e| ProviderError::Translation(e.to_string()))
+            .map_err(|e| ProviderError::transport(format!("the answer could not be read: {e}")))
     }
 
     /// Streams a completion, translating Anthropic's events as they arrive.
@@ -108,7 +108,7 @@ impl LlmProvider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ProviderError::transport(&e))?;
+            .map_err(|e| ProviderError::sending(&e))?;
 
         if !response.status().is_success() {
             return Err(ProviderError::from_response(response).await);

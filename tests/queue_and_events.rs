@@ -4273,6 +4273,84 @@ async fn a_retired_model_falls_over_to_the_next_route_and_is_then_skipped() {
     drop(db);
 }
 
+/// A provider that fails one way every time, for the walk across routes.
+struct Failing(fn() -> outturn::gateway::llm::provider::ProviderError);
+
+#[async_trait::async_trait]
+impl outturn::gateway::llm::provider::LlmProvider for Failing {
+    fn provider(&self) -> outturn::gateway::llm::provider::Provider {
+        outturn::gateway::llm::provider::Provider::Mock
+    }
+
+    async fn chat_completion(
+        &self,
+        _: &outturn::llm::ChatCompletionRequest,
+    ) -> Result<outturn::llm::ChatCompletionResponse, outturn::gateway::llm::provider::ProviderError>
+    {
+        Err((self.0)())
+    }
+
+    fn endpoint(&self) -> String {
+        "failing".to_string()
+    }
+}
+
+/// A request that never reached the first route goes to the next. One that
+/// reached it and whose answer was lost does not: the provider may have done
+/// the work and billed for it, and the next route would do it again.
+#[tokio::test]
+async fn only_a_request_that_never_arrived_goes_to_the_next_route() {
+    use outturn::gateway::llm::provider::ProviderError;
+    use tower::ServiceExt;
+
+    let (db, workspace_id) = setup().await;
+    let seed = [12u8; 32];
+    let validator = || {
+        outturn::auth::TokenValidator::new(
+            &outturn::auth::TokenMinter::public_key_of(&seed),
+            outturn::auth::AUDIENCE_GATEWAY,
+        )
+        .expect("validator")
+    };
+    let token = outturn::auth::TokenMinter::new(&seed)
+        .expect("minter")
+        .mint_turn(
+            Uuid::now_v7(),
+            workspace_id,
+            outturn::egress::commit::empty_root(),
+            outturn::egress::gate::Gates::none().root(workspace_id),
+        )
+        .expect("token");
+
+    let cases: [(fn() -> ProviderError, u16); 2] = [
+        (
+            || ProviderError::Unreached("connection refused".into()),
+            200,
+        ),
+        (|| ProviderError::transport("operation timed out"), 502),
+    ];
+    for (failure, expected) in cases {
+        let state = outturn::gateway::GatewayState::new(
+            vec![
+                std::sync::Arc::new(Failing(failure)),
+                std::sync::Arc::new(outturn::gateway::llm::provider::mock::MockProvider::new()),
+            ],
+            validator(),
+        );
+        let app = outturn::gateway::routes(std::sync::Arc::new(state));
+        let request = axum::http::Request::post("/v1/chat/completions")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#,
+            ))
+            .unwrap();
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), expected, "after {}", failure());
+    }
+    drop(db);
+}
+
 // Accounts, models and chains, from traffic_routes ---------------------------
 
 /// A row of traffic_routes, as deployments before chains held them.

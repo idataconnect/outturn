@@ -110,6 +110,11 @@ pub enum ProviderError {
         detail: String,
     },
     Translation(String),
+    /// The request never reached the provider: the connection was refused, or
+    /// the name did not resolve. Apart from `Upstream` without a status, which
+    /// is a request that was sent and then lost -- one the provider may have
+    /// taken, and billed for, which another route must not be sent again.
+    Unreached(String),
 }
 
 impl ProviderError {
@@ -233,6 +238,28 @@ impl ProviderError {
         }
     }
 
+    /// Whether the provider may have taken the request: it was sent, and then
+    /// the answer was lost or could not be used -- a read that timed out, a
+    /// body cut off, a reply that would not parse. Sending it to the next
+    /// route would bill the prompt twice, so the walk stops there.
+    ///
+    /// An answer that is a failure, a refusal to connect, and a rate limit
+    /// are none of these: the provider said it did not do the work, or never
+    /// heard the request.
+    pub fn may_have_been_taken(&self) -> bool {
+        matches!(self, Self::Upstream { status: None, .. })
+    }
+
+    /// The error from sending a request, which is either one that never
+    /// arrived or one whose answer was lost after it did.
+    pub fn sending(e: &reqwest::Error) -> Self {
+        if e.is_connect() {
+            Self::Unreached(crate::egress::transport::strip_url(&e.to_string()))
+        } else {
+            Self::transport(e)
+        }
+    }
+
     /// Builds the transport case, where there is no status to read.
     ///
     /// reqwest ends its errors with ` for url (...)`, and the detail is
@@ -251,6 +278,9 @@ impl std::fmt::Display for ProviderError {
         match self {
             Self::Unavailable => write!(f, "the model provider is unavailable"),
             Self::RateLimited => write!(f, "the model provider is rate limiting these requests"),
+            Self::Unreached(detail) => {
+                write!(f, "the model provider could not be reached: {detail}")
+            }
             Self::Upstream { .. } if self.is_malformed_reply() => write!(
                 f,
                 "the model wrote a tool call its arguments could not be read \
@@ -267,7 +297,9 @@ impl std::fmt::Display for ProviderError {
                 let what = match status {
                     Some(400..=499) => "refused the request",
                     Some(_) => "failed",
-                    None => "could not be reached",
+                    // Sent, and then lost: a timeout, a cut body, an answer
+                    // that would not read. Never reaching it is `Unreached`.
+                    None => "did not finish answering",
                 };
                 let reason = reason_in(detail);
                 let reason = reason.as_deref().unwrap_or(detail);
@@ -503,12 +535,26 @@ mod tests {
     }
 
     #[test]
-    fn a_transport_failure_says_the_provider_could_not_be_reached() {
-        let refused = ProviderError::transport("connection refused");
+    fn a_refused_connection_says_the_provider_could_not_be_reached() {
+        let refused = ProviderError::Unreached("connection refused".into());
         assert_eq!(
             refused.to_string(),
             "the model provider could not be reached: connection refused"
         );
+        assert!(!refused.may_have_been_taken());
+    }
+
+    #[test]
+    fn a_lost_answer_says_so_and_may_have_been_taken() {
+        let lost = ProviderError::transport("operation timed out");
+        assert_eq!(
+            lost.to_string(),
+            "the model provider did not finish answering: operation timed out"
+        );
+        assert!(lost.may_have_been_taken());
+        // An answer that is a failure is the provider saying it did not.
+        assert!(!upstream("overloaded").may_have_been_taken());
+        assert!(!ProviderError::RateLimited.may_have_been_taken());
     }
 
     #[test]

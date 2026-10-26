@@ -53,6 +53,9 @@ pub fn observation_for(error: &super::llm::provider::ProviderError) -> policy::O
         // endpoint failing rather than answering, but one caller's truncated
         // stream is not yet an outage, so it waits for company.
         Upstream { .. } => policy::Observation::Undetermined,
+        // Weighed as it was before it had its own name, as a transport
+        // error: a refused connection from one caller may be that caller's.
+        Unreached(_) => policy::Observation::Undetermined,
         RateLimited | Translation(_) => policy::Observation::NotEvidence,
     }
 }

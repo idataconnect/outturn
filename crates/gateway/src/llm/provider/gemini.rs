@@ -72,7 +72,7 @@ impl LlmProvider for GeminiProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ProviderError::transport(&e))?;
+            .map_err(|e| ProviderError::sending(&e))?;
 
         if !response.status().is_success() {
             return Err(Self::fail(response).await);
@@ -83,7 +83,8 @@ impl LlmProvider for GeminiProvider {
             .await
             .map_err(|e| ProviderError::transport(&e))?;
 
-        translate::gemini_to_openai(&value).map_err(|e| ProviderError::Translation(e.to_string()))
+        translate::gemini_to_openai(&value)
+            .map_err(|e| ProviderError::transport(format!("the answer could not be read: {e}")))
     }
 
     async fn chat_completion_stream(
@@ -107,7 +108,7 @@ impl LlmProvider for GeminiProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ProviderError::transport(&e))?;
+            .map_err(|e| ProviderError::sending(&e))?;
 
         if !response.status().is_success() {
             return Err(Self::fail(response).await);

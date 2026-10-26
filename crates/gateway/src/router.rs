@@ -607,6 +607,8 @@ impl Passed {
 fn passed_because(e: &ProviderError) -> &'static str {
     if e.is_model_gone() {
         "is no longer offered"
+    } else if e.may_have_been_taken() {
+        "was sent the request and its answer was lost, so it was not sent again"
     } else if matches!(e, ProviderError::RateLimited)
         || matches!(
             e,
@@ -765,9 +767,23 @@ async fn chat_completions(
                 // A model that is gone is this route's failure, not the
                 // request's: the next route may have one that is not.
                 let fatal = e.is_client_error() && !e.is_model_gone();
+                // Sent, and the answer lost: the provider may have done the
+                // work and billed for it, and the next route would do it
+                // again. Said loudly, since nothing else records the attempt.
+                let taken = e.may_have_been_taken();
+                if taken {
+                    tracing::warn!(
+                        provider = ?provider.provider(),
+                        endpoint = %provider.endpoint(),
+                        model = %model,
+                        workspace_id = %claims.workspace_id,
+                        "a request was sent and its answer lost; it may have been billed, \
+                         so it is not sent to another route"
+                    );
+                }
                 passed.because(passed_because(&e));
                 last_error = Some(e);
-                if fatal {
+                if fatal || taken {
                     break;
                 }
                 continue;
@@ -1021,9 +1037,23 @@ async fn chat_completions_stream(
                 // A model that is gone is this route's failure, not the
                 // request's: the next route may have one that is not.
                 let fatal = e.is_client_error() && !e.is_model_gone();
+                // Sent, and the answer lost: the provider may have done the
+                // work and billed for it, and the next route would do it
+                // again. Said loudly, since nothing else records the attempt.
+                let taken = e.may_have_been_taken();
+                if taken {
+                    tracing::warn!(
+                        provider = ?provider.provider(),
+                        endpoint = %provider.endpoint(),
+                        model = %model,
+                        workspace_id = %claims.workspace_id,
+                        "a request was sent and its answer lost; it may have been billed, \
+                         so it is not sent to another route"
+                    );
+                }
                 passed.because(passed_because(&e));
                 last_error = Some(e);
-                if fatal {
+                if fatal || taken {
                     break;
                 }
                 continue;

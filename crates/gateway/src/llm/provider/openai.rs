@@ -60,7 +60,7 @@ impl LlmProvider for OpenAiProvider {
             .json(request)
             .send()
             .await
-            .map_err(|e| ProviderError::transport(&e))?;
+            .map_err(|e| ProviderError::sending(&e))?;
 
         if !response.status().is_success() {
             return Err(Self::fail(response).await);
@@ -93,7 +93,7 @@ impl LlmProvider for OpenAiProvider {
             .json(&streaming)
             .send()
             .await
-            .map_err(|e| ProviderError::transport(&e))?;
+            .map_err(|e| ProviderError::sending(&e))?;
 
         if !response.status().is_success() {
             return Err(Self::fail(response).await);

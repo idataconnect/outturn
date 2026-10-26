@@ -158,6 +158,15 @@ eventually serves records which one it was. "Why did we fall back at 3pm" is
 answered with "your key was rate-limited", not "Anthropic was down", which
 matters when the surcharge is on the bill.
 
+The walk goes on to the next row only when the request was not taken: the
+provider answered with a failure, asked to be retried, or was never reached at
+all (a refused connection, a name that did not resolve). A request that was
+sent and whose answer was then lost -- a read that timed out, a body cut off,
+a reply that would not parse -- ends the walk instead. The provider may have
+done the work and billed for it, and the next row would do it again; the
+gateway logs the attempt with its endpoint, model and workspace, since nothing
+else records it.
+
 Today a 429 does not count at all, so a workspace hammering their own key fails
 the row and moves on every call. With a per-credential breaker the row is
 skipped for the cooldown instead, which is cheaper and is the backoff the

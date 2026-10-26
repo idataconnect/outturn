@@ -64,11 +64,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### The gateway
 
-- Non-stream failover re-sends a request the provider already accepted
-  (`crates/gateway/src/router.rs`, the route loop): a read timeout or cut body
-  moves to the next route, billing the prompt twice with the first attempt
-  recorded nowhere. Record the attempt, and fail over only on errors that
-  mean the request was not taken.
 - Unbounded buffers in the tier holding every key: `sse_payloads` on a line
   with no newline, whole error bodies in `from_response`
   (`crates/gateway/src/llm/provider/mod.rs`), and the Bedrock frame buffered
