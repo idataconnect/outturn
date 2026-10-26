@@ -268,6 +268,11 @@ fn malformed(what: &str) -> ProviderError {
 /// frame is left in the buffer for the next read.
 fn take_frame(buf: &mut Vec<u8>) -> Result<Option<Frame>, ProviderError> {
     const PRELUDE: usize = 12;
+    // The format's own ceiling on a message, headers included. A prelude
+    // declaring more is refused before it is waited for: the frame is held
+    // whole until its checksum can be read, and the length is the sender's
+    // word, in the one tier that holds every key.
+    const MAX_FRAME: usize = 16 * 1024 * 1024 + 128 * 1024;
     if buf.len() < PRELUDE {
         return Ok(None);
     }
@@ -280,6 +285,9 @@ fn take_frame(buf: &mut Vec<u8>) -> Result<Option<Frame>, ProviderError> {
     // A frame is at least its prelude, its headers and the closing checksum.
     if total < PRELUDE + headers_len + 4 {
         return Err(malformed("frame shorter than its headers"));
+    }
+    if total > MAX_FRAME {
+        return Err(malformed("frame longer than the format allows"));
     }
     if buf.len() < total {
         return Ok(None);
@@ -483,6 +491,22 @@ mod tests {
             .map(|e| e.map_err(|e| e.to_string()))
             .collect()
             .await
+    }
+
+    /// A prelude declaring a frame longer than the format allows is refused
+    /// on the prelude alone, rather than waited for and held.
+    #[test]
+    fn a_frame_declaring_too_much_is_refused_before_it_is_held() {
+        let mut out = Vec::new();
+        out.extend_from_slice(&u32::MAX.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        let crc = crc32fast::hash(&out);
+        out.extend_from_slice(&crc.to_be_bytes());
+        let e = take_frame(&mut out).expect_err("a 4 GiB frame was waited for");
+        assert!(
+            e.to_string().contains("longer than the format allows"),
+            "{e}"
+        );
     }
 
     /// Bedrock's body is Anthropic's, with the model moved to the path and

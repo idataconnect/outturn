@@ -64,10 +64,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### The gateway
 
-- Unbounded buffers in the tier holding every key: `sse_payloads` on a line
-  with no newline, whole error bodies in `from_response`
-  (`crates/gateway/src/llm/provider/mod.rs`), and the Bedrock frame buffered
-  to its declared total before the checksum is checked. Cap each.
 - The private-address denylist (`crates/core/src/egress/rule.rs`) misses
   NAT64, 6to4, IPv4-compatible, Teredo and site-local ranges, and 198.18/15
   and 192.0.0.0/24. Replace it with "global unicast only"; a denylist keeps

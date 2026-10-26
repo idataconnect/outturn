@@ -231,7 +231,7 @@ impl ProviderError {
         if status.as_u16() == 429 {
             return Self::RateLimited;
         }
-        let detail = response.text().await.unwrap_or_default();
+        let detail = capped_text(response, MAX_ERROR_BODY).await;
         Self::Upstream {
             status: Some(status.as_u16()),
             detail: format!("{status}: {detail}"),
@@ -348,6 +348,29 @@ fn reason_in(detail: &str) -> Option<String> {
 /// about what a payload is. One sends fragments of a single shape and stops at
 /// a sentinel; another sends a sequence of differently-typed events and stops
 /// by ending. What they share is exactly this framing, and no more.
+/// Bytes of a failed response's body kept for its error. Enough for any
+/// provider's error object; the rest is a body that echoes what it was sent,
+/// which the gateway has no reason to hold in full.
+const MAX_ERROR_BODY: usize = 64 * 1024;
+
+/// Bytes of one server-sent line held while its newline is awaited. A
+/// stream's lines are one chunk of a reply each; one that grows past this
+/// without ending is a stream that will not, and is refused rather than held.
+const MAX_SSE_LINE: usize = 8 * 1024 * 1024;
+
+/// A response's body as text, read only as far as `cap`.
+async fn capped_text(mut response: reqwest::Response, cap: usize) -> String {
+    let mut body = Vec::new();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let room = cap.saturating_sub(body.len());
+        body.extend_from_slice(&chunk[..chunk.len().min(room)]);
+        if body.len() >= cap {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&body).into_owned()
+}
+
 pub fn sse_payloads<S>(
     stream: S,
 ) -> impl futures::Stream<Item = Result<serde_json::Value, ProviderError>>
@@ -411,6 +434,16 @@ where
                                 (stream, buffer, decoder, true),
                             ));
                         }
+                        // Everything before the last newline was read above,
+                        // so what is held is one line still arriving.
+                        if buffer.len() > MAX_SSE_LINE && !buffer.contains('\n') {
+                            return Some((
+                                Err(ProviderError::transport(
+                                    "the stream sent a line longer than the gateway will hold",
+                                )),
+                                (stream, String::new(), decoder, true),
+                            ));
+                        }
                     }
                     Some(Err(e)) => return Some((Err(e), (stream, buffer, decoder, true))),
                     // Ended without a sentinel; nothing further to emit.
@@ -424,6 +457,26 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line that grows past the cap without ending is refused, and what it
+    /// held is let go, rather than held until the provider stops sending.
+    #[tokio::test]
+    async fn an_endless_stream_line_is_refused() {
+        use futures::StreamExt;
+        let piece = bytes::Bytes::from(vec![b'x'; 1024 * 1024]);
+        let endless = futures::stream::iter(
+            std::iter::repeat_n(piece, MAX_SSE_LINE / (1024 * 1024) + 2).map(Ok),
+        );
+        let out: Vec<_> = sse_payloads(endless).collect().await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        let e = out[0]
+            .as_ref()
+            .expect_err("a line with no end was accepted");
+        assert!(
+            e.to_string().contains("longer than the gateway will hold"),
+            "{e}"
+        );
+    }
 
     fn upstream(detail: &str) -> ProviderError {
         ProviderError::Upstream {
