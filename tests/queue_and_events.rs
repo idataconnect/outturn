@@ -4551,7 +4551,7 @@ async fn seal_provider_key(
     let sealed = seal::seal(&public, &binding, secret).unwrap();
     sqlx::query(
         "insert into credentials (id, workspace_id, name, binding, sealed, key_id) \
-         values ($1, null, 'key', $2, $3, $4)",
+         values ($1, null, 'key ' || $1::text, $2, $3, $4)",
     )
     .bind(id)
     .bind(&binding)
