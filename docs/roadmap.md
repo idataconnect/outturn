@@ -56,12 +56,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### Prompt and sandbox boundaries
 
-- The summarizer promotes tool output to the user role
-  (`crates/api/src/chat/summarize.rs`, the message building): results become
-  "[result of a tool call]" user messages, and the summary is then stored as
-  assistant text the rest of the session trusts. Wrap results in the same
-  untrusted delimiters the platform preamble uses for turns
-  (`crates/api/src/skill/mod.rs`, the preamble) and tell the summarizer so.
 - Cancellation is not enforced by the host: `chat` in
   `crates/runtime/src/component.rs` never checks `cancelled`; only the
   default guest's loop does. Refuse a `chat` call once the turn is cancelled,

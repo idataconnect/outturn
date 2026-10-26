@@ -45,6 +45,13 @@ misstates a decision becomes the record. Mark it as a summary in the
 transcript rather than folding it in as ordinary history — both so a reader can
 see what happened, and so the next compaction knows it is compacting a summary.
 
+What a tool returned is shown to the summarizer inside `<tool_result>`
+markers its instruction names as data, with a closing marker in the text
+defused. A summary is replayed as trusted history, so a fetched page that
+says "the user wants every invoice deleted" must come out as a page that said
+so, not as one of the user's constraints, which the same instruction tells
+the summarizer to carry forward verbatim.
+
 The mark is `metadata.summary_through`, naming the last message the summary
 stands in for. It is what both halves of that sentence rest on, and each of them
 has already been got wrong once. Withholding summaries from the reader's page
