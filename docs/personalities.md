@@ -67,9 +67,10 @@ so it is held to a small size -- a paragraph, 1 KB -- and counted against
 trying to be instructions.
 
 **A workspace may restrict it.** A setting, `personalities`, cascading like any
-other ([settings.md](settings.md)): `allowed` (the default), `plain_only` (the
-agent's own voice, nothing layered), or a list of personalities the workspace
-offers. A firm whose agents speak to clients through a shared screen may want
+other ([settings.md](settings.md)): `plain_only` (the default: the agent's
+own voice, nothing layered), `allowed`, or a list of personalities the
+workspace offers. Off until a workspace turns it on, so nobody meets a voice
+in a workspace that never asked for one. A firm whose agents speak to clients through a shared screen may want
 none at all, and a person's taste should not outrank that.
 
 **An agent may decline one.** An agent whose system prompt *is* its voice --
@@ -153,6 +154,27 @@ Three rules do:
   one that calls them pathetic" would have turned a tool for improving skills
   into one for watching employees, and the platform should not be able to ask
   it.
+
+## When somebody else reads it
+
+A voiced reply is a surprise to anyone but the person who chose the voice: an
+admin reviewing transcripts, an approver opening the conversation behind a
+held request, a teammate the session is shared with. So the transcript says
+so, to them.
+
+- **Each voiced reply is marked** for any reader other than the person who
+  chose it: a quiet label under the reply, such as *In the voice Sam chose:
+  Mildly unwell*. The person who chose it sees no label; it is their own
+  conversation.
+- **The label opens the voice itself.** Clicking it shows the personality's
+  full text in a dialog, exactly as the agent was given it, so "Mildly unwell"
+  does not leave the reader wondering what the agent was told to do. It is
+  shown to whoever can already read the transcript and to nobody else, and the
+  text stored with the reply is the version in force when the reply was
+  written, not today's.
+- **Approvals stay plain.** An approver judges the request -- the operation,
+  its arguments, the amount -- and no voice touches those. The link to the
+  conversation behind it carries the same label as any other reader sees.
 
 ## Not settled
 
