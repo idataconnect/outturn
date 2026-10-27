@@ -240,9 +240,8 @@ workspace code. Narrow it if yours has a stable range.
 
 ### A model inside your network
 
-Most deployments call a hosted provider and need nothing here. A model served
-inside your own network -- a server on the LAN, a pod in the cluster -- has
-to be let through twice, and the second is easy to miss:
+A model served inside your own network -- a server on the LAN, a pod in the
+cluster -- has to be let through twice, and the second is easy to miss:
 
 1. **The gateway's own check.** Private addresses are refused unless the host
    and port are named in `OUTTURN_INTERNAL_HOSTS`, such as
