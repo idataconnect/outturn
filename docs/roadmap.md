@@ -592,6 +592,16 @@ one. A link is single-use, short-lived, and bound to the browser that asked
 for it where that can be done without making a phone that opens mail in
 another app useless.
 
+**Sizing a conversation in tokens.** Shelved until it can be exact. The
+budget is in bytes because providers tokenize differently and the
+conversation is sized before it is known which model answers. Counting
+exactly is possible for most: OpenAI's own models with their public
+tokenizer, locally; Anthropic, Gemini and llama.cpp servers through their
+token-counting endpoints, which is a request per turn through the gateway.
+An OpenAI-compatible server running some other model has no exact count. An
+estimate from the provider-reported prompt tokens of the previous turn was
+considered and set aside for being an estimate.
+
 **Fixed headers on a connection.** Some APIs want a constant on every call
 besides the credential -- an organization or tenant header, an API version.
 A skill's operations leave every header out of their tools

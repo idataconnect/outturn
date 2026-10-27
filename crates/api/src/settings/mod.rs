@@ -580,6 +580,21 @@ pub fn validate(setting: &Setting, value: &serde_json::Value) -> Result<(), Sett
 mod tests {
     use super::*;
 
+    /// The help button beside a setting opens `settings/#<key>`, so every
+    /// setting needs a section there with its key as the anchor; one added
+    /// without would open the page at its top.
+    #[test]
+    fn every_setting_has_a_section_in_the_docs() {
+        let docs = include_str!("../../../../docs/settings.md");
+        for s in catalog() {
+            assert!(
+                docs.contains(&format!("{{#{}}}", s.key)),
+                "docs/settings.md has no section headed {{#{}}}",
+                s.key
+            );
+        }
+    }
+
     #[test]
     fn defaults_satisfy_their_own_kinds() {
         for s in catalog() {

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import { CircleHelp } from 'lucide-react'
+
 import { ApiError, api } from '../lib/api'
+import { docsLink } from '../lib/brand'
 
 type Kind =
   | { type: 'number'; min: number; max: number; step: number; nullable: boolean }
@@ -206,8 +209,22 @@ export default function SettingsCascade({
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium text-surface-900 dark:text-surface-100">
+                <p className="flex items-center gap-1.5 text-sm font-medium text-surface-900 dark:text-surface-100">
                   {s.label}
+                  {docsLink(`settings/#${s.key}`) && (
+                    // Each setting has a section of its own in the settings
+                    // docs, headed with its key as the anchor.
+                    <a
+                      href={docsLink(`settings/#${s.key}`)!}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`About ${s.label}`}
+                      title={`About ${s.label}`}
+                      className="text-surface-400 hover:text-surface-700 dark:hover:text-surface-200"
+                    >
+                      <CircleHelp size={14} aria-hidden />
+                    </a>
+                  )}
                 </p>
                 <p className="mt-1 text-xs text-surface-600 dark:text-surface-400">
                   {s.description}

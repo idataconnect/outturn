@@ -92,6 +92,7 @@ the API alone and the seal key the gateway alone.
 | `OUTTURN_BRAND_LOGO` | ui | A same-origin path to the mark, such as `/brand/logo.svg` |
 | `OUTTURN_BRAND_TAGLINE` | ui | A line under the name on the login page |
 | `OUTTURN_THEME` | ui | A shipped theme by name (`hollowbrook`), or `/brand/<file>.css` |
+| `OUTTURN_DOCS_URL` | ui | Where the help buttons beside settings link to. Unset, the published documentation; a URL for a copy of your own; `off` for none |
 | `OUTTURN_INTERNAL_HOSTS` | api, gateway | Private hosts an egress rule may still reach; see [egress.md](egress.md) |
 | `OUTTURN_CREDENTIAL_BINDINGS` | api, gateway | See [credential-bindings.md](credential-bindings.md) |
 | `OUTTURN_TIKA_URL` | api, runtime | Document extraction; see [document-extraction.md](document-extraction.md) |

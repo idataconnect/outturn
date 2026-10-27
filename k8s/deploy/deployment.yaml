@@ -438,6 +438,14 @@ spec:
                   name: outturn-config
                   key: OUTTURN_THEME
                   optional: true
+            # Where the help buttons beside settings link to: this release's
+            # documentation by default, a copy of the deployment's own, or off.
+            - name: OUTTURN_DOCS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_DOCS_URL
+                  optional: true
           livenessProbe:
             httpGet:
               path: /healthz

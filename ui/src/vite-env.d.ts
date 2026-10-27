@@ -11,6 +11,7 @@ interface ImportMetaEnv {
   readonly VITE_BRAND_LOGO?: string
   /** An optional line under the wordmark on the login page. */
   readonly VITE_BRAND_TAGLINE?: string
+  readonly VITE_DOCS_URL?: string
   /** Which file in `src/themes/` sets the color tokens. Defaults to "outturn". */
   readonly VITE_THEME?: string
 }

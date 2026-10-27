@@ -40,6 +40,28 @@ describe('loadBrand', () => {
     expect(document.querySelectorAll('link[rel="stylesheet"]')).toHaveLength(0)
   })
 
+  it('points the help buttons where the container says, or nowhere', async () => {
+    let brand = await fresh()
+    await brand.loadBrand(respond(JSON.stringify({ docs: '' })))
+    expect(brand.docsLink('settings/#temperature')).toBe(
+      'https://idataconnect.github.io/outturn/settings/#temperature',
+    )
+
+    brand = await fresh()
+    await brand.loadBrand(respond(JSON.stringify({ docs: 'https://docs.example.com/outturn' })))
+    expect(brand.docsLink('settings/#temperature')).toBe(
+      'https://docs.example.com/outturn/settings/#temperature',
+    )
+
+    brand = await fresh()
+    await brand.loadBrand(respond(JSON.stringify({ docs: 'off' })))
+    expect(brand.docsLink('settings/#temperature')).toBeNull()
+
+    brand = await fresh()
+    await brand.loadBrand(respond(JSON.stringify({ docs: 'javascript:alert(1)' })))
+    expect(brand.docsLink('settings/#temperature')).toMatch(/^https:\/\/idataconnect/)
+  })
+
   // `npm run dev`: Vite answers an unknown path with index.html.
   it('keeps the build branding when the answer is not JSON', async () => {
     const brand = await fresh()

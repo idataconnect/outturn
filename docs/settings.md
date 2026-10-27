@@ -126,26 +126,108 @@ below is workspace-overridable, and so overridable per agent too.
 | `dictation` | Dictation | `on` | `off`, `on`; an operator ceiling, per workspace only |
 | `auto_approve_max_risk` | Auto-approval | `none` | `none`, `low`, `medium`, `high`; an operator ceiling, per workspace only |
 
-Where each is explained in depth:
+## Each setting
 
-- `reasoning_effort`: the repetition choice is [below](#prompt-repetition).
-- `agent_file_access`, `workspace_file_access`: the `agent/` and `workspace/`
-  scopes in [storage.md](storage.md). Session files are always read and
-  write, and an agent can always read what it may write.
-- `approve_new_hosts`: [above](#a-setting-that-is-a-ceiling), and
-  [egress.md](egress.md).
-- `max_tool_rounds`: a runaway guard, not a budget; nothing more to it.
-- `max_written_bytes`: the same, for files. Counted as bytes are sent, so a
-  write that would cross it is refused before anything lands. Requests through
-  the gateway and listings of storage have fixed limits of their own, a
-  thousand each per turn, in the runtime rather than here.
-- `context_budget`: [compaction.md](compaction.md).
-- `session_naming`: [below](#session-naming), since nothing else covers it.
-- `dictation`: the microphone in the message box, using the browser's own
-  speech recognition, which in most browsers sends the audio to the
-  browser's maker to transcribe. On by default, since that custodian already
-  sees everything typed into the page; see [who may override](#who-may-override)
-  for why it is a ceiling.
+What each one is for, and when to change it. The help button beside a
+setting in the app opens its section here.
+
+### Temperature {#temperature}
+
+How much the model varies its wording from one answer to the next. Lower
+suits an agent that follows a procedure and should answer the same way each
+time; higher suits drafting and brainstorming. Left unset, the provider's own
+default applies. Some models take no temperature at all, and the setting is
+skipped for them.
+
+### Thinking before answering {#reasoning_effort}
+
+How much a model that can reason does so before it answers. Higher answers
+hard questions better and takes longer and costs more; lower is quicker and
+cheaper. Off makes most models noticeably worse at multi-step work, and a
+model that cannot stop thinking is asked for its lowest level instead. Each model offers its own levels, and a
+level it does not offer is moved to the nearest one it does. Off with prompt
+repetition is explained [below](#prompt-repetition).
+
+### Agent files {#agent_file_access}
+
+What an agent may do in `agent/`, the files it keeps from one conversation to
+the next: notes, a running list, something it built up over time. Read only
+lets it use files somebody put there without changing them. See
+[storage.md](storage.md) for the three scopes.
+
+### Workspace files {#workspace_file_access}
+
+The same for `workspace/`, the files every agent in the workspace shares --
+price lists, policies, templates. Read only is the default, so one agent
+cannot change what the others rely on.
+
+### Approve new hosts {#approve_new_hosts}
+
+Whether an agent reaching a public website it has not used before in this
+conversation needs a person to say yes first. Hosts a skill declares are
+already allowed and are not asked about. Ask for approval suits an agent
+that browses on somebody's behalf; reach freely suits one that only calls the
+services its skills name. See [egress.md](egress.md).
+
+### Model calls per turn {#max_tool_rounds}
+
+How many times one turn may call the model. Each step an agent takes -- a
+tool call and its result -- is a call, so a turn that does a lot of work
+needs more. It stops an agent that is stuck repeating itself. Zero removes
+the limit, for agents that run long jobs on purpose.
+
+### File writes per turn {#max_written_bytes}
+
+How many bytes one turn may write to files. It stops an agent stuck writing
+in a loop from filling the store. A write that would go past it is refused
+before anything is stored. Raise it for agents that produce large files on
+purpose, such as exports; zero removes the limit.
+
+### Conversation size sent to the model {#context_budget}
+
+How much of a conversation is sent to the model on each turn, in bytes. A
+long conversation eventually outgrows any model, and when it reaches this
+size the oldest tool results are dropped first, then the conversation is
+summarized ([compaction.md](compaction.md)).
+
+Left unset it follows each model: 400,000 bytes, or two bytes per token of
+the model's context window where that is less. That leaves room for the
+reply and for tool results that arrive during the turn, which this does not
+count.
+
+It is in bytes because a token is counted differently by every provider, and
+the conversation has to be sized before it is known which model will answer.
+When a chain has several models, the conversation is sized for the smallest
+window among them.
+
+Set it yourself when:
+
+- a model's context window is not in the catalog -- a local model you added
+  by hand, say. Use about two bytes per token of the window the server was
+  started with: a 32,768-token window is about 65,000 bytes.
+- conversations are reaching the limit and costing more than you want. A
+  smaller budget sends less on every turn.
+
+A value larger than a model's window allows is ignored for that model.
+
+### When to name a conversation {#session_naming}
+
+When an untitled conversation is given a title. See
+[session naming](#session-naming) below for the three choices.
+
+### Dictation {#dictation}
+
+A microphone button in the message box, using the browser's speech
+recognition. Most browsers send the audio to the browser's maker to
+transcribe. An operator can turn it off for a workspace; see
+[who may override](#who-may-override).
+
+### Auto-approval {#auto_approve_max_risk}
+
+The highest risk an auto-approval policy in this workspace may cover. None
+means every request that needs approval goes to a person. An operator sets
+the ceiling per workspace; the workspace writes its policies under it. See
+[auto-approval.md](auto-approval.md).
 
 The endpoints are `/v1/settings` (workspace), `/v1/platform/settings`
 (operator) and `/v1/agents/{id}/settings` (agent), each returning every

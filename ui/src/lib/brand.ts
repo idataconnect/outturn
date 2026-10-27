@@ -33,6 +33,16 @@ export let logoUrl = import.meta.env.VITE_BRAND_LOGO ?? '/favicon.svg'
 /** Shown where the name needs a sentence around it, as on the login page. */
 export let productTagline: string | null = import.meta.env.VITE_BRAND_TAGLINE ?? null
 
+/** Where the documentation is, for the help buttons beside settings; null
+ *  hides them. A deployment that keeps its own copy points this at it. */
+export let docsUrl: string | null = import.meta.env.VITE_DOCS_URL ?? 'https://idataconnect.github.io/outturn/'
+
+/** A page of the documentation, as `settings/#context_budget`; null where
+ *  this deployment shows none. */
+export function docsLink(path: string): string | null {
+  return docsUrl === null ? null : `${docsUrl.replace(/\/*$/, '/')}${path}`
+}
+
 /** The theme compiled into this build, which needs no stylesheet loaded. */
 const builtTheme = import.meta.env.VITE_THEME ?? 'outturn'
 
@@ -41,6 +51,9 @@ export interface RuntimeBrand {
   name?: string
   logo?: string
   tagline?: string
+  /** Where the documentation is: an http(s) URL, or `off` for none. Empty,
+   *  as an unset variable arrives, keeps the build's. */
+  docs?: string
   theme?: string
 }
 
@@ -86,6 +99,9 @@ export async function applyBrand(
     else console.warn(`brand: logo ${brand.logo} refused; only same-origin paths are served`)
   }
   if (brand.tagline !== undefined) productTagline = brand.tagline || null
+  if (brand.docs === 'off') docsUrl = null
+  else if (brand.docs && /^https?:\/\//.test(brand.docs)) docsUrl = brand.docs
+  else if (brand.docs) console.warn(`brand: docs ${brand.docs} refused; it is an http(s) URL or off`)
 
   doc.title = productName
   const icon = doc.querySelector<HTMLLinkElement>('link[rel="icon"]')
@@ -160,7 +176,7 @@ export async function loadBrand(
 /** Keeps only string fields, so a typo'd config cannot put an object in the title. */
 function pickStrings(body: Record<string, unknown>): RuntimeBrand {
   const out: RuntimeBrand = {}
-  for (const key of ['name', 'logo', 'tagline', 'theme'] as const) {
+  for (const key of ['name', 'logo', 'tagline', 'theme', 'docs'] as const) {
     if (typeof body[key] === 'string') out[key] = body[key]
   }
   return out

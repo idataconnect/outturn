@@ -91,6 +91,7 @@ offers a recipe to an operator signing in to a deployment that has none.
 | `OUTTURN_BRAND_LOGO` | ui | A same-origin path to the mark, such as `/brand/logo.svg`. Anything else is refused and the shipped mark kept |
 | `OUTTURN_BRAND_TAGLINE` | ui | A line under the name on the login page. Unset, none |
 | `OUTTURN_THEME` | ui | A shipped theme by name (`hollowbrook`), or a same-origin `/brand/<file>.css`. Unset, the theme the build compiled in |
+| `OUTTURN_DOCS_URL` | ui | Where the help buttons beside settings link to: an http(s) URL, or `off`. Unset, the published documentation; under `npm run dev` it is `VITE_DOCS_URL` |
 | `OUTTURN_API_UPSTREAM` | ui | Where the UI container carries `/v1`, as `host:port`. Default `outturn-api:8080`
 | `OUTTURN_TIKA_URL` | api, runtime | Tika, where `--with tika` deployed one. Unset, documents are not extracted; see [document-extraction.md](docs/document-extraction.md) |
 | `OUTTURN_CATALOG_URL` | api | Where the model catalog is checked weekly, through the gateway. Default `https://models.dev/api.json`; a mirror works |

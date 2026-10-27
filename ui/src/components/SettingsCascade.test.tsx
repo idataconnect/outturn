@@ -31,6 +31,12 @@ vi.mock('../lib/api', () => ({
 }))
 
 describe('SettingsCascade', () => {
+  it('links each setting to its own section of the docs', async () => {
+    render(<SettingsCascade base="/v1/settings" canEdit levelName="this workspace" />)
+    const help = await screen.findByRole('link', { name: `About ${ceiling.label}` })
+    expect(help.getAttribute('href')).toMatch(new RegExp(`/settings/#${ceiling.key}$`))
+  })
+
   it('leaves a workspace nothing to choose under a ceiling at its strictest', async () => {
     render(<SettingsCascade base="/v1/settings" canEdit levelName="this workspace" />)
     const override = (await screen.findByRole('checkbox')) as HTMLInputElement
