@@ -33,6 +33,24 @@ if curl -sf "$api/v1/state" | grep -q '"autoTrigger":true'; then
   exit 1
 fi
 
+# The local model's address is resolved when scripts/dev.sh writes the
+# overlay, and a network policy can only name an address. A machine that has
+# since moved -- a new DHCP lease -- leaves the gateway timing out against
+# the old one until skaffold is restarted, with nothing to say why. So it is
+# resolved again each round, and the one line changed if it moved.
+overlay=k8s/overlays/.generated/kustomization.yaml
+if [[ -f $overlay ]]; then
+  name=$(sed -n 's/.*resolved from \([^ ]*\) when this was written.*/\1/p' "$overlay" | head -1)
+  if [[ -n $name ]]; then
+    now=$(getent ahostsv4 "$name" 2>/dev/null | awk 'NR==1 {print $1}')
+    was=$(grep -A10 'resolved from' "$overlay" | sed -n 's/.*cidr: \([0-9.]*\)\/32.*/\1/p' | head -1)
+    if [[ -n $now && -n $was && $now != "$was" ]]; then
+      sed -i "s|cidr: $was/32|cidr: $now/32|" "$overlay"
+      echo "$name moved from $was to $now; the gateway's policy follows it"
+    fi
+  fi
+fi
+
 echo "building and deploying"
 curl -sf -X POST "$api/v1/execute" -d '{"build":true,"deploy":true}' >/dev/null
 
