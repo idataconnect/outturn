@@ -199,10 +199,8 @@ impl LlmProvider for BedrockProvider {
         }
 
         // The same response Anthropic sends, so the same translation reads it.
-        let anthropic_resp: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| ProviderError::transport(&e))?;
+        let anthropic_resp: serde_json::Value =
+            resp.json().await.map_err(|e| ProviderError::lost(&e))?;
         translate::anthropic_to_openai(&anthropic_resp)
             .map_err(|e| ProviderError::transport(format!("the answer could not be read: {e}")))
     }
@@ -223,9 +221,7 @@ impl LlmProvider for BedrockProvider {
             return Err(ProviderError::from_response(response).await);
         }
 
-        let bytes = response
-            .bytes_stream()
-            .map_err(|e| ProviderError::transport(&e));
+        let bytes = response.bytes_stream().map_err(|e| ProviderError::lost(&e));
 
         // Anthropic's own events once unwrapped, so Anthropic's state machine
         // reads them: the translation is not written twice.

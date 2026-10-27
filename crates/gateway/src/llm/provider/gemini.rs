@@ -78,10 +78,8 @@ impl LlmProvider for GeminiProvider {
             return Err(Self::fail(response).await);
         }
 
-        let value: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| ProviderError::transport(&e))?;
+        let value: serde_json::Value =
+            response.json().await.map_err(|e| ProviderError::lost(&e))?;
 
         translate::gemini_to_openai(&value)
             .map_err(|e| ProviderError::transport(format!("the answer could not be read: {e}")))
@@ -114,9 +112,7 @@ impl LlmProvider for GeminiProvider {
             return Err(Self::fail(response).await);
         }
 
-        let bytes = response
-            .bytes_stream()
-            .map_err(|e| ProviderError::transport(&e));
+        let bytes = response.bytes_stream().map_err(|e| ProviderError::lost(&e));
 
         let mut state = GeminiStream::new(model);
         Ok(Box::pin(super::sse_payloads(bytes).filter_map(

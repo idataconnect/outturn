@@ -254,9 +254,18 @@ impl ProviderError {
     /// arrived or one whose answer was lost after it did.
     pub fn sending(e: &reqwest::Error) -> Self {
         if e.is_connect() {
-            Self::Unreached(crate::egress::transport::strip_url(&e.to_string()))
+            Self::Unreached(crate::egress::transport::describe(e))
         } else {
-            Self::transport(e)
+            Self::lost(e)
+        }
+    }
+
+    /// A request whose answer was lost after it was sent, said from what
+    /// actually failed rather than reqwest's message about the URL.
+    pub fn lost(e: &reqwest::Error) -> Self {
+        Self::Upstream {
+            status: None,
+            detail: crate::egress::transport::describe(e),
         }
     }
 

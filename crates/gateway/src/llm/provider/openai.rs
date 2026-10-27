@@ -66,10 +66,8 @@ impl LlmProvider for OpenAiProvider {
             return Err(Self::fail(response).await);
         }
 
-        let mut response: ChatCompletionResponse = response
-            .json()
-            .await
-            .map_err(|e| ProviderError::transport(&e))?;
+        let mut response: ChatCompletionResponse =
+            response.json().await.map_err(|e| ProviderError::lost(&e))?;
         response.usage = response.usage.map(unfold_cache);
         Ok(response)
     }
@@ -102,9 +100,7 @@ impl LlmProvider for OpenAiProvider {
         // Server-Sent Events: `data: {json}` lines, blank-line separated,
         // terminated by `data: [DONE]`. Unwrapped here so no other tier has to
         // know the framing.
-        let stream = response
-            .bytes_stream()
-            .map_err(|e| ProviderError::transport(&e));
+        let stream = response.bytes_stream().map_err(|e| ProviderError::lost(&e));
 
         Ok(Box::pin(unwrap_sse(stream)))
     }

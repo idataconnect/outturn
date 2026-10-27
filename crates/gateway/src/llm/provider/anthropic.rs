@@ -74,10 +74,8 @@ impl LlmProvider for AnthropicProvider {
             return Err(ProviderError::from_response(resp).await);
         }
 
-        let anthropic_resp: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| ProviderError::transport(&e))?;
+        let anthropic_resp: serde_json::Value =
+            resp.json().await.map_err(|e| ProviderError::lost(&e))?;
 
         translate::anthropic_to_openai(&anthropic_resp)
             .map_err(|e| ProviderError::transport(format!("the answer could not be read: {e}")))
@@ -114,9 +112,7 @@ impl LlmProvider for AnthropicProvider {
             return Err(ProviderError::from_response(response).await);
         }
 
-        let bytes = response
-            .bytes_stream()
-            .map_err(|e| ProviderError::transport(&e));
+        let bytes = response.bytes_stream().map_err(|e| ProviderError::lost(&e));
 
         // The state machine outlives each event, because what an event means
         // depends on the ones before it.

@@ -756,7 +756,7 @@ async fn chat_completions(
                     .into_response());
             }
             Err(e) => {
-                tracing::warn!(provider = ?provider.provider(), error = %e, "provider failed");
+                tracing::warn!(provider = ?provider.provider(), endpoint = %provider.endpoint(), error = %e, "provider failed");
                 state.observe(provider, &model, caller, Err(&e)).await;
                 // A client error is the request being wrong rather than the
                 // endpoint being unwell, so the next route refuses it the same
@@ -1032,7 +1032,7 @@ async fn chat_completions_stream(
             }
             Err(e) => {
                 // The Debug form, whole: what a caller is shown is capped.
-                tracing::warn!(provider = ?provider.provider(), error = ?e, "stream failed");
+                tracing::warn!(provider = ?provider.provider(), endpoint = %provider.endpoint(), error = ?e, "stream failed");
                 state.observe(provider, &model, caller, Err(&e)).await;
                 // A model that is gone is this route's failure, not the
                 // request's: the next route may have one that is not.

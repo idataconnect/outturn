@@ -135,7 +135,7 @@ impl EgressTransport for Direct {
         // mid-write, a timeout waiting on the answer -- may have landed, and
         // whoever decides whether to send it again has to know which.
         let response = outgoing.send().await.map_err(|e| {
-            let detail = strip_url(&e.to_string());
+            let detail = describe(&e);
             if e.is_connect() {
                 TransportError::NotSent(detail)
             } else {
@@ -164,8 +164,7 @@ impl EgressTransport for Direct {
             use futures::StreamExt;
             let mut chunks = response.bytes_stream();
             while let Some(chunk) = chunks.next().await {
-                let chunk =
-                    chunk.map_err(|e| TransportError::Incomplete(strip_url(&e.to_string())))?;
+                let chunk = chunk.map_err(|e| TransportError::Incomplete(describe(&e)))?;
                 body.extend_from_slice(&chunk);
                 if body.len() > request.body_limit {
                     truncated = true;
@@ -238,6 +237,47 @@ fn client_for(host: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, Trans
     CLIENTS.get(host, addrs)
 }
 
+/// What went wrong with a request, in words, without the URL.
+///
+/// reqwest's own message is "error sending request for url (...)", which is
+/// all URL, and with the URL taken out -- it can carry a credential -- said
+/// nothing at all: "could not be reached: error sending request for url
+/// <url>". What happened is further down its chain of causes, as a resolver's
+/// or a socket's error, so that is read instead and said plainly where it is
+/// one of the usual few.
+pub(crate) fn describe(e: &reqwest::Error) -> String {
+    let mut chain = Vec::new();
+    let mut cause: Option<&dyn std::error::Error> = std::error::Error::source(e);
+    while let Some(c) = cause {
+        chain.push(c.to_string());
+        cause = c.source();
+    }
+    let all = chain.join(": ").to_lowercase();
+    let said = if e.is_timeout() {
+        "it did not answer in time"
+    } else if all.contains("dns") || all.contains("lookup") || all.contains("resolve") {
+        "its name did not resolve"
+    } else if all.contains("connection refused") {
+        "the connection was refused"
+    } else if all.contains("certificate") || all.contains("tls") || all.contains("ssl") {
+        "its TLS certificate was not accepted"
+    } else if all.contains("connection reset") || all.contains("broken pipe") {
+        "the connection was reset"
+    } else if all.contains("network is unreachable") || all.contains("no route to host") {
+        "the network has no route to it"
+    } else if e.is_body() || e.is_decode() {
+        "its answer was cut off or could not be read"
+    } else {
+        // Something rarer: the innermost cause, which is the most specific,
+        // with any URL in it taken out all the same.
+        return chain
+            .last()
+            .map(|c| strip_url(c))
+            .unwrap_or_else(|| strip_url(&e.to_string()));
+    };
+    said.to_string()
+}
+
 /// Removes URLs from an error before it travels back.
 ///
 /// A URL an agent built can carry a credential in its query string, and these
@@ -254,6 +294,22 @@ pub(crate) fn strip_url(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The usual failures are said in words, never as reqwest's sentence
+    /// about the URL with the URL taken out of it.
+    #[tokio::test]
+    async fn a_failure_is_said_in_words_rather_than_about_a_url() {
+        let client = reqwest::Client::new();
+        // Nothing listens on port 1.
+        let refused = client.get("http://127.0.0.1:1/?key=sk-secret").send().await;
+        let said = describe(&refused.expect_err("port 1 answered"));
+        assert_eq!(said, "the connection was refused");
+
+        // .invalid is reserved never to resolve.
+        let unnamed = client.get("http://provider.invalid/").send().await;
+        let said = describe(&unnamed.expect_err("a .invalid name resolved"));
+        assert_eq!(said, "its name did not resolve");
+    }
 
     #[test]
     fn an_error_never_carries_the_url_it_was_about() {
