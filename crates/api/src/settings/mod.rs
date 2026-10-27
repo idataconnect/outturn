@@ -123,8 +123,8 @@ fn settings() -> Vec<Setting> {
             key: "temperature",
             label: "Temperature",
             description: "How much the model varies its wording. Lower is more \
-                          predictable, which suits agents that follow procedures; \
-                          higher is more varied. Unset leaves it to the provider.",
+                          predictable; higher is more varied. Unset leaves it to the \
+                          provider.",
             kind: Kind::Number {
                 min: 0.0,
                 max: 2.0,
@@ -138,10 +138,10 @@ fn settings() -> Vec<Setting> {
         Setting {
             key: "reasoning_effort",
             label: "Thinking before answering",
-            description: "How much the model deliberates where the provider supports \
-                          it. Better on hard questions and slower to reply. \"none\" is \
-                          often unsupported, and the models that do support disabling \
-                          thinking will be considerably less able to solve problems.",
+            description: "How much the model reasons before answering, where the \
+                          provider supports it. Higher does better on hard questions \
+                          and replies more slowly. Off makes most models noticeably \
+                          less capable.",
             kind: Kind::Choice {
                 options: &[
                     ChoiceOption {
@@ -179,8 +179,7 @@ fn settings() -> Vec<Setting> {
             key: "agent_file_access",
             label: "Agent files",
             description: "What an agent may do under agent/, the files it keeps between \
-                          conversations. Session files are always read/write; they are \
-                          the agent's scratch space.",
+                          conversations.",
             kind: Kind::Choice {
                 options: &[
                     ChoiceOption {
@@ -262,7 +261,7 @@ fn settings() -> Vec<Setting> {
             key: "max_tool_rounds",
             label: "Model calls per turn",
             description: "How many times one turn may call the model before it is \
-                          stopped. A runaway guard, not a budget. Zero means no limit.",
+                          stopped. Zero means no limit.",
             kind: Kind::Integer {
                 min: 0,
                 max: 10_000,
@@ -274,9 +273,8 @@ fn settings() -> Vec<Setting> {
         Setting {
             key: "max_written_bytes",
             label: "File writes per turn",
-            description: "How many bytes one turn may write to files, in bytes. \
-                          A runaway guard: an agent looping on a write could \
-                          otherwise fill the store in one turn. Zero means no limit.",
+            description: "How many bytes one turn may write to files. Zero means no \
+                          limit.",
             kind: Kind::Integer {
                 min: 0,
                 max: 1 << 40,
@@ -288,14 +286,9 @@ fn settings() -> Vec<Setting> {
         Setting {
             key: "context_budget",
             label: "Conversation size sent to the model",
-            description: "How much of a conversation is sent, in bytes. A long \
-                          session outgrows any model's context, and this is what \
-                          decides when the oldest tool results start being dropped \
-                          to make room. Set it well under the model's real window: \
-                          the reply, tool results arriving mid-turn and the request \
-                          itself all need space that this does not count. Unset, \
-                          it follows the model: this default, or two bytes a token \
-                          of the model's window where that is less.",
+            description: "How much of a conversation is sent to the model, in bytes. \
+                          Past it, the oldest tool results are dropped first. Unset, it \
+                          follows the model's context window.",
             // Bytes rather than tokens, because nothing here counts tokens and
             // a per-model tokeniser is wrong for every model it was not built
             // for. Roughly three bytes to a token is the pessimistic end, so
@@ -313,13 +306,9 @@ fn settings() -> Vec<Setting> {
         Setting {
             key: "session_naming",
             label: "When to name a conversation",
-            description: "When the platform asks a model for a title. Naming after \
-                          the first message is cheapest -- the model sees less and \
-                          answers quickly -- but less accurate when the opening message \
-                          is vague. Waiting for the first reply lets the model see a \
-                          full exchange, so the title reflects what actually happened. \
-                          Waiting for two exchanges usually gives the best title but \
-                          delays it longer.",
+            description: "When a conversation is given a title: after the first \
+                          message, after the first reply, or after two exchanges. \
+                          Later titles are more accurate.",
             kind: Kind::Choice {
                 options: &[
                     ChoiceOption {
