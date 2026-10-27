@@ -55,7 +55,13 @@ fn cors() -> CorsLayer {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        // The storage library logs every failed request at warn, as
+        // "Retrying" even with its retries off, the whole of the store's
+        // XML attached -- for a missing object, or a lifecycle rule MinIO
+        // refuses, both of which are answered and said better by this code.
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,s3=error".into()),
+        )
         .init();
 
     let health = Health::new();

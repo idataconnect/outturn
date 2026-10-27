@@ -12,7 +12,13 @@ use outturn_runtime::router::RuntimeState;
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        // The storage library logs every failed request at warn, as
+        // "Retrying" even with its retries off, the whole of the store's
+        // XML attached -- for a missing object, or a lifecycle rule MinIO
+        // refuses, both of which are answered and said better by this code.
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,s3=error".into()),
+        )
         .init();
 
     let health = Health::new();
@@ -69,7 +75,20 @@ async fn main() {
                     // the store is, and a dependency arriving is not a fault.
                     let mut attempt = 0u32;
                     loop {
-                        match store.ensure_bucket().await {
+                        // Each look bounded, so a store that is not up yet is
+                        // said within seconds rather than after the half
+                        // minute a connection takes to give up.
+                        let looked = tokio::time::timeout(
+                            std::time::Duration::from_secs(5),
+                            store.ensure_bucket(),
+                        )
+                        .await
+                        .unwrap_or_else(|_| {
+                            Err(outturn_core::storage::StorageError::Unavailable(
+                                "no answer within five seconds".into(),
+                            ))
+                        });
+                        match looked {
                             Ok(()) => break,
                             Err(e) if attempt < 60 => {
                                 attempt += 1;
