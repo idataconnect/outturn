@@ -244,6 +244,35 @@ impl GatewayState {
         self.route_turned_away(route).is_none()
     }
 
+    /// A connection to an opened internal host that timed out, said with
+    /// its likely cause. Opening a host in `OUTTURN_INTERNAL_HOSTS` passes
+    /// this gateway's own check, and a network policy in front of the pod is
+    /// a second gate that cannot explain itself: it drops the packets, and
+    /// the only sign is a connection nothing answers. Anywhere else a timeout
+    /// is said as it was.
+    fn with_policy_hint(&self, endpoint: &str, e: ProviderError) -> ProviderError {
+        let ProviderError::Unreached(detail) = &e else {
+            return e;
+        };
+        if detail != "it did not answer in time" {
+            return e;
+        }
+        let url = endpoint.split_once(':').map_or(endpoint, |(_, url)| url);
+        let Some((host, port)) = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|u| Some((u.host_str()?.to_string(), u.port_or_known_default()?)))
+        else {
+            return e;
+        };
+        if !self.internal.allows(&host, port) {
+            return e;
+        }
+        ProviderError::Unreached(format!(
+            "{detail}. It is inside the network, so check that a network policy lets \
+             the gateway reach it on port {port}"
+        ))
+    }
+
     /// Why a route may not be called, in a sentence for whoever's turn it
     /// failed; none when it may.
     fn route_turned_away(&self, route: &routing::Route) -> Option<String> {
@@ -756,6 +785,7 @@ async fn chat_completions(
                     .into_response());
             }
             Err(e) => {
+                let e = state.with_policy_hint(&provider.endpoint(), e);
                 tracing::warn!(provider = ?provider.provider(), endpoint = %provider.endpoint(), error = %e, "provider failed");
                 state.observe(provider, &model, caller, Err(&e)).await;
                 // A client error is the request being wrong rather than the
@@ -1031,6 +1061,7 @@ async fn chat_completions_stream(
                 return respond(provider.endpoint(), axum::body::Body::from_stream(body));
             }
             Err(e) => {
+                let e = state.with_policy_hint(&provider.endpoint(), e);
                 // The Debug form, whole: what a caller is shown is capped.
                 tracing::warn!(provider = ?provider.provider(), endpoint = %provider.endpoint(), error = ?e, "stream failed");
                 state.observe(provider, &model, caller, Err(&e)).await;
@@ -1171,6 +1202,32 @@ mod tests {
             TokenValidator::with_keys(&[[7u8; 32]], outturn_core::auth::AUDIENCE_GATEWAY)
                 .expect("validator");
         GatewayState::new(Vec::new(), validator).with_internal_hosts(Internal::parse(internal))
+    }
+
+    /// A timeout connecting to an opened internal host names the network
+    /// policy, the gate that drops packets without a word; a public host's,
+    /// or any other failure, is said as it was.
+    #[test]
+    fn an_internal_timeout_points_at_the_network_policy() {
+        let state = gateway("models.lan:11434");
+        let timed_out = || ProviderError::Unreached("it did not answer in time".into());
+        let said = state
+            .with_policy_hint("openai:http://models.lan:11434", timed_out())
+            .to_string();
+        assert!(said.contains("network policy"), "{said}");
+        assert!(said.contains("port 11434"), "{said}");
+
+        let public = state
+            .with_policy_hint("openai:https://api.example.com", timed_out())
+            .to_string();
+        assert!(!public.contains("network policy"), "{public}");
+        let refused = state
+            .with_policy_hint(
+                "openai:http://models.lan:11434",
+                ProviderError::Unreached("the connection was refused".into()),
+            )
+            .to_string();
+        assert!(!refused.contains("network policy"), "{refused}");
     }
 
     /// A route pointed at the public internet is not this list's business.

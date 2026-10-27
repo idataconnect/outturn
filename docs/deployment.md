@@ -238,6 +238,46 @@ The database is reached by port alone (5432, anywhere), since a managed
 database's address rarely stays put and neither the API nor the gateway runs
 workspace code. Narrow it if yours has a stable range.
 
+### A model inside your network
+
+Most deployments call a hosted provider and need nothing here. A model served
+inside your own network -- a server on the LAN, a pod in the cluster -- has
+to be let through twice, and the second is easy to miss:
+
+1. **The gateway's own check.** Private addresses are refused unless the host
+   and port are named in `OUTTURN_INTERNAL_HOSTS`, such as
+   `models.internal.example.com:11434`. Missing, a test call says so.
+2. **The gateway's network policy**, which also closes private ranges. It can
+   only name addresses, and it says nothing: packets are dropped, and a test
+   call reports that the provider "did not answer in time" with a note to
+   check the policy.
+
+The second is one more policy beside the others, by address:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-gateway-to-local-model
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-gateway
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.42/32
+      ports:
+        - protocol: TCP
+          port: 11434
+```
+
+Give the model's machine an address that does not change -- a DHCP
+reservation, say -- since the policy holds the address and not the name.
+Plain http to it is allowed once it is named in `OUTTURN_INTERNAL_HOSTS`,
+key included, so keep that to a network you trust.
+
 ## The first operator
 
 A new deployment has no accounts, and nobody can sign in until it has one.
