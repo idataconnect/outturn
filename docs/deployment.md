@@ -103,7 +103,9 @@ The branding is read when the UI container starts, not when it was built, so
 the published image serves every deployment; [themes/README.md](https://github.com/idataconnect/outturn/blob/main/ui/src/themes/README.md)
 says how to write a theme. A logo or theme of your own is a file mounted into
 the UI container at `/srv/brand/` -- from a ConfigMap, say -- and named by its
-path under `/brand/`.
+path under `/brand/`. The help buttons beside settings link to the published outturn
+documentation; `OUTTURN_DOCS_URL` points them at a copy of your own, or `off`
+removes them.
 
 The UI container reads one more variable, set in `k8s/deploy` itself rather
 than the ConfigMap: `OUTTURN_API_UPSTREAM`, the `host:port` it carries `/v1`
