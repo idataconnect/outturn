@@ -73,61 +73,13 @@ pub async fn render(
     Err(said.chars().take(300).collect())
 }
 
-/// The body, read chunk by chunk and abandoned the moment it passes `max`.
-async fn capped(mut response: reqwest::Response, max: usize) -> Result<Vec<u8>, String> {
-    let too_large =
-        || format!("the PDF renderer sent more than {max} bytes; a PDF may be at most that");
-    if response.content_length().is_some_and(|n| n > max as u64) {
-        return Err(too_large());
-    }
-    let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("the PDF renderer stopped partway: {e}"))?
-    {
-        if body.len() + chunk.len() > max {
-            return Err(too_large());
+/// The body, abandoned the moment it passes `max`.
+async fn capped(response: reqwest::Response, max: usize) -> Result<Vec<u8>, String> {
+    use outturn_core::http_client::{Capped, read_capped};
+    read_capped(response, max).await.map_err(|e| match e {
+        Capped::TooLarge => {
+            format!("the PDF renderer sent more than {max} bytes; a PDF may be at most that")
         }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    /// Serves one response with `body` and returns where to reach it.
-    async fn serve(body: Vec<u8>) -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 1024];
-            let _ = socket.read(&mut buf).await;
-            let head = format!(
-                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = socket.write_all(head.as_bytes()).await;
-            let _ = socket.write_all(&body).await;
-        });
-        format!("http://{addr}")
-    }
-
-    #[tokio::test]
-    async fn a_body_past_the_cap_is_refused() {
-        let url = serve(vec![0; 64]).await;
-        let response = reqwest::get(url).await.unwrap();
-        assert!(capped(response, 32).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn a_body_within_the_cap_is_returned() {
-        let url = serve(vec![7; 32]).await;
-        let response = reqwest::get(url).await.unwrap();
-        assert_eq!(capped(response, 32).await.unwrap(), vec![7; 32]);
-    }
+        Capped::Stopped(e) => format!("the PDF renderer stopped partway: {e}"),
+    })
 }

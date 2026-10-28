@@ -89,16 +89,25 @@ async fn harness() -> Harness {
 /// all is the proof, and one showing a poll answers on timeout gives it a
 /// short one instead of sitting through the real 25 seconds.
 async fn harness_parking_for(park: std::time::Duration) -> Harness {
-    harness_with(park, None).await
+    harness_with(park, None, None).await
 }
 
 /// A harness whose worker has a gateway to summarize through, for a test
 /// about what preparing a turn does while it waits on a model.
 async fn harness_with_gateway(gateway_url: &str) -> Harness {
-    harness_with(outturn::api::LONG_POLL, Some(gateway_url.to_string())).await
+    harness_with(outturn::api::LONG_POLL, Some(gateway_url.to_string()), None).await
 }
 
-async fn harness_with(park: std::time::Duration, gateway_url: Option<String>) -> Harness {
+/// A harness whose uploads convert HEIC photos at `heic_url`.
+async fn harness_converting_at(heic_url: &str) -> Harness {
+    harness_with(outturn::api::LONG_POLL, None, Some(heic_url.to_string())).await
+}
+
+async fn harness_with(
+    park: std::time::Duration,
+    gateway_url: Option<String>,
+    heic_url: Option<String>,
+) -> Harness {
     // A private schema per test, so tests do not see each other's rows and can
     // run in parallel.
     let db = common::TestDb::new().await;
@@ -176,6 +185,9 @@ async fn harness_with(park: std::time::Duration, gateway_url: Option<String>) ->
         outturn::lifecycle::Shutdown::new(),
     )
     .with_long_poll(park)
+    // No converter unless the test brings one, whatever this machine's
+    // environment says.
+    .with_heic_url(heic_url)
     // The public half of the seal key a test's gateway opens with.
     .with_seal_key(outturn::egress::seal::public_of(SEAL_KEY).expect("seal key"))
     // What the gateway would have bound, so a rule naming these is one the
@@ -1345,13 +1357,13 @@ async fn refresh_outlives_the_access_token() {
     // is what bounds how long a stolen token or a revoked role stays usable.
     // The refresh token must outlast it by a wide margin, or the user is sent
     // back to the login form during ordinary use.
-    assert!(
-        outturn::api::session::REFRESH_LIFETIME_SECS
-            > outturn::auth::SESSION_TOKEN_LIFETIME_SECS * 100,
-        "refresh lifetime {} must dwarf the access lifetime {}",
-        outturn::api::session::REFRESH_LIFETIME_SECS,
-        outturn::auth::SESSION_TOKEN_LIFETIME_SECS,
-    );
+    const {
+        assert!(
+            outturn::api::session::REFRESH_LIFETIME_SECS
+                > outturn::auth::SESSION_TOKEN_LIFETIME_SECS * 100,
+            "refresh lifetime must dwarf the access lifetime",
+        )
+    };
 
     finish!(h);
 }
@@ -3209,6 +3221,206 @@ async fn uploads_land_in_the_scope_the_agent_reads_them_from() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     finish!(h);
+}
+
+/// A HEIC photo's first bytes: enough for the API to know it, and nothing a
+/// decoder could read, which is the fake converter's business.
+const HEIC: &[u8] = b"\0\0\0\x18ftypheic\0\0\0\0mif1heic";
+
+/// What the fake converter answers a photo with: a JPEG's magic and a marker.
+const CONVERTED: &[u8] = b"\xff\xd8\xff\xe0 converted";
+
+/// A converter that answers every photo with `status` and `reply`, as the
+/// real one's service would, and where to reach it.
+async fn fake_converter(status: u16, reply: &'static [u8]) -> String {
+    let app = axum::Router::new().route(
+        "/v1/convert/jpeg",
+        axum::routing::post(move || async move { (StatusCode::from_u16(status).unwrap(), reply) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    url
+}
+
+/// A workspace admin and a conversation of theirs to upload into.
+async fn upload_session(h: &Harness) -> (String, String) {
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post("/v1/agents", Some(&admin), r#"{"name":"A","slug":"a"}"#)
+        .await;
+    let agent: Value = serde_json::from_str(&body).expect("agent");
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(
+                r#"{{"agent_id":"{}","title":""}}"#,
+                agent["id"].as_str().expect("id")
+            ),
+        )
+        .await;
+    let session: Value = serde_json::from_str(&body).expect("session");
+    (admin, session["id"].as_str().expect("id").to_string())
+}
+
+impl Harness {
+    /// Puts `bytes` at `scoped` in a conversation's files.
+    async fn put_file(
+        &self,
+        token: &str,
+        session_id: &str,
+        scoped: &str,
+        bytes: &[u8],
+    ) -> (StatusCode, String) {
+        self.send(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/agent-sessions/{session_id}/files/{scoped}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(bytes.to_vec()))
+                .expect("request"),
+        )
+        .await
+    }
+
+    /// The paths of a conversation's session files.
+    async fn file_paths(&self, token: &str, session_id: &str) -> Vec<String> {
+        let (_, body) = self
+            .get(
+                &format!("/v1/agent-sessions/{session_id}/files"),
+                Some(token),
+            )
+            .await;
+        items(&body)
+            .iter()
+            .map(|f| f["path"].as_str().expect("path").to_string())
+            .collect()
+    }
+}
+
+/// Without a converter, a HEIC photo is refused when it is uploaded, by its
+/// bytes and whatever it is called, rather than stored as a file few models
+/// can read and most browsers cannot show.
+#[tokio::test]
+async fn a_heic_photo_is_refused_at_upload_where_nothing_converts_it() {
+    let h = harness_or_skip!();
+    let (admin, session) = upload_session(&h).await;
+
+    for name in ["IMG_1234.HEIC", "photo.jpg"] {
+        let (status, body) = h
+            .put_file(&admin, &session, &format!("session/{name}"), HEIC)
+            .await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{name}: {body}");
+        assert!(body.contains("HEIC"), "{name}: {body}");
+    }
+    assert!(h.file_paths(&admin, &session).await.is_empty());
+    finish!(h);
+}
+
+/// With a converter, the JPEG is what the upload answers with, the original
+/// is kept beside it, and neither lands on a file that was already there.
+#[tokio::test]
+async fn a_heic_photo_is_stored_as_a_jpeg_beside_its_original() {
+    let h = harness_converting_at(&fake_converter(200, CONVERTED).await).await;
+    let (admin, session) = upload_session(&h).await;
+
+    let (status, body) = h
+        .put_file(&admin, &session, "session/IMG_1234.HEIC", HEIC)
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let stored: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(stored["path"], "session/IMG_1234.jpg", "{body}");
+    assert_eq!(stored["converted_from"], "session/IMG_1234.HEIC", "{body}");
+    let (_, jpeg) = h
+        .get(
+            &format!("/v1/agent-sessions/{session}/files/session/IMG_1234.jpg"),
+            Some(&admin),
+        )
+        .await;
+    // Read back as text, so only the marker after the JPEG magic survives.
+    assert!(jpeg.ends_with(" converted"), "{jpeg}");
+
+    // A JPEG somebody put there is theirs: the next conversion of that name
+    // takes another one.
+    h.put_file(&admin, &session, "session/trip.jpg", b"\xff\xd8\xff mine")
+        .await;
+    let (status, body) = h
+        .put_file(&admin, &session, "session/trip.heic", HEIC)
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(body.contains(r#""path":"session/trip-2.jpg""#), "{body}");
+    let (_, mine) = h
+        .get(
+            &format!("/v1/agent-sessions/{session}/files/session/trip.jpg"),
+            Some(&admin),
+        )
+        .await;
+    assert!(mine.ends_with(" mine"), "the existing file was replaced");
+
+    // A HEIC sent under a JPEG's name: the original is named for what it is,
+    // and is kept rather than replaced by its own conversion.
+    let (status, body) = h
+        .put_file(&admin, &session, "session/photo.jpg", HEIC)
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        body.contains(r#""converted_from":"session/photo.heic""#),
+        "{body}"
+    );
+
+    let mut paths = h.file_paths(&admin, &session).await;
+    paths.sort();
+    assert_eq!(
+        paths,
+        [
+            "session/IMG_1234.HEIC",
+            "session/IMG_1234.jpg",
+            "session/photo.heic",
+            "session/photo.jpg",
+            "session/trip-2.jpg",
+            "session/trip.heic",
+            "session/trip.jpg",
+        ]
+    );
+    finish!(h);
+}
+
+/// A converter that is busy is said to be busy, not the photo to be broken;
+/// one that answers with something other than a JPEG is not believed. Either
+/// way nothing is stored.
+#[tokio::test]
+async fn a_converter_that_cannot_answer_stores_nothing() {
+    for (status, reply, expected) in [
+        (
+            503,
+            &b"the converter is busy; try again shortly"[..],
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
+        (
+            502,
+            &b"<html>502 Bad Gateway</html>"[..],
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
+        (
+            200,
+            &b"<html>not a picture</html>"[..],
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let h = harness_converting_at(&fake_converter(status, reply).await).await;
+        let (admin, session) = upload_session(&h).await;
+        let (got, body) = h
+            .put_file(&admin, &session, "session/IMG_1234.HEIC", HEIC)
+            .await;
+        assert_eq!(got, expected, "converter said {status}: {body}");
+        assert!(!body.contains("<html>"), "passed on as it came: {body}");
+        assert!(h.file_paths(&admin, &session).await.is_empty());
+        finish!(h);
+    }
 }
 
 /// Only the runtime key takes work; a signed token never does.
@@ -5360,8 +5572,6 @@ async fn a_turn_that_finished_normally_does_not_latch() {
 /// talk to it. See docs/authorities.md.
 #[tokio::test]
 async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
-    use outturn::scope::ScopeStore;
-
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
@@ -5481,8 +5691,6 @@ async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
 /// read whoever else may not. See docs/authorities.md.
 #[tokio::test]
 async fn an_agents_files_are_narrowed_with_it_but_your_own_stay_yours() {
-    use outturn::scope::ScopeStore;
-
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
@@ -5713,8 +5921,6 @@ async fn setting_a_scope_needs_the_authority_that_assigns_roles() {
 /// in URLs, so "they would have to guess the id" was never the guarantee.
 #[tokio::test]
 async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
-    use outturn::scope::ScopeStore;
-
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let owner = h
@@ -5945,8 +6151,6 @@ async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
 /// refuse the history and stream the present. See docs/authorities.md.
 #[tokio::test]
 async fn the_event_feed_is_narrowed_the_same_way_the_transcript_is() {
-    use outturn::scope::ScopeStore;
-
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let owner = h
@@ -6276,7 +6480,7 @@ fn sign(secret: &str, body: &str, at: i64) -> (String, String) {
     (format!("sha256={hex}"), ts)
 }
 
-async fn make_trigger(h: &Harness, token: &str, agent_id: &str, body: &str) -> (String, String) {
+async fn make_trigger(h: &Harness, token: &str, body: &str) -> (String, String) {
     let (status, created) = h.post("/v1/webhook-triggers", Some(token), body).await;
     assert_eq!(status, StatusCode::CREATED, "body: {created}");
     let v: Value = serde_json::from_str(&created).expect("json");
@@ -6320,7 +6524,6 @@ async fn a_signed_delivery_starts_a_turn_and_an_unsigned_one_does_not() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Bookings","prompt":"A booking arrived: {{{{body}}}}","scheme":"hmac"}}"#
         ),
@@ -6417,7 +6620,6 @@ async fn a_path_that_exists_is_indistinguishable_from_one_that_does_not() {
     let (path, _) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(r#"{{"agent_id":"{agent_id}","name":"Real","prompt":"got {{{{body}}}}"}}"#),
     )
     .await;
@@ -6451,7 +6653,6 @@ async fn the_hourly_ceiling_refuses_rather_than_queueing() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Busy","prompt":"got {{{{body}}}}","scheme":"shared_secret","max_per_hour":2}}"#
         ),
@@ -6551,7 +6752,6 @@ async fn a_refusal_before_the_credential_is_proved_writes_nothing() {
     let (path, _secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(r#"{{"agent_id":"{agent_id}","name":"Quiet","prompt":"got {{{{body}}}}"}}"#),
     )
     .await;
@@ -6609,7 +6809,6 @@ async fn a_disabled_trigger_refuses_without_saying_it_exists() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Off","prompt":"got {{{{body}}}}","scheme":"shared_secret","enabled":false}}"#
         ),
@@ -7117,8 +7316,6 @@ async fn a_narrowed_person_cannot_trigger_an_agent_they_were_scoped_away_from() 
     // `agents:update` is deliberately not narrowed per agent, so creating a
     // schedule or a hook was a way around the narrowing rather than a use of
     // it. Two reviews raised this before it was fixed.
-    use outturn::scope::ScopeStore;
-
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
@@ -7232,7 +7429,6 @@ async fn the_same_delivery_is_accepted_once_and_refused_after() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(r#"{{"agent_id":"{agent_id}","name":"Once","prompt":"got {{{{body}}}}"}}"#),
     )
     .await;
@@ -7324,7 +7520,6 @@ async fn a_forgotten_delivery_can_be_sent_again() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(r#"{{"agent_id":"{agent_id}","name":"Sweepable","prompt":"got {{{{body}}}}"}}"#),
     )
     .await;
@@ -7445,7 +7640,6 @@ async fn a_delivery_the_ceiling_refused_can_be_sent_again() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Tight","prompt":"got {{{{body}}}}","max_per_hour":1}}"#
         ),
@@ -7540,7 +7734,6 @@ async fn a_losing_racer_is_not_undone_by_the_winner_failing() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Racy","prompt":"got {{{{body}}}}","max_per_hour":1}}"#
         ),
@@ -7651,7 +7844,6 @@ async fn a_shared_secret_sender_may_repeat_a_payload() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Repeats","prompt":"got {{{{body}}}}","scheme":"shared_secret"}}"#
         ),
@@ -7706,7 +7898,6 @@ async fn a_future_dated_signature_is_remembered_until_it_stops_verifying() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(r#"{{"agent_id":"{agent_id}","name":"Ahead","prompt":"got {{{{body}}}}"}}"#),
     )
     .await;
@@ -9094,8 +9285,6 @@ async fn a_wildcard_host_is_never_exempt_from_the_ceiling() {
 
 #[tokio::test]
 async fn the_roster_says_which_agents_a_caller_may_talk_to() {
-    use outturn::scope::ScopeStore;
-
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
@@ -13674,7 +13863,6 @@ async fn a_delivery_named_twice_starts_one_turn() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Bookings","prompt":"A booking: {{{{body}}}}","scheme":"hmac"}}"#
         ),
@@ -13907,7 +14095,6 @@ async fn an_agents_triggers_are_one_list() {
     let (_, secret) = make_trigger(
         &h,
         &token,
-        &agent,
         &format!(
             r#"{{"agent_id":"{agent}","name":"Bookings","prompt":"{{{{body}}}}","scheme":"hmac"}}"#
         ),

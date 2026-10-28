@@ -41,6 +41,10 @@ build:
       docker:
         dockerfile: Dockerfile
         target: pdf-renderer
+    - image: outturn-heic
+      docker:
+        dockerfile: Dockerfile
+        target: heic
 
 manifests:
   kustomize:

@@ -38,6 +38,10 @@ pub struct StoredFile {
     pub path: String,
     pub scope: &'static str,
     pub size: u64,
+    /// Where the original is, when this is a JPEG made from a HEIC photo at
+    /// upload. Absent for everything else.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub converted_from: Option<String>,
 }
 
 fn read_authority(scope: Scope) -> Authority {
@@ -234,6 +238,7 @@ pub async fn list(
                     path: scope::strip_root(&space, &f.path)?,
                     scope: s.as_str(),
                     size: f.size,
+                    converted_from: None,
                 })
             }));
     }
@@ -241,6 +246,9 @@ pub async fn list(
 }
 
 /// Writes a file, replacing anything at that path.
+///
+/// A HEIC photo is also stored as a JPEG beside it, and what is returned is
+/// the JPEG: that is the file to mention to an agent.
 pub async fn upload(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
@@ -252,11 +260,74 @@ pub async fn upload(
     let space = space_for(&state, &claims, session_id, write_authority(s)).await?;
     let store = storage(&state)?;
 
-    let scoped = format!("{}/{path}", s.as_str());
+    let mut scoped = format!("{}/{path}", s.as_str());
+
+    // A phone's photo becomes a JPEG before anything is stored, so a photo
+    // that cannot be converted is a failed upload the person sees now, not a
+    // file an agent fails to read later. The original is kept beside it.
+    let mut original: Option<(String, Bytes)> = None;
+    let body = if super::heic::is_heif(&body) {
+        let Some(url) = &state.heic_url else {
+            return Err((
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "HEIC photos are not converted on this deployment. \
+                 A JPEG or PNG of the photo can be uploaded instead."
+                    .into(),
+            ));
+        };
+        let jpeg = super::heic::to_jpeg(url, body.clone()).await?;
+
+        // Both named from what they are rather than what they were called.
+        // The original replaces whatever was at its own name, as any upload
+        // does; anything renamed takes a name nobody is using, so a JPEG made
+        // here never lands on a file somebody put there.
+        let kept = super::heic::original_path(&scoped);
+        let kept = if kept == scoped {
+            kept
+        } else {
+            free_name(
+                store.as_ref(),
+                &space,
+                super::heic::candidates(&scoped, "heic"),
+            )
+            .await?
+        };
+        let converted = free_name(
+            store.as_ref(),
+            &space,
+            super::heic::candidates(&scoped, "jpg").filter(|p| *p != kept),
+        )
+        .await?;
+        original = Some((kept, body));
+        scoped = converted;
+        Bytes::from(jpeg)
+    } else {
+        body
+    };
+
     let key = scope::resolve(&space, &scoped).map_err(storage_failed)?;
     store.write(&key, &body).await.map_err(storage_failed)?;
     // Whatever was read out of the previous version is wrong now.
     super::extract::invalidate(store.as_ref(), &key).await;
+
+    // The JPEG first and the original after it, so that a failure between
+    // the two can be undone by removing one file: an upload either stores
+    // both or neither.
+    if let Some((kept, bytes)) = &original {
+        let written = match scope::resolve(&space, kept) {
+            Ok(at) => store.write(&at, bytes).await.map(|_| at),
+            Err(e) => Err(e),
+        };
+        match written {
+            Ok(at) => super::extract::invalidate(store.as_ref(), &at).await,
+            Err(e) => {
+                if let Err(undo) = store.delete(&key).await {
+                    tracing::warn!(key = %key, error = %undo, "could not remove a half-stored photo");
+                }
+                return Err(storage_failed(e));
+            }
+        }
+    }
 
     // A document is bytes until something reads it. Queued rather than done
     // here: a scanned file can take minutes, and the upload has already
@@ -293,7 +364,32 @@ pub async fn upload(
             path: scoped,
             scope: s.as_str(),
             size: body.len() as u64,
+            converted_from: original.map(|(kept, _)| kept),
         }),
+    ))
+}
+
+/// The first of `names` with nothing stored under it.
+///
+/// Bounded, as anything looping on what a client can create should be: a
+/// hundred photos of one name in one place is somebody's script, and is told
+/// so rather than probed further.
+async fn free_name(
+    store: &dyn outturn_core::storage::StorageBackend,
+    space: &Space,
+    names: impl Iterator<Item = String>,
+) -> Result<String, ApiError> {
+    for name in names.take(100) {
+        let key = scope::resolve(space, &name).map_err(storage_failed)?;
+        match store.stat(&key).await {
+            Err(outturn_core::storage::StorageError::NotFound) => return Ok(name),
+            Ok(_) => continue,
+            Err(e) => return Err(storage_failed(e)),
+        }
+    }
+    Err((
+        StatusCode::CONFLICT,
+        "There are too many files of this name here already.".into(),
     ))
 }
 

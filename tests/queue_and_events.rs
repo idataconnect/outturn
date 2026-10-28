@@ -5,7 +5,6 @@
 
 use std::time::Duration;
 
-use outturn::db;
 use outturn::events::{self, EventBus};
 use outturn::jobs;
 use sqlx::postgres::PgPool;
@@ -1381,11 +1380,6 @@ async fn concurrent_turns_do_not_claim_each_others_reply() {
 
     finish!(db);
 }
-
-/// An empty reply nobody is filling is refused rather than buried.
-///
-/// Writing past one would leave it in the transcript, where every later turn
-/// replays it to the model as an empty assistant message.
 
 /// A reply that is only a tool call, whose turn finished, is not abandoned.
 ///

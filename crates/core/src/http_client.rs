@@ -78,6 +78,34 @@ pub fn streaming_client(idle: Duration) -> reqwest::Client {
         .expect("failed to build HTTP client")
 }
 
+/// Why [`read_capped`] gave up on a body.
+#[derive(Debug)]
+pub enum Capped {
+    /// The body was larger than the caller allows.
+    TooLarge,
+    /// The peer stopped partway.
+    Stopped(reqwest::Error),
+}
+
+/// The body, read chunk by chunk and abandoned the moment it passes `max`.
+///
+/// For a reply from a service this tier does not trust to be small: a
+/// renderer or converter turned by its input could otherwise answer with
+/// as much as it liked, and be held in memory whole before anything looked.
+pub async fn read_capped(mut response: reqwest::Response, max: usize) -> Result<Vec<u8>, Capped> {
+    if response.content_length().is_some_and(|n| n > max as u64) {
+        return Err(Capped::TooLarge);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(Capped::Stopped)? {
+        if body.len() + chunk.len() > max {
+            return Err(Capped::TooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,5 +162,41 @@ mod tests {
             "reporting must survive a peer that answers only at the end: {:?}",
             response.err()
         );
+    }
+
+    /// Serves one response with `body` and returns where to reach it.
+    async fn serve(body: Vec<u8>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = socket.write_all(head.as_bytes()).await;
+            let _ = socket.write_all(&body).await;
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_body_past_the_cap_is_refused() {
+        let url = serve(vec![0; 64]).await;
+        let response = reqwest::get(url).await.unwrap();
+        assert!(matches!(
+            read_capped(response, 32).await,
+            Err(Capped::TooLarge)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_body_within_the_cap_is_returned() {
+        let url = serve(vec![7; 32]).await;
+        let response = reqwest::get(url).await.unwrap();
+        assert_eq!(read_capped(response, 32).await.unwrap(), vec![7; 32]);
     }
 }

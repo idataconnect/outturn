@@ -3,7 +3,6 @@
 //! docs/auto-approval.md.
 
 use super::*;
-use outturn::api::role::RoleStore as _;
 
 fn charge_policy() -> String {
     serde_json::json!({

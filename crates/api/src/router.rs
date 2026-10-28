@@ -71,6 +71,9 @@ pub struct ApiState {
     /// rule that could never attach its credential is refused when written.
     /// Not the enforcement; the gateway's copy is.
     pub(super) bindings: outturn_core::egress::bindings::Bindings,
+    /// Where HEIC photos are converted at upload; `None` refuses them.
+    /// Read from `OUTTURN_HEIC_URL` once, when the state is built.
+    pub(super) heic_url: Option<String>,
     /// The gateway's seal public key and its id, handed to whoever seals a
     /// credential. `None` when this deployment has none.
     pub(super) seal_key: Option<(Vec<u8>, String)>,
@@ -139,7 +142,15 @@ impl ApiState {
             worker: std::sync::OnceLock::new(),
             bindings: outturn_core::egress::bindings::Bindings::from_env(),
             seal_key: super::credentials::seal_key_from_env(),
+            heic_url: super::heic::url(),
         }
+    }
+
+    /// Where HEIC photos are converted, for a test with a fake converter or
+    /// one that must have none whatever the environment says.
+    pub fn with_heic_url(mut self, url: Option<String>) -> Self {
+        self.heic_url = url;
+        self
     }
 
     /// The seal public key to hand out, for a test that seals its own.

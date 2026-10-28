@@ -533,6 +533,8 @@ export type StoredFile = {
   path: string
   scope: 'session' | 'agent' | 'workspace'
   size: number
+  /** Where the original is, when this is a JPEG made from a HEIC photo at upload. */
+  converted_from?: string
 }
 
 /** A page of a conversation's files, and where each scope with more goes on. */

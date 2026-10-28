@@ -1,4 +1,11 @@
 //! Shared setup for the integration tests.
+//!
+//! Each test binary compiles this whole module and uses a slice of it, so
+//! what one binary leaves unused another needs, and the compiler, which sees
+//! one binary at a time, cannot tell the two apart. Nothing here is unused
+//! by every binary; something that becomes so should be deleted, not kept
+//! under this.
+#![allow(dead_code)]
 
 pub mod fake_gateway;
 

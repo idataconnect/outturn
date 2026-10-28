@@ -4,6 +4,7 @@
 #
 #   scripts/dev.sh                          # skaffold dev with the Control API open
 #   scripts/dev.sh --with tika              # plus document extraction
+#   scripts/dev.sh --with heic              # plus HEIC photo conversion
 #   scripts/dev.sh --with hollowbrook,weather
 #   scripts/dev.sh --reconfigure            # ask the model questions again
 #   scripts/dev.sh -v info                  # anything else is passed to skaffold

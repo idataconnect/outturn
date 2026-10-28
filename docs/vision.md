@@ -83,6 +83,10 @@ something it cannot fetch, and Gemini gets it as inline data, where a
 translation that kept only the text once asked the model about a picture it
 had never been shown.
 
+**A phone's photo arrives as a JPEG.** HEIC is converted when it is
+uploaded, where a converter is deployed, and refused there where none is; a
+look never has to deal with it. See [heic.md](heic.md).
+
 If the same question is asked twice the second call is wasted. Worth caching
 eventually, keyed on the object and the question; not worth it before anyone
 has seen the numbers.

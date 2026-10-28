@@ -118,6 +118,7 @@ nav:
           - Streaming storage: streaming-storage.md
           - Document extraction: document-extraction.md
           - PDF rendering: pdf-rendering.md
+          - HEIC photos: heic.md
           - Session search: session-search.md
           - History access: history-access.md
           - Looking at an image: vision.md

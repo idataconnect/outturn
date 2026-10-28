@@ -54,7 +54,9 @@ const ALL_TOOLS: &[&str] = &[
     "get_current_time",
 ];
 
-fn options(gateway: &FakeGateway, progress: Option<Arc<dyn Fn(&str) + Send + Sync>>) -> RunOptions {
+type Progress = Arc<dyn Fn(&str) + Send + Sync>;
+
+fn options(gateway: &FakeGateway, progress: Option<Progress>) -> RunOptions {
     RunOptions {
         session_id: Uuid::now_v7(),
         gateway_url: gateway.url.clone(),
@@ -164,8 +166,7 @@ async fn the_system_prompt_leads_the_conversation() {
             options(&gateway, None),
         )
         .await
-        .expect("run")
-        .reply;
+        .expect("run");
 
     let sent = gateway.requests();
     assert_eq!(sent.len(), 1);
@@ -556,8 +557,7 @@ async fn clock_falls_back_to_utc_when_the_zone_is_unknown() {
     runner
         .run(&component(), user("When?"), String::new(), options)
         .await
-        .expect("run")
-        .reply;
+        .expect("run");
 
     let requests = gateway.requests();
     let content = requests[1]["messages"]

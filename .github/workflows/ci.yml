@@ -90,6 +90,40 @@ jobs:
       - name: UI image starts under the pod's restrictions
         run: scripts/check-ui-image.sh
 
+  # The HEIC converter is a workspace of its own, so that nothing else needs
+  # libheif to build; which also means the job above never compiles it. Its
+  # tests decode a real photo, so the HEVC plugin is installed as well as the
+  # library -- and zlib's headers, which Ubuntu's libheif.pc requires and
+  # --no-install-recommends leaves out.
+  heic:
+    name: HEIC converter
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: renderers/heic
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: renderers/heic
+
+      - name: libheif
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libheif-dev libheif-plugin-libde265 zlib1g-dev
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- --deny warnings
+
+      - name: Test
+        run: cargo test
+
   ui:
     name: UI
     runs-on: ubuntu-latest
