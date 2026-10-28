@@ -181,11 +181,6 @@ impl FakeGateway {
         }
     }
 
-    /// Changes what the next request receives.
-    pub fn set(&self, behavior: Behavior) {
-        *self.state.behavior.lock().unwrap() = behavior;
-    }
-
     /// Resolves once a held request has arrived. A permit is kept, so this
     /// returns at once when it arrived before anyone was waiting.
     pub async fn held_request_arrived(&self) {
@@ -227,11 +222,6 @@ impl FakeGateway {
     /// it parses: the gateway's own reply, lost on the way back.
     pub fn garble_egress(&self) {
         *self.state.egress_garbled.lock().unwrap() = true;
-    }
-
-    /// Answers outbound requests normally again.
-    pub fn heal_egress(&self) {
-        *self.state.egress_failure.lock().unwrap() = None;
     }
 
     /// The outbound requests the agent asked for, as the gateway received
