@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - heic.yaml
+
+# Where the API sends HEIC photos. Unset, an upload of one is refused with
+# the reason, so the service and the configuration arrive together or not at
+# all. Only the API calls it: everything after the upload sees the JPEG.
+patches:
+  - target:
+      kind: Deployment
+      name: outturn-api
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: OUTTURN_HEIC_URL
+          value: "http://outturn-heic:8091"

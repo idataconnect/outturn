@@ -101,3 +101,30 @@ ENV LISTEN_ADDR=0.0.0.0:8090
 EXPOSE 8090
 USER 65534:65534
 ENTRYPOINT ["outturn-renderer"]
+
+# The HEIC converter, deployed only where an operator wants phone photos
+# converted (k8s/components/heic). Its own crate and its own image: libheif
+# and its HEVC decoder are in this image and in no other.
+FROM rust:1 AS heic-builder
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libheif-dev && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY renderers/heic/ ./
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release --bin outturn-heic && \
+    cp /app/target/release/outturn-heic /usr/local/bin/outturn-heic
+
+# Debian 13 rather than distroless: libheif finds its decoder as a plugin
+# loaded at runtime, and the package manager is what puts that and every
+# library under it in the right place.
+FROM debian:trixie-slim AS heic
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libheif1 libheif-plugin-libde265 && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=heic-builder /usr/local/bin/outturn-heic /usr/local/bin/outturn-heic
+ENV LISTEN_ADDR=0.0.0.0:8091
+EXPOSE 8091
+USER 65534:65534
+ENTRYPOINT ["outturn-heic"]

@@ -1,0 +1,114 @@
+# The HEIC converter: a phone's photo in, a JPEG out, at upload.
+#
+# Optional, as Tika is. HEVC is a large native decoder handed whatever anyone
+# chose to upload, and a codec with licensing of its own, so it is an image
+# of its own that a deployment runs only by asking for it. Without it a HEIC
+# upload is refused with the reason, rather than stored as something nothing
+# downstream can read.
+#
+# It holds nothing and calls nothing. No database, no credentials, no bucket:
+# the API sends bytes and stores what comes back. So the most a request can
+# do here is spend this pod's time and memory, which the service bounds by
+# file size, pixel count, conversions at once and a time limit
+# (renderers/heic/src/service.rs).
+apiVersion: v1
+kind: Service
+metadata:
+  name: outturn-heic
+spec:
+  selector:
+    app: outturn-heic
+  ports:
+    - name: http
+      port: 8091
+      targetPort: 8091
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outturn-heic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: outturn-heic
+  template:
+    metadata:
+      labels:
+        app: outturn-heic
+    spec:
+      containers:
+        - name: heic
+          image: outturn-heic
+          ports:
+            - containerPort: 8091
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8091
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8091
+            periodSeconds: 10
+          # Two conversions at once, each holding a decoded frame of up to
+          # 50 megapixels at three bytes a pixel -- about 150MB apiece.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: "2"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop: ["ALL"]
+---
+# Reached by the API and nothing else, and reaching nothing at all: a decoder
+# turned by a hostile file has nowhere to send what it read.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-heic
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-heic
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: outturn-api
+      ports:
+        - protocol: TCP
+          port: 8091
+  egress: []
+---
+# The API's side of the same path, for a deployment whose policies close the
+# API's egress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-heic-client
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: outturn-heic
+      ports:
+        - protocol: TCP
+          port: 8091
