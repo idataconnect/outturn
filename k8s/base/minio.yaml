@@ -33,21 +33,40 @@ spec:
       labels:
         app: minio
     spec:
+      # The image runs as its own unprivileged user, so the volume is given
+      # to that user's group.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      initContainers:
+        # A volume written by the image that used to be here belongs to root,
+        # and the local storage class ignores fsGroup, so MinIO could not
+        # write to it ("Unable to write to the backend"). Handed over once;
+        # after that the check finds it already theirs and does nothing.
+        - name: own-data
+          image: alpine:3
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - '[ "$(stat -c %u /data)" = 65532 ] || chown -R 65532:65532 /data'
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+          volumeMounts:
+            - name: data
+              mountPath: /data
       containers:
         - name: minio
-          # quay.io rather than Docker Hub: MinIO stopped publishing the
-          # community image there, and `docker pull minio/minio` now answers
-          # "pull access denied ... or may require 'docker login'", which reads
-          # like a private repository rather than like an image that has gone.
-          # A machine that already had a copy kept working, so this surfaced
-          # only on a fresh checkout -- the worst place for it, since it is
-          # somebody's first attempt to bring the stack up.
-          image: quay.io/minio/minio:latest
-          # A `:latest` tag defaults to pulling on every start, and an
-          # anonymous pull of a popular image can be rate limited -- so a
-          # cluster that has the image already would sit in ImagePullBackOff
-          # waiting for permission to fetch what is on its own disk. Kept for
-          # whatever is local; a newer one arrives by pulling it deliberately.
+          # MinIO stopped publishing community images, so the one that used
+          # to be here was frozen: no fixes, ever. This one is maintained and
+          # tracks the latest release, so it is pinned by digest -- the same
+          # bytes on every machine until somebody moves the pin on purpose.
+          # Production runs it too (docs/deployment.md). Moving the pin:
+          # `docker buildx imagetools inspect cgr.dev/chainguard/minio:latest`.
+          image: cgr.dev/chainguard/minio@sha256:e70b2b1e74d79457f808710483bd726ff364529ca30736eaa15a6ab547d3a5a7
           imagePullPolicy: IfNotPresent
           args: ["server", "/data", "--console-address", ":9001"]
           ports:

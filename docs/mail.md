@@ -59,7 +59,7 @@ the worker checks before each attempt.
 The rule in this repository is that the gateway holds the credentials and
 nothing else does. A relay's password is a credential, so the API never holds
 it: the worker asks the gateway to send, as it asks the gateway to fetch a
-document ([`api::fetch`](../crates/api/src/fetch.rs)), with a token it mints
+document (`crates/api/src/fetch.rs`), with a token it mints
 for the request -- the `mail_send` role, a minute to live, committing to the
 one relay it names. The gateway:
 
