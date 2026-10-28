@@ -19,6 +19,7 @@ mod feedback;
 mod files;
 pub mod gated;
 pub mod grant;
+mod heic;
 pub mod held;
 pub mod inhibitor;
 pub mod invocations;

@@ -48,6 +48,7 @@ import { compactSession } from '../lib/chat'
 import type { SkillCommand } from '../lib/useSkillCommands'
 import {
   deleteFile,
+  readPreview,
   uploadFile,
   uploadPastedImage,
   type ResendRecord,
@@ -862,6 +863,22 @@ export default function Thread({
   // file by path, and what it can do with a CSV or a PDF is a question for the
   // agent and its skills -- refusing here would decide it on their behalf, and
   // wrongly for any workspace that installed something to handle it.
+  // A HEIC photo is stored as a JPEG, and only Safari can show the HEIC that
+  // was dropped, so its thumbnail is the JPEG the server made.
+  async function thumbnail(
+    sessionId: string,
+    storedPath: string,
+    file: File,
+  ): Promise<string | undefined> {
+    // Stored under its own name, so not converted. A browser may not know a
+    // HEIC's type at all, which is why the converted case is told by the path.
+    if (storedPath.endsWith(`/${file.name}`)) {
+      return file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
+    }
+    const preview = await readPreview(sessionId, storedPath).catch(() => undefined)
+    return preview?.kind === 'image' ? preview.url : undefined
+  }
+
   async function storeDropped(files: File[]) {
     if (!sessionId || files.length === 0) return
     setPasting(true)
@@ -869,6 +886,7 @@ export default function Thread({
       for (const file of files) {
         try {
           const stored = await uploadFile(sessionId, 'session', file)
+          const preview = await thumbnail(sessionId, stored.path, file)
           setAttached((current) => [
             ...current,
             {
@@ -876,9 +894,7 @@ export default function Thread({
               // A preview for an image, nothing for anything else: a
               // thumbnail of a spreadsheet is a gray rectangle that has to be
               // read to be understood, which is what the name is for.
-              preview: file.type.startsWith('image/')
-                ? URL.createObjectURL(file)
-                : undefined,
+              preview,
               name: file.name,
             },
           ])

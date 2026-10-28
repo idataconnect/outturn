@@ -93,6 +93,7 @@ offers a recipe to an operator signing in to a deployment that has none.
 | `OUTTURN_THEME` | ui | A shipped theme by name (`hollowbrook`), or a same-origin `/brand/<file>.css`. Unset, the theme the build compiled in |
 | `OUTTURN_DOCS_URL` | ui | Where the help buttons beside settings link to: an http(s) URL, or `off`. Unset, the published documentation; under `npm run dev` it is `VITE_DOCS_URL` |
 | `OUTTURN_API_UPSTREAM` | ui | Where the UI container carries `/v1`, as `host:port`. Default `outturn-api:8080`
+| `OUTTURN_HEIC_URL` | api | The HEIC converter, where `--with heic` deployed one. Unset, a HEIC photo is refused at upload; see [heic.md](docs/heic.md) |
 | `OUTTURN_TIKA_URL` | api, runtime | Tika, where `--with tika` deployed one. Unset, documents are not extracted; see [document-extraction.md](docs/document-extraction.md) |
 | `OUTTURN_CATALOG_URL` | api | Where the model catalog is checked weekly, through the gateway. Default `https://models.dev/api.json`; a mirror works |
 | `OUTTURN_CATALOG_FETCH` | api | `off` stops fetching the catalog; the deployment keeps what it shipped with and what it is given |
@@ -305,4 +306,5 @@ are near before changing it.
   [document-extraction.md](docs/document-extraction.md),
   [pdf-rendering.md](docs/pdf-rendering.md),
   [session-search.md](docs/session-search.md),
-  [history-access.md](docs/history-access.md), [vision.md](docs/vision.md).
+  [history-access.md](docs/history-access.md), [vision.md](docs/vision.md),
+  [heic.md](docs/heic.md).

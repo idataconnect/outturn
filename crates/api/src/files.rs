@@ -241,6 +241,9 @@ pub async fn list(
 }
 
 /// Writes a file, replacing anything at that path.
+///
+/// A HEIC photo is also stored as a JPEG beside it, and what is returned is
+/// the JPEG: that is the file to mention to an agent.
 pub async fn upload(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
@@ -252,7 +255,43 @@ pub async fn upload(
     let space = space_for(&state, &claims, session_id, write_authority(s)).await?;
     let store = storage(&state)?;
 
-    let scoped = format!("{}/{path}", s.as_str());
+    let mut scoped = format!("{}/{path}", s.as_str());
+
+    // A phone's photo becomes a JPEG before anything is stored, so a photo
+    // that cannot be converted is a failed upload the person sees now, not a
+    // file an agent fails to read later. The original is kept beside it.
+    let body = if super::heic::is_heif(&body) {
+        let Some(url) = super::heic::url() else {
+            return Err((
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "HEIC photos are not converted on this deployment. \
+                 A JPEG or PNG of the photo can be uploaded instead."
+                    .into(),
+            ));
+        };
+        let jpeg = super::heic::to_jpeg(&url, body.clone())
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("The photo could not be converted: {e}"),
+                )
+            })?;
+        let converted = super::heic::jpeg_path(&scoped);
+        if converted != scoped {
+            let original = scope::resolve(&space, &scoped).map_err(storage_failed)?;
+            store
+                .write(&original, &body)
+                .await
+                .map_err(storage_failed)?;
+            super::extract::invalidate(store.as_ref(), &original).await;
+            scoped = converted;
+        }
+        Bytes::from(jpeg)
+    } else {
+        body
+    };
+
     let key = scope::resolve(&space, &scoped).map_err(storage_failed)?;
     store.write(&key, &body).await.map_err(storage_failed)?;
     // Whatever was read out of the previous version is wrong now.

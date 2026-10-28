@@ -3209,6 +3209,62 @@ async fn uploads_land_in_the_scope_the_agent_reads_them_from() {
     finish!(h);
 }
 
+/// Without a converter, a HEIC photo is refused when it is uploaded, by its
+/// bytes and whatever it is called, rather than stored as a file no model can
+/// read and no browser but Safari can show.
+#[tokio::test]
+async fn a_heic_photo_is_refused_at_upload_where_nothing_converts_it() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (_, body) = h
+        .post("/v1/agents", Some(&admin), r#"{"name":"A","slug":"a"}"#)
+        .await;
+    let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
+    let (_, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&admin),
+            &format!(
+                r#"{{"agent_id":"{}","title":""}}"#,
+                agent["id"].as_str().expect("id")
+            ),
+        )
+        .await;
+    let session: serde_json::Value = serde_json::from_str(&body).expect("session");
+    let session_id = session["id"].as_str().expect("id");
+
+    for name in ["IMG_1234.HEIC", "photo.jpg"] {
+        let (status, body) = h
+            .send(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!(
+                        "/v1/agent-sessions/{session_id}/files/session/{name}"
+                    ))
+                    .header("authorization", format!("Bearer {admin}"))
+                    .body(Body::from(&b"\0\0\0\x18ftypheic\0\0\0\0mif1heic"[..]))
+                    .expect("request"),
+            )
+            .await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{name}: {body}");
+        assert!(body.contains("HEIC"), "{name}: {body}");
+    }
+
+    let (_, body) = h
+        .get(
+            &format!("/v1/agent-sessions/{session_id}/files"),
+            Some(&admin),
+        )
+        .await;
+    assert!(
+        !body.contains("IMG_1234") && !body.contains("photo.jpg"),
+        "{body}"
+    );
+}
+
 /// Only the runtime key takes work; a signed token never does.
 ///
 /// The runtime holds no signing key, so nothing it could present is a token.
