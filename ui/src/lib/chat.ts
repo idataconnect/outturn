@@ -591,7 +591,9 @@ export async function readPreview(
   const response = await fetch(previewUrl(sessionId, scopedPath), {
     credentials: 'include',
   })
-  if (response.status === 415) return { kind: 'none' }
+  // 415 is a file with no preview, 413 an image too large to send whole:
+  // either way the download is the answer.
+  if (response.status === 415 || response.status === 413) return { kind: 'none' }
   if (!response.ok) {
     throw new ApiError(response.status, await response.text())
   }

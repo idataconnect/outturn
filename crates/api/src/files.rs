@@ -431,6 +431,37 @@ pub async fn download(
 /// a text file of forty megabytes rendered into a browser tab helps nobody.
 pub const MAX_PREVIEW_BYTES: usize = 256 * 1024;
 
+/// The most a preview of an image reads: all of it, up to what an upload may
+/// be.
+///
+/// The top of a text file is still worth reading; the top of a picture is a
+/// strip of it with gray below. An ordinary photo or screenshot is well over
+/// the text bound, so an image is served whole or not at all.
+pub const MAX_IMAGE_PREVIEW_BYTES: usize = MAX_UPLOAD_BYTES;
+
+/// How much of a file of this type a preview may show.
+fn preview_bound(media_type: &str) -> usize {
+    if media_type.starts_with("image/") {
+        MAX_IMAGE_PREVIEW_BYTES
+    } else {
+        MAX_PREVIEW_BYTES
+    }
+}
+
+/// What of `bytes` -- read to one past the bound -- a preview shows, and
+/// whether that is less than the file.
+///
+/// `None` for an image over its bound: half a picture is not a preview of
+/// it, so it is refused rather than cut.
+fn fit<'a>(bytes: &'a [u8], media_type: &str) -> Option<(&'a [u8], bool)> {
+    let bound = preview_bound(media_type);
+    let truncated = bytes.len() > bound;
+    if truncated && media_type.starts_with("image/") {
+        return None;
+    }
+    Some((&bytes[..bytes.len().min(bound)], truncated))
+}
+
 /// What a preview may be served as, decided by the bytes rather than the name.
 ///
 /// An allowlist and a short one. These files are uploaded by people and
@@ -477,18 +508,29 @@ pub async fn preview(
     let key = scope::resolve(&space, &format!("{}/{path}", s.as_str())).map_err(storage_failed)?;
     // One byte past the bound, so a file exactly at the limit is not reported
     // as truncated and one over it is.
-    let bytes = store
+    let mut bytes = store
         .read(&key, 0, MAX_PREVIEW_BYTES as u32 + 1)
         .await
         .map_err(storage_failed)?;
 
-    let truncated = bytes.len() > MAX_PREVIEW_BYTES;
-    let shown = &bytes[..bytes.len().min(MAX_PREVIEW_BYTES)];
-
-    let Some(media_type) = previewable(shown) else {
+    let head = &bytes[..bytes.len().min(MAX_PREVIEW_BYTES)];
+    let Some(media_type) = previewable(head) else {
         return Err((
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "this file has no preview".to_string(),
+        ));
+    };
+    // An image past the text bound is read again, whole, to its own.
+    if bytes.len() > MAX_PREVIEW_BYTES && preview_bound(media_type) > MAX_PREVIEW_BYTES {
+        bytes = store
+            .read(&key, 0, preview_bound(media_type) as u32 + 1)
+            .await
+            .map_err(storage_failed)?;
+    }
+    let Some((shown, truncated)) = fit(&bytes, media_type) else {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "this image is too large to preview".to_string(),
         ));
     };
 
@@ -587,6 +629,35 @@ mod tests {
         assert_eq!(previewable(b"PK\x03\x04\x00\x00"), None);
         assert_eq!(previewable(b"%PDF-1.7\n\x00\x01\x02"), None);
         assert_eq!(previewable(&[0x00, 0x01, 0x02, 0x03]), None);
+    }
+
+    #[test]
+    fn text_is_cut_at_its_bound_and_says_so() {
+        let text = vec![b'a'; MAX_PREVIEW_BYTES + 1];
+        let (shown, truncated) = fit(&text, "text/plain; charset=utf-8").unwrap();
+        assert_eq!(shown.len(), MAX_PREVIEW_BYTES);
+        assert!(truncated);
+
+        let exact = vec![b'a'; MAX_PREVIEW_BYTES];
+        assert_eq!(
+            fit(&exact, "text/plain; charset=utf-8"),
+            Some((&exact[..], false))
+        );
+    }
+
+    #[test]
+    fn an_image_is_shown_whole_or_not_at_all() {
+        // A 400KB photo is past the text bound and nowhere near the image one,
+        // so it comes back entire rather than as its top strip.
+        let photo = vec![0u8; 400 * 1024];
+        assert_eq!(fit(&photo, "image/jpeg"), Some((&photo[..], false)));
+
+        let largest = vec![0u8; MAX_IMAGE_PREVIEW_BYTES];
+        assert_eq!(fit(&largest, "image/png"), Some((&largest[..], false)));
+
+        // Past its bound it is refused, never cut.
+        let over = vec![0u8; MAX_IMAGE_PREVIEW_BYTES + 1];
+        assert_eq!(fit(&over, "image/png"), None);
     }
 
     #[test]
