@@ -173,7 +173,7 @@ async fn harness_with(park: std::time::Duration, gateway_url: Option<String>) ->
         runtime_key,
         pool.clone(),
         outturn::events::EventBus::spawn(pool.clone()),
-        Arc::new(tokio::sync::Notify::new()),
+        outturn::lifecycle::Shutdown::new(),
     )
     .with_long_poll(park)
     // The public half of the seal key a test's gateway opens with.
