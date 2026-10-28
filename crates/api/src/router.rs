@@ -813,6 +813,45 @@ async fn delete_user(
 struct AddIdentity {
     email: String,
     password: String,
+    /// Required when the account is the caller's own; see `prove_own`.
+    #[serde(default)]
+    current_password: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct RemoveIdentity {
+    #[serde(default)]
+    current_password: Option<String>,
+}
+
+/// A person changing how their own account is signed in to proves it is
+/// them, with a password the account already has. Without it, a session left
+/// open on somebody else's screen could add a sign-in of the passer-by's own,
+/// or remove the owner's, and the account would be theirs. Somebody managing
+/// another person's account has their authority instead, and needs no proof.
+///
+/// Refused as 400, not 401: the client reads 401 as a lapsed session and
+/// signs the person out.
+async fn prove_own(
+    state: &ApiState,
+    claims: &SessionClaims,
+    user_id: Uuid,
+    current: Option<&str>,
+) -> Result<(), ApiError> {
+    if claims.subject != user_id {
+        return Ok(());
+    }
+    let current = current.ok_or((
+        StatusCode::BAD_REQUEST,
+        "your current password is needed to change how you sign in".to_string(),
+    ))?;
+    if !state.users.verify_password(user_id, current).await? {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "the current password is not right".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 async fn add_identity(
@@ -828,6 +867,7 @@ async fn add_identity(
         require(&state, &claims, Authority::UsersUpdate).await?;
     }
     target_user(&state, &claims, user_id).await?;
+    prove_own(&state, &claims, user_id, input.current_password.as_deref()).await?;
 
     let identity = state
         .users
@@ -841,12 +881,20 @@ async fn remove_identity(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
     Path((user_id, identity_id)): Path<(Uuid, Uuid)>,
+    body: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
     let claims = authenticate(&state, &headers)?;
     if claims.subject != user_id {
         require(&state, &claims, Authority::UsersUpdate).await?;
     }
     target_user(&state, &claims, user_id).await?;
+    // A DELETE whose body is optional: empty is somebody managing the account.
+    let input: RemoveIdentity = if body.is_empty() {
+        RemoveIdentity::default()
+    } else {
+        serde_json::from_slice(&body).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    };
+    prove_own(&state, &claims, user_id, input.current_password.as_deref()).await?;
 
     state.users.remove_identity(user_id, identity_id).await?;
     // A removed sign-in method may be the one somebody else was using, so

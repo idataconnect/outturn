@@ -72,6 +72,16 @@ An account outside that is 404, not 403, so an id is not an oracle for who
 exists where. Resolving by id alone let one workspace's administrator attach a
 password to any account on the platform and sign in as them.
 
+**Your own account needs no authority, but it needs proof.** Anybody signed
+in may read their own account, rename it, and change how it is signed in to,
+without `users:read` or `users:update` -- that is the Account page. Changing
+how it is signed in to -- a new password, a sign-in added or removed --
+takes the current password, so a session left open on somebody else's screen
+cannot be used to take the account over. Somebody managing another person's
+account has the authority instead and is asked for no password, which is how
+a forgotten one is reset. A password change ends every other session the
+account holds; the one making it stays signed in.
+
 A role somebody holds cannot be deleted. Take it away from them first.
 
 ## Membership is a separate question

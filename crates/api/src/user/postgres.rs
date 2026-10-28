@@ -387,11 +387,7 @@ impl UserStore for PostgresUserStore {
         email: &str,
         password_input: &str,
     ) -> Result<Identity, UserError> {
-        if password_input.len() < 8 {
-            return Err(UserError::Invalid(
-                "password must be at least 8 characters".into(),
-            ));
-        }
+        super::validate_password(password_input)?;
         let hash =
             password::hash(password_input).map_err(|e| UserError::Internal(e.to_string()))?;
         let email = normalize_email(email);
@@ -420,6 +416,23 @@ impl UserStore for PostgresUserStore {
         Ok(read_identity(&row))
     }
 
+    async fn verify_password(&self, user_id: Uuid, input: &str) -> Result<bool, UserError> {
+        let hashes: Vec<Option<String>> = sqlx::query_scalar(
+            "select password_hash from user_identities where user_id = $1 and provider = $2",
+        )
+        .bind(user_id)
+        .bind(PROVIDER_PASSWORD)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(internal)?;
+        for hash in hashes.into_iter().flatten() {
+            if password::verify(input, &hash).map_err(|e| UserError::Internal(e.to_string()))? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     async fn set_password(
         &self,
         user_id: Uuid,
@@ -427,11 +440,7 @@ impl UserStore for PostgresUserStore {
         current: Option<&str>,
         new: &str,
     ) -> Result<(), UserError> {
-        if new.len() < 8 {
-            return Err(UserError::Invalid(
-                "password must be at least 8 characters".into(),
-            ));
-        }
+        super::validate_password(new)?;
         let stored: Option<Option<String>> = sqlx::query_scalar(
             "select password_hash from user_identities \
              where id = $1 and user_id = $2 and provider = $3",

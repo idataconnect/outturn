@@ -1595,7 +1595,9 @@ async fn removing_an_identity_ends_every_session() {
         .method("DELETE")
         .uri(format!("/v1/users/{}/identities/{}", user.id, spare.id))
         .header("cookie", format!("outturn_session={access}"))
-        .body(Body::empty())
+        .header("content-type", "application/json")
+        // Their own account, so they prove it is them.
+        .body(Body::from(r#"{"current_password":"correct-horse"}"#))
         .expect("request");
     let response = h.app.clone().oneshot(req).await.expect("response");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -15430,6 +15432,39 @@ async fn a_person_changes_their_own_password() {
         StatusCode::OK,
         "the session that changed it was signed out"
     );
+
+    // Adding a sign-in to their own account takes the same proof, so an open
+    // session cannot be used to add a passer-by's own way in.
+    let add = |body: serde_json::Value| {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/users/{}/identities", user.id))
+            .header("cookie", format!("outturn_session={access}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request")
+    };
+    let unproven = h
+        .app
+        .clone()
+        .oneshot(add(serde_json::json!({
+            "email": "passer-by@example.com",
+            "password": "mine-now-1",
+        })))
+        .await
+        .expect("response");
+    assert_eq!(unproven.status(), StatusCode::BAD_REQUEST);
+    let proven = h
+        .app
+        .clone()
+        .oneshot(add(serde_json::json!({
+            "email": "pw-spare@example.com",
+            "password": "spare-horse",
+            "current_password": "battery-staple",
+        })))
+        .await
+        .expect("response");
+    assert_eq!(proven.status(), StatusCode::CREATED);
 
     finish!(h);
 }

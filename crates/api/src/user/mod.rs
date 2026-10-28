@@ -120,6 +120,11 @@ pub trait UserStore: Send + Sync {
         new: &str,
     ) -> Result<(), UserError>;
 
+    /// Whether `password` is the password of any of the account's sign-ins:
+    /// the proof a person gives before changing how their own account is
+    /// signed in to.
+    async fn verify_password(&self, user_id: Uuid, password: &str) -> Result<bool, UserError>;
+
     /// Removes one identity. Refuses to remove the last one, which would
     /// orphan the account.
     async fn remove_identity(&self, user_id: Uuid, identity_id: Uuid) -> Result<(), UserError>;
@@ -144,6 +149,20 @@ pub trait UserStore: Send + Sync {
     async fn is_empty(&self) -> Result<bool, UserError>;
 }
 
+/// Shortest password accepted, in bytes. The UI's `minLength` says the same.
+pub const MIN_PASSWORD: usize = 8;
+
+/// The rule every password meets, wherever it is set: creating an account,
+/// adding a sign-in, or changing one.
+pub(super) fn validate_password(password: &str) -> Result<(), UserError> {
+    if password.len() < MIN_PASSWORD {
+        return Err(UserError::Invalid(format!(
+            "password must be at least {MIN_PASSWORD} characters"
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn validate(input: &CreateUser) -> Result<(), UserError> {
     if !input.email.contains('@') || input.email.trim().is_empty() {
         return Err(UserError::Invalid("email must be a valid address".into()));
@@ -151,10 +170,6 @@ pub(super) fn validate(input: &CreateUser) -> Result<(), UserError> {
     if input.display_name.trim().is_empty() {
         return Err(UserError::Invalid("display name must not be empty".into()));
     }
-    if input.password.len() < 8 {
-        return Err(UserError::Invalid(
-            "password must be at least 8 characters".into(),
-        ));
-    }
+    validate_password(&input.password)?;
     Ok(())
 }
