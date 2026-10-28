@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
-import { ArrowLeft, Plus, Save, Shield, Trash2 } from 'lucide-react'
+import { ArrowLeft, Check, Plus, Save, Shield, Trash2, X } from 'lucide-react'
 
 import { ApiError, api, allPages } from '../lib/api'
 import { useSession } from '../lib/session'
@@ -147,11 +147,24 @@ export function PasswordChange({ userId, identityId, own }: { userId: string; id
           className={field}
         />
       </label>
-      <button type="submit" disabled={busy} className={primary}>
-        {busy ? 'Saving…' : 'Save password'}
+      {/* Square, and as tall as the inputs beside them: p-3 around a 16px icon, plus the inputs' 1px border. */}
+      <button
+        type="submit"
+        disabled={busy}
+        aria-label={busy ? 'Saving password' : 'Save password'}
+        title="Save password"
+        className="p-3 rounded-md border border-transparent bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white disabled:opacity-50"
+      >
+        <Check size={16} aria-hidden />
       </button>
-      <button type="button" onClick={() => setOpen(false)} className="text-sm text-surface-600 dark:text-surface-400">
-        Cancel
+      <button
+        type="button"
+        onClick={() => setOpen(false)}
+        aria-label="Cancel"
+        title="Cancel"
+        className="p-3 rounded-md border border-surface-300 dark:border-surface-700 text-surface-600 dark:text-surface-400 hover:bg-surface-100 dark:hover:bg-surface-800"
+      >
+        <X size={16} aria-hidden />
       </button>
       {error && (
         <p role="alert" className="w-full text-sm text-red-600 dark:text-red-400">
