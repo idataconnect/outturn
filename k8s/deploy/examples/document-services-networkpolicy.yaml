@@ -1,12 +1,13 @@
-# The paths OUTTURN_TIKA_URL and OUTTURN_PDF_RENDERER_URL need, which
-# k8s/deploy's policies do not open: neither service is part of a release, and
+# The paths OUTTURN_TIKA_URL, OUTTURN_PDF_RENDERER_URL and OUTTURN_HEIC_URL
+# need, which k8s/deploy's policies do not open: none is part of a release, and
 # without these the namespace's default deny refuses the connection and the
 # feature looks broken rather than unconfigured. Add this file to an overlay's
-# resources beside the services themselves, keeping only the half for the one
-# that is deployed.
+# resources beside the services themselves, keeping only the parts for the
+# ones that are deployed.
 #
-# Written for both running in outturn's namespace with the labels
-# k8s/components/tika and k8s/components/pdf-renderer give them. For one
+# Written for each running in outturn's namespace with the labels
+# k8s/components/tika, k8s/components/pdf-renderer and k8s/components/heic
+# give them. For one
 # elsewhere, replace each podSelector naming it with a namespaceSelector, and
 # drop the ingress policy, which is then that namespace's to write.
 #
@@ -90,4 +91,46 @@ spec:
       ports:
         - protocol: TCP
           port: 8090
+  egress: []
+---
+# The HEIC converter is called by the API alone, at upload, and reaches
+# nothing: it is handed a photo and answers with a JPEG.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-api-to-heic
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: outturn-heic
+      ports:
+        - protocol: TCP
+          port: 8091
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: outturn-heic-from-api
+spec:
+  podSelector:
+    matchLabels:
+      app: outturn-heic
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: outturn-api
+      ports:
+        - protocol: TCP
+          port: 8091
   egress: []

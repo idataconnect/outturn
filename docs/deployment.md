@@ -97,6 +97,7 @@ the API alone and the seal key the gateway alone.
 | `OUTTURN_CREDENTIAL_BINDINGS` | api, gateway | See [credential-bindings.md](credential-bindings.md) |
 | `OUTTURN_TIKA_URL` | api, runtime | Document extraction; see [document-extraction.md](document-extraction.md) |
 | `OUTTURN_PDF_RENDERER_URL` | runtime | See [pdf-rendering.md](pdf-rendering.md) |
+| `OUTTURN_HEIC_URL` | api | The HEIC converter. Unset, HEIC photos are refused at upload; see [heic.md](heic.md) |
 | `OUTTURN_CATALOG_FETCH` | api | `off` to stop the weekly catalog fetch |
 
 The branding is read when the UI container starts, not when it was built, so
@@ -205,12 +206,14 @@ nothing. Two need your attention:
   that would hand a compromised runtime every HTTPS host on the internet: the
   one path every other policy here closes.
 
-Neither Tika nor the PDF renderer is part of a release, and no policy here
-opens a path to one. Setting `OUTTURN_TIKA_URL` or `OUTTURN_PDF_RENDERER_URL`
-alone gets a refused connection -- documents that are never extracted, a PDF
-tool that fails -- rather than an error saying why.
-`k8s/deploy/examples/document-services-networkpolicy.yaml` opens both: the API
-to Tika, and the runtime to the renderer and nothing further. The runtime
+None of Tika, the PDF renderer or the HEIC converter is part of a release,
+and no policy here opens a path to one. Setting `OUTTURN_TIKA_URL`,
+`OUTTURN_PDF_RENDERER_URL` or `OUTTURN_HEIC_URL` alone gets a refused
+connection -- documents that are never extracted, a PDF tool that fails, a
+photo upload answered "the photo converter is not answering" -- rather than an
+error saying why. `k8s/deploy/examples/document-services-networkpolicy.yaml`
+opens all three: the API to Tika and to the converter, and the runtime to the
+renderer, and nothing further. The runtime
 reads `OUTTURN_TIKA_URL` only to know extraction is on, and is not let
 through to Tika. A sketch of one half, for a renderer in the same namespace:
 
