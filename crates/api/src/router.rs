@@ -780,7 +780,12 @@ async fn get_user(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<UserDetail>, ApiError> {
-    let claims = authorize(&state, &headers, Authority::UsersRead).await?;
+    // Anybody may read their own account -- it is where they change their
+    // password; anybody else's needs the authority.
+    let claims = authenticate(&state, &headers)?;
+    if claims.subject != id {
+        require(&state, &claims, Authority::UsersRead).await?;
+    }
     let user = target_user(&state, &claims, id).await?;
     let mut memberships = state.users.memberships(id).await?;
     if !claims.is_system_admin() {
@@ -848,6 +853,62 @@ async fn remove_identity(
     // every session the account holds ends with it.
     state.sessions.revoke_all_for_user(user_id).await?;
     tracing::info!(actor = %claims.subject, user_id = %user_id, "identity removed");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SetPassword {
+    /// Required when the account is the caller's own.
+    #[serde(default)]
+    current_password: Option<String>,
+    new_password: String,
+}
+
+/// `PUT /v1/users/{user_id}/identities/{identity_id}/password`.
+///
+/// A person changing their own gives the current password, so a session left
+/// open on somebody else's screen cannot be used to take the account. Somebody
+/// managing the account sets one without it -- the case of a person who has
+/// forgotten theirs. Either way every other session the account holds ends;
+/// the caller's own stays signed in.
+async fn set_password(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path((user_id, identity_id)): Path<(Uuid, Uuid)>,
+    Json(input): Json<SetPassword>,
+) -> Result<StatusCode, ApiError> {
+    let claims = authenticate(&state, &headers)?;
+    let own = claims.subject == user_id;
+    if !own {
+        require(&state, &claims, Authority::UsersUpdate).await?;
+    }
+    target_user(&state, &claims, user_id).await?;
+    let current = if own {
+        Some(input.current_password.as_deref().ok_or((
+            StatusCode::BAD_REQUEST,
+            "the current password is needed to change your own".to_string(),
+        ))?)
+    } else {
+        None
+    };
+    state
+        .users
+        .set_password(user_id, identity_id, current, &input.new_password)
+        .await
+        .map_err(|e| match e {
+            // Not 401: that is what a lapsed session answers, and the client
+            // signs a person out on it.
+            crate::user::UserError::BadCredentials => (
+                StatusCode::BAD_REQUEST,
+                "the current password is not right".to_string(),
+            ),
+            e => ApiError::from(e),
+        })?;
+    match claims.family_id {
+        Some(family) if own => state.sessions.revoke_all_but(user_id, family).await?,
+        _ => state.sessions.revoke_all_for_user(user_id).await?,
+    };
+    tracing::info!(actor = %claims.subject, user_id = %user_id, "password changed");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2201,6 +2262,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         .route(
             "/v1/users/{user_id}/identities/{identity_id}",
             axum::routing::delete(remove_identity),
+        )
+        .route(
+            "/v1/users/{user_id}/identities/{identity_id}/password",
+            axum::routing::put(set_password),
         )
         .route(
             "/v1/users/{user_id}/workspaces/{workspace_id}/roles",

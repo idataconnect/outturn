@@ -15344,3 +15344,92 @@ async fn files_are_swept_by_activity_and_by_deletion() {
     outturn::api::storage_sweep::sweep(pool, &store, 30).await;
     assert!(!there(file(idle)).await, "idle again, and not swept again");
 }
+
+/// A person changes their own password with the current one; a wrong current
+/// one is refused without signing them out; afterwards the new password signs
+/// in and the old does not, and every other session ends while theirs goes on.
+#[tokio::test]
+async fn a_person_changes_their_own_password() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    seed_user(&h, "pw@example.com", acme, "viewer").await;
+    let users = h.users.list(None, 100).await.expect("list");
+    let user = users
+        .iter()
+        .find(|u| u.identities.iter().any(|i| i.subject == "pw@example.com"))
+        .expect("user")
+        .clone();
+    let identity = user.identities[0].id;
+
+    let elsewhere = login_raw(&h, "pw@example.com", acme).await;
+    let elsewhere_refresh = cookie_named(&elsewhere, "outturn_refresh").expect("refresh");
+    let here = login_raw(&h, "pw@example.com", acme).await;
+    let here_refresh = cookie_named(&here, "outturn_refresh").expect("refresh");
+    let access = cookie_named(&here, "outturn_session").expect("access");
+
+    let put = |body: serde_json::Value| {
+        Request::builder()
+            .method("PUT")
+            .uri(format!(
+                "/v1/users/{}/identities/{identity}/password",
+                user.id
+            ))
+            .header("cookie", format!("outturn_session={access}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request")
+    };
+    let wrong = h
+        .app
+        .clone()
+        .oneshot(put(serde_json::json!({
+            "current_password": "not-it-at-all",
+            "new_password": "battery-staple",
+        })))
+        .await
+        .expect("response");
+    assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
+    let missing = h
+        .app
+        .clone()
+        .oneshot(put(serde_json::json!({ "new_password": "battery-staple" })))
+        .await
+        .expect("response");
+    assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+
+    let changed = h
+        .app
+        .clone()
+        .oneshot(put(serde_json::json!({
+            "current_password": "correct-horse",
+            "new_password": "battery-staple",
+        })))
+        .await
+        .expect("response");
+    assert_eq!(changed.status(), StatusCode::NO_CONTENT);
+
+    assert!(
+        h.users
+            .authenticate("pw@example.com", "battery-staple")
+            .await
+            .is_ok()
+    );
+    assert!(
+        h.users
+            .authenticate("pw@example.com", "correct-horse")
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        refresh_with(&h, &elsewhere_refresh).await.status(),
+        StatusCode::UNAUTHORIZED,
+        "another session outlived the change"
+    );
+    assert_eq!(
+        refresh_with(&h, &here_refresh).await.status(),
+        StatusCode::OK,
+        "the session that changed it was signed out"
+    );
+
+    finish!(h);
+}

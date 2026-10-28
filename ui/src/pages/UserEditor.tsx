@@ -67,6 +67,101 @@ const primary =
 const card =
   'mt-6 space-y-4 p-4 rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900'
 
+/**
+ * A new password for one sign-in. A person changing their own gives the
+ * current one; somebody managing the account sets one without it.
+ */
+export function PasswordChange({ userId, identityId, own }: { userId: string; identityId: string; own: boolean }) {
+  const [open, setOpen] = useState(false)
+  const [current, setCurrent] = useState('')
+  const [next, setNext] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [done, setDone] = useState(false)
+
+  async function onSubmit(event: React.FormEvent) {
+    event.preventDefault()
+    setBusy(true)
+    setError(null)
+    try {
+      await api<void>(`/v1/users/${userId}/identities/${identityId}/password`, {
+        method: 'PUT',
+        body: JSON.stringify(own ? { current_password: current, new_password: next } : { new_password: next }),
+      })
+      setOpen(false)
+      setCurrent('')
+      setNext('')
+      setDone(true)
+    } catch (e) {
+      setError(message(e, 'failed to change the password'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!open) {
+    return (
+      <p className="mt-1 text-xs">
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(true)
+            setDone(false)
+          }}
+          className="underline underline-offset-2 text-surface-700 dark:text-surface-300"
+        >
+          Change password
+        </button>
+        {done && (
+          <span role="status" className="ml-2 text-surface-600 dark:text-surface-400">
+            Password changed. {own ? 'Other sessions were signed out.' : 'Their sessions were signed out.'}
+          </span>
+        )}
+      </p>
+    )
+  }
+  return (
+    <form onSubmit={(e) => void onSubmit(e)} className="mt-2 flex flex-wrap items-end gap-3">
+      {own && (
+        <label className="flex-1 min-w-36">
+          <span className={label}>Current password</span>
+          <input
+            type="password"
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+            required
+            autoComplete="current-password"
+            className={field}
+          />
+        </label>
+      )}
+      <label className="flex-1 min-w-36">
+        <span className={label}>New password</span>
+        <input
+          type="password"
+          value={next}
+          onChange={(e) => setNext(e.target.value)}
+          required
+          minLength={8}
+          autoComplete="new-password"
+          className={field}
+        />
+      </label>
+      <button type="submit" disabled={busy} className={primary}>
+        {busy ? 'Saving…' : 'Save password'}
+      </button>
+      <button type="button" onClick={() => setOpen(false)} className="text-sm text-surface-600 dark:text-surface-400">
+        Cancel
+      </button>
+      {error && (
+        <p role="alert" className="w-full text-sm text-red-600 dark:text-red-400">
+          {error}
+        </p>
+      )}
+    </form>
+  )
+}
+
 function message(e: unknown, fallback: string): string {
   return e instanceof ApiError ? e.message : fallback
 }
@@ -81,6 +176,14 @@ function message(e: unknown, fallback: string): string {
  * likewise -- because they are separate facts about the account and a single
  * "save" button would have to pretend otherwise.
  */
+/** The signed-in person's own account: their name, their ways to sign in, and
+ *  their password, whatever authorities they hold. */
+export function Account() {
+  const state = useSession()
+  if (state.status !== 'authenticated') return null
+  return <EditUser id={state.session.session_id} own />
+}
+
 export default function UserEditor() {
   const { id } = useParams<{ id?: string }>()
   const creating = id === undefined
@@ -189,7 +292,7 @@ function CreateUser() {
   )
 }
 
-function EditUser({ id }: { id: string }) {
+function EditUser({ id, own = false }: { id: string; own?: boolean }) {
   const state = useSession()
   const workspaceId = state.status === 'authenticated' ? state.session.workspace_id : null
   const authorities = state.status === 'authenticated' ? state.session.authorities : []
@@ -355,7 +458,7 @@ function EditUser({ id }: { id: string }) {
 
   return (
     <div className="p-6 max-w-3xl">
-      <Back />
+      {!own && <Back />}
       <h1 className="mt-2 flex items-center gap-3 text-2xl font-semibold text-surface-900 dark:text-surface-100">
         {user?.display_name ?? 'User'}
         {isSystem && (
@@ -416,6 +519,9 @@ function EditUser({ id }: { id: string }) {
                         {i.provider}
                         {i.verified ? ', verified' : ''}
                       </p>
+                      {canUpdate && i.provider === 'password' && (
+                        <PasswordChange userId={id} identityId={i.id} own={self} />
+                      )}
                     </div>
                     {canUpdate && (
                       <button

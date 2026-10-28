@@ -109,6 +109,17 @@ pub trait UserStore: Send + Sync {
         password: &str,
     ) -> Result<Identity, UserError>;
 
+    /// Sets a new password on one of the account's password identities. With
+    /// `current`, the old password must match it -- a person changing their
+    /// own; without, it is somebody allowed to manage the account setting it.
+    async fn set_password(
+        &self,
+        user_id: Uuid,
+        identity_id: Uuid,
+        current: Option<&str>,
+        new: &str,
+    ) -> Result<(), UserError>;
+
     /// Removes one identity. Refuses to remove the last one, which would
     /// orphan the account.
     async fn remove_identity(&self, user_id: Uuid, identity_id: Uuid) -> Result<(), UserError>;

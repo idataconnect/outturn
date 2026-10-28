@@ -201,6 +201,19 @@ impl SessionStore for PostgresSessionStore {
         Ok(result.rows_affected())
     }
 
+    async fn revoke_all_but(&self, user_id: Uuid, keep_family: Uuid) -> Result<u64, SessionError> {
+        let result = sqlx::query(
+            "update refresh_tokens set revoked_at = now() \
+             where user_id = $1 and family_id <> $2 and revoked_at is null",
+        )
+        .bind(user_id)
+        .bind(keep_family)
+        .execute(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(result.rows_affected())
+    }
+
     async fn sweep_expired(&self) -> Result<u64, SessionError> {
         // Rotated and revoked rows are kept until expiry so a replay is still
         // detectable; only genuinely past-use rows are removed.

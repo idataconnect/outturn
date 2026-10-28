@@ -54,7 +54,7 @@ import Roles from './pages/Roles'
 import RoleEditor from './pages/RoleEditor'
 import WorkspaceEditor from './pages/WorkspaceEditor'
 import Users from './pages/Users'
-import UserEditor from './pages/UserEditor'
+import UserEditor, { Account } from './pages/UserEditor'
 import WorkspaceSettings from './pages/WorkspaceSettings'
 import Connections from './pages/Connections'
 import AutoApproval from './pages/AutoApproval'
@@ -576,6 +576,7 @@ function Shell() {
           <Route path="/sessions" element={<Chat />} />
           <Route path="/sessions/new" element={<Chat draft />} />
           <Route path="/sessions/:sessionId" element={<Chat />} />
+          <Route path={paths.account} element={<Account />} />
           <Route
             path="/agents"
             element={

@@ -70,6 +70,10 @@ pub trait SessionStore: Send + Sync {
     /// Ends every session for a user, e.g. after a password change.
     async fn revoke_all_for_user(&self, user_id: Uuid) -> Result<u64, SessionError>;
 
+    /// Ends every session for a user but one: the one changing their own
+    /// password stays signed in, and everywhere else is signed out.
+    async fn revoke_all_but(&self, user_id: Uuid, keep_family: Uuid) -> Result<u64, SessionError>;
+
     /// Removes rows that are past use. Called periodically.
     async fn sweep_expired(&self) -> Result<u64, SessionError>;
 }

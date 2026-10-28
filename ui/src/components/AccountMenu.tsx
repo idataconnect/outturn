@@ -1,9 +1,10 @@
 import { useLocation, useNavigate } from 'react-router'
 import { useEffect, useRef, useState } from 'react'
-import { Building2, Check, ChevronsUpDown, LogOut } from 'lucide-react'
+import { Building2, Check, ChevronsUpDown, LogOut, UserRound } from 'lucide-react'
 
 import { useSession, useSessionActions } from '../lib/session'
 import ThemeToggle from './ThemeToggle'
+import { paths } from '../lib/paths'
 
 /**
  * Initials for the avatar.
@@ -157,6 +158,17 @@ export default function AccountMenu({
             <p className="px-2 pb-1 text-xs text-surface-600 dark:text-surface-400 truncate">
               {state.session.roles.join(', ')}
             </p>
+            <button
+              role="menuitem"
+              onClick={() => {
+                setOpen(false)
+                void navigate(paths.account)
+              }}
+              className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-left text-surface-700 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800"
+            >
+              <UserRound size={14} className="shrink-0 text-surface-400" />
+              Account
+            </button>
             <button
               role="menuitem"
               onClick={signOut}

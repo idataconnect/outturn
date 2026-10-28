@@ -590,7 +590,10 @@ also carries what passwords cannot do alone: setting a first password from an
 invitation rather than having an admin choose one, and resetting a forgotten
 one. A link is single-use, short-lived, and bound to the browser that asked
 for it where that can be done without making a phone that opens mail in
-another app useless.
+another app useless. Once mail is configured and its test message has
+arrived, email is the default sign-in, with passwords kept where the operator
+chooses either. Changing a password, which needs no mail, is built: on the
+account page, with the current one for your own.
 
 **Sizing a conversation in tokens.** Shelved until it can be exact. The
 budget is in bytes because providers tokenize differently and the

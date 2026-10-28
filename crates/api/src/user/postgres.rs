@@ -420,6 +420,50 @@ impl UserStore for PostgresUserStore {
         Ok(read_identity(&row))
     }
 
+    async fn set_password(
+        &self,
+        user_id: Uuid,
+        identity_id: Uuid,
+        current: Option<&str>,
+        new: &str,
+    ) -> Result<(), UserError> {
+        if new.len() < 8 {
+            return Err(UserError::Invalid(
+                "password must be at least 8 characters".into(),
+            ));
+        }
+        let stored: Option<Option<String>> = sqlx::query_scalar(
+            "select password_hash from user_identities \
+             where id = $1 and user_id = $2 and provider = $3",
+        )
+        .bind(identity_id)
+        .bind(user_id)
+        .bind(PROVIDER_PASSWORD)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(internal)?;
+        let stored = stored.ok_or(UserError::IdentityNotFound)?;
+        if let Some(current) = current {
+            let matches = match &stored {
+                Some(hash) => password::verify(current, hash)
+                    .map_err(|e| UserError::Internal(e.to_string()))?,
+                None => false,
+            };
+            if !matches {
+                return Err(UserError::BadCredentials);
+            }
+        }
+        let hash = password::hash(new).map_err(|e| UserError::Internal(e.to_string()))?;
+        sqlx::query("update user_identities set password_hash = $3 where id = $1 and user_id = $2")
+            .bind(identity_id)
+            .bind(user_id)
+            .bind(&hash)
+            .execute(&self.pool)
+            .await
+            .map_err(internal)?;
+        Ok(())
+    }
+
     async fn remove_identity(&self, user_id: Uuid, identity_id: Uuid) -> Result<(), UserError> {
         // Removing the last identity would leave an account nobody can sign in
         // to, so the delete is conditional on another one remaining.

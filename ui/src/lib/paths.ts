@@ -11,6 +11,7 @@
  */
 export const paths = {
   inbox: '/inbox',
+  account: '/account',
   inboxItem: (id: string) => `/inbox/${id}`,
 
   settings: '/settings',
