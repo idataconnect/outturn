@@ -92,7 +92,7 @@ pub struct Puller {
 
 impl Puller {
     /// Runs until the process shuts down.
-    pub fn spawn(self: Arc<Self>, shutdown: Arc<tokio::sync::Notify>) {
+    pub fn spawn(self: Arc<Self>, shutdown: outturn_core::lifecycle::Shutdown) {
         // Whether this pod has ever reached the API. Until it has, a failure
         // to do so is a dependency starting up rather than a fault, and is
         // said once instead of every two seconds.
@@ -101,6 +101,12 @@ impl Puller {
 
         tokio::spawn(async move {
             loop {
+                // Checked before every ask, not only while sleeping: the loop
+                // spends most of its time inside one, and a pod that missed the
+                // signal there went on taking turns until it was killed.
+                if shutdown.is_set() {
+                    return;
+                }
                 // Asking is gated on having somewhere to put the answer. A pod
                 // that cannot take a turn does not ask for one, which is the
                 // whole of admission control now -- there is nothing to refuse
@@ -110,12 +116,12 @@ impl Puller {
                     Err(_) => {
                         tokio::select! {
                             _ = tokio::time::sleep(IDLE_PAUSE) => continue,
-                            _ = shutdown.notified() => return,
+                            _ = shutdown.wait() => return,
                         }
                     }
                 };
 
-                let pause = match Arc::clone(&self).take_one(permit).await {
+                let pause = match Arc::clone(&self).take_one(permit, &shutdown).await {
                     Ok(true) => {
                         // Reaching the API at all clears the startup grace: a
                         // failure after this is a failure, not a wait.
@@ -148,7 +154,7 @@ impl Puller {
                 if !pause.is_zero() {
                     tokio::select! {
                         _ = tokio::time::sleep(pause) => {}
-                        _ = shutdown.notified() => return,
+                        _ = shutdown.wait() => return,
                     }
                 }
             }
@@ -160,7 +166,11 @@ impl Puller {
     }
 
     /// Asks for one turn and runs it. Returns whether there was work.
-    async fn take_one(self: Arc<Self>, permit: super::admission::Permit) -> anyhow::Result<bool> {
+    async fn take_one(
+        self: Arc<Self>,
+        permit: super::admission::Permit,
+        shutdown: &outturn_core::lifecycle::Shutdown,
+    ) -> anyhow::Result<bool> {
         let response = self
             .http
             .post(format!("{}/v1/work", self.api_url))
@@ -175,6 +185,17 @@ impl Puller {
         let Some(assignment) = Assignment::read(&response.bytes().await?)? else {
             return Ok(false);
         };
+
+        // Asked before the pod was told to stop, answered after: handed
+        // straight back for another pod rather than run on one that is going.
+        // The request is let finish rather than dropped, since the API may
+        // already have claimed the job for it.
+        if shutdown.is_set() {
+            let (job_id, lease) = (assignment.head.job_id, assignment.head.lease_token);
+            tracing::info!(job_id = %job_id, "work arrived while stopping; handing it back");
+            self.hand_back(job_id, lease).await;
+            return Ok(false);
+        }
 
         // Spawned so the loop can go back to asking. The permit rides along,
         // so the slot is held for exactly as long as the turn runs.

@@ -368,7 +368,7 @@ pub async fn take(
             _ = tokio::time::sleep(WORK_POLL_INTERVAL) => {}
             // A shutting-down API must not hold a runtime's request open past
             // its own exit, or the pod waits out the full timeout for nothing.
-            _ = Arc::clone(&state.shutdown).notified_owned() => {
+            _ = state.shutdown.wait_owned() => {
                 return Ok(Json(None));
             }
         }

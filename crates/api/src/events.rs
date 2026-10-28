@@ -59,7 +59,7 @@ pub async fn poll(
         query.after,
         limit,
         state.long_poll,
-        Arc::clone(&state.shutdown).notified_owned(),
+        state.shutdown.wait_owned(),
         visible.as_ref(),
     )
     .await

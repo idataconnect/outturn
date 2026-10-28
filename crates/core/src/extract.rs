@@ -227,7 +227,7 @@ pub fn backfill_later(
 pub fn spawn(
     pool: sqlx::PgPool,
     storage: Arc<dyn crate::storage::StorageBackend>,
-    shutdown: Arc<tokio::sync::Notify>,
+    shutdown: crate::lifecycle::Shutdown,
 ) {
     let Some(url) = tika_url() else {
         tracing::info!("no OUTTURN_TIKA_URL; documents will not be extracted");
@@ -240,7 +240,7 @@ pub fn spawn(
         let mut ticker = tokio::time::interval(Duration::from_secs(2));
         loop {
             tokio::select! {
-                _ = shutdown.notified() => return,
+                _ = shutdown.wait() => return,
                 _ = ticker.tick() => {
                     let claimed = match jobs::claim(&pool, &[EXTRACT], 1, jobs::DEFAULT_LEASE).await {
                         Ok(c) => c,

@@ -90,12 +90,12 @@ fn worker(state: &ApiState) -> Result<&Arc<Worker>, ApiError> {
 }
 
 /// Claims compactions and does them, until shutdown.
-pub fn spawn(pool: sqlx::PgPool, worker: Arc<Worker>, shutdown: Arc<tokio::sync::Notify>) {
+pub fn spawn(pool: sqlx::PgPool, worker: Arc<Worker>, shutdown: outturn_core::lifecycle::Shutdown) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         loop {
             tokio::select! {
-                _ = shutdown.notified() => return,
+                _ = shutdown.wait() => return,
                 _ = ticker.tick() => {
                     let claimed = match jobs::claim(&pool, &[COMPACT], 1, jobs::DEFAULT_LEASE).await {
                         Ok(c) => c,

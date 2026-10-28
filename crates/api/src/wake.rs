@@ -967,13 +967,13 @@ async fn settle(
 pub fn spawn(
     pool: sqlx::PgPool,
     actions: Arc<dyn super::actions::ActionStore>,
-    shutdown: Arc<tokio::sync::Notify>,
+    shutdown: outturn_core::lifecycle::Shutdown,
 ) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         loop {
             tokio::select! {
-                _ = shutdown.notified() => return,
+                _ = shutdown.wait() => return,
                 _ = ticker.tick() => {
                     let claimed = match jobs::claim(&pool, &[WAKE], 10, jobs::DEFAULT_LEASE).await {
                         Ok(c) => c,

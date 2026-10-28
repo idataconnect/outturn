@@ -1831,14 +1831,14 @@ impl Worker {
     /// have is gone -- so without this the row stays `running` for ever, and
     /// because a serial key admits no second job while one is running, every
     /// later turn in that session is blocked behind it.
-    pub fn spawn_reaper(self: Arc<Self>, shutdown: Arc<tokio::sync::Notify>) {
+    pub fn spawn_reaper(self: Arc<Self>, shutdown: outturn_core::lifecycle::Shutdown) {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(jobs::LEASE_HEARTBEAT);
             let ttl_days = super::storage_sweep::ttl_days();
             let mut last_storage_sweep: Option<std::time::Instant> = None;
             loop {
                 tokio::select! {
-                    _ = shutdown.notified() => return,
+                    _ = shutdown.wait() => return,
                     _ = ticker.tick() => {
                         match jobs::reap_abandoned(&self.pool).await {
                             Ok((0, _)) => {}

@@ -18,14 +18,14 @@ use super::{Cron, TICK, advance, postgres};
 /// successor leaves a schedule with nowhere to go next -- and a rolling
 /// redeploy is an ordinary event rather than a rare one. The signal is checked
 /// between firings, never inside one, so a firing that has started completes.
-pub async fn run(pool: sqlx::PgPool, shutdown: std::sync::Arc<tokio::sync::Notify>) {
+pub async fn run(pool: sqlx::PgPool, shutdown: outturn_core::lifecycle::Shutdown) {
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
             _ = ticker.tick() => {}
-            _ = shutdown.notified() => {
+            _ = shutdown.wait() => {
                 tracing::info!("schedules: stopping, no new firings will be taken");
                 return;
             }

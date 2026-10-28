@@ -148,7 +148,7 @@ async fn wait_for_change(
 
     let deadline = tokio::time::sleep(state.long_poll);
     tokio::pin!(deadline);
-    let shutdown = Arc::clone(&state.shutdown).notified_owned();
+    let shutdown = state.shutdown.wait_owned();
     tokio::pin!(shutdown);
 
     loop {

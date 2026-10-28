@@ -57,7 +57,7 @@ pub struct ApiState {
     pub(super) action_bus: super::actions::ActionBus,
     /// Fires on shutdown so parked long polls return instead of holding the
     /// drain open for their full timeout.
-    pub(super) shutdown: Arc<tokio::sync::Notify>,
+    pub(super) shutdown: outturn_core::lifecycle::Shutdown,
     /// How long a long poll parks before answering with what is there: the
     /// events read and the action queue's alike. `LONG_POLL` but for a test,
     /// which sets one that suits what it is showing rather than sitting
@@ -106,7 +106,7 @@ impl ApiState {
         runtime_key: outturn_core::auth::RuntimeKey,
         pool: sqlx::PgPool,
         bus: outturn_core::events::EventBus,
-        shutdown: Arc<tokio::sync::Notify>,
+        shutdown: outturn_core::lifecycle::Shutdown,
     ) -> Self {
         Self {
             // Built here rather than passed in: it holds no cache and nothing

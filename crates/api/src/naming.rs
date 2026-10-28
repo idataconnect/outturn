@@ -122,7 +122,7 @@ pub fn spawn(
     pool: sqlx::PgPool,
     chat: Arc<dyn ChatStore>,
     minter: Arc<TokenMinter>,
-    shutdown: Arc<tokio::sync::Notify>,
+    shutdown: outturn_core::lifecycle::Shutdown,
 ) {
     let Ok(gateway_url) = std::env::var("OUTTURN_GATEWAY_URL") else {
         tracing::info!("no OUTTURN_GATEWAY_URL; sessions will not be named");
@@ -134,7 +134,7 @@ pub fn spawn(
         let mut ticker = tokio::time::interval(Duration::from_secs(2));
         loop {
             tokio::select! {
-                _ = shutdown.notified() => return,
+                _ = shutdown.wait() => return,
                 _ = ticker.tick() => {
                     let claimed = match jobs::claim(&pool, &[NAME], 1, jobs::DEFAULT_LEASE).await {
                         Ok(c) => c,
