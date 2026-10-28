@@ -171,25 +171,32 @@ impl Puller {
         permit: super::admission::Permit,
         shutdown: &outturn_core::lifecycle::Shutdown,
     ) -> anyhow::Result<bool> {
-        let response = self
-            .http
-            .post(format!("{}/v1/work", self.api_url))
-            .bearer_auth(self.token()?)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            anyhow::bail!("asking for work returned {}", response.status());
-        }
-
-        let Some(assignment) = Assignment::read(&response.bytes().await?)? else {
+        // Waiting for work is not work, so a pod told to stop drops the wait
+        // at once rather than holding itself up for the rest of a long poll.
+        // A job the API claimed in the instant before the request was dropped
+        // is not lost: its lease lapses and the reaper queues it again.
+        let ask = async {
+            let response = self
+                .http
+                .post(format!("{}/v1/work", self.api_url))
+                .bearer_auth(self.token()?)
+                .send()
+                .await?;
+            if !response.status().is_success() {
+                anyhow::bail!("asking for work returned {}", response.status());
+            }
+            Ok::<_, anyhow::Error>(Assignment::read(&response.bytes().await?)?)
+        };
+        let answer = tokio::select! {
+            answer = ask => answer?,
+            _ = shutdown.wait() => return Ok(false),
+        };
+        let Some(assignment) = answer else {
             return Ok(false);
         };
 
-        // Asked before the pod was told to stop, answered after: handed
-        // straight back for another pod rather than run on one that is going.
-        // The request is let finish rather than dropped, since the API may
-        // already have claimed the job for it.
+        // Answered in the same moment the stop arrived: handed straight back
+        // for another pod rather than run on one that is going.
         if shutdown.is_set() {
             let (job_id, lease) = (assignment.head.job_id, assignment.head.lease_token);
             tracing::info!(job_id = %job_id, "work arrived while stopping; handing it back");
