@@ -142,7 +142,7 @@ export function PasswordChange({ userId, identityId, own }: { userId: string; id
           value={next}
           onChange={(e) => setNext(e.target.value)}
           required
-          minLength={8}
+          minLength={MIN_PASSWORD}
           autoComplete="new-password"
           className={field}
         />
@@ -161,6 +161,9 @@ export function PasswordChange({ userId, identityId, own }: { userId: string; id
     </form>
   )
 }
+
+/** Shortest password the API accepts (`user::MIN_PASSWORD`). */
+const MIN_PASSWORD = 8
 
 function message(e: unknown, fallback: string): string {
   return e instanceof ApiError ? e.message : fallback
@@ -271,7 +274,7 @@ function CreateUser() {
               value={form.password}
               onChange={(e) => setForm({ ...form, password: e.target.value })}
               required
-              minLength={8}
+              minLength={MIN_PASSWORD}
               className={field}
             />
           </label>
@@ -314,6 +317,7 @@ function EditUser({ id, own = false }: { id: string; own?: boolean }) {
   const [name, setName] = useState('')
   const [savingName, setSavingName] = useState(false)
   const [identity, setIdentity] = useState({ email: '', password: '' })
+  const [proof, setProof] = useState('')
   const [addingIdentity, setAddingIdentity] = useState(false)
 
   const load = useCallback(async () => {
@@ -376,9 +380,10 @@ function EditUser({ id, own = false }: { id: string; own?: boolean }) {
     try {
       await api<Identity>(`/v1/users/${id}/identities`, {
         method: 'POST',
-        body: JSON.stringify(identity),
+        body: JSON.stringify(self ? { ...identity, current_password: proof } : identity),
       })
       setIdentity({ email: '', password: '' })
+      setProof('')
       await load()
     } catch (e) {
       setError(message(e, 'failed to add sign-in'))
@@ -388,9 +393,17 @@ function EditUser({ id, own = false }: { id: string; own?: boolean }) {
   }
 
   async function onRemoveIdentity(identity: Identity) {
+    if (self && !proof) {
+      setError('Your current password, in the field below, is needed to remove a sign-in.')
+      return
+    }
     if (!window.confirm(`Remove ${identity.subject} as a way to sign in?`)) return
     try {
-      await api<void>(`/v1/users/${id}/identities/${identity.id}`, { method: 'DELETE' })
+      await api<void>(`/v1/users/${id}/identities/${identity.id}`, {
+        method: 'DELETE',
+        ...(self ? { body: JSON.stringify({ current_password: proof }) } : {}),
+      })
+      setProof('')
       await load()
     } catch (e) {
       setError(message(e, 'failed to remove sign-in'))
@@ -558,10 +571,25 @@ function EditUser({ id, own = false }: { id: string; own?: boolean }) {
                     value={identity.password}
                     onChange={(e) => setIdentity({ ...identity, password: e.target.value })}
                     required
-                    minLength={8}
+                    minLength={MIN_PASSWORD}
                     className={field}
                   />
                 </label>
+                {self && (
+                  // Their own account: proof that it is them, for adding a
+                  // sign-in here or removing one above.
+                  <label className="flex-1 min-w-36">
+                    <span className={label}>Your current password</span>
+                    <input
+                      type="password"
+                      value={proof}
+                      onChange={(e) => setProof(e.target.value)}
+                      required
+                      autoComplete="current-password"
+                      className={field}
+                    />
+                  </label>
+                )}
                 <button type="submit" disabled={addingIdentity} className={primary}>
                   <Plus size={16} aria-hidden />
                   {addingIdentity ? 'Adding…' : 'Add sign-in'}

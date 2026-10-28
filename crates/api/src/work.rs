@@ -173,6 +173,18 @@ pub async fn take(
                 ));
             };
 
+            // Given back if this request is dropped before the assignment
+            // goes out -- a runtime that stopped asking mid-way, as a pod
+            // being shut down now does. Preparing can take seconds, and
+            // without this the turn sat claimed by nobody until its lease
+            // lapsed, holding up the session behind it.
+            let mut unanswered = Unanswered {
+                pool: state.pool.clone(),
+                job_id: handle.job.id,
+                lease_token,
+                armed: true,
+            };
+
             // Renewed from here until the turn is handed out. Preparing it
             // can summarize the conversation, which is a model call of its
             // own; a summary slower than the lease let the reaper give the
@@ -315,6 +327,7 @@ pub async fn take(
                         session_id = %payload.session_id,
                         "handed a turn to a runtime that asked for one"
                     );
+                    unanswered.armed = false;
                     return Ok(Json(Some(Assignment {
                         job_id: handle.job.id,
                         request,
@@ -372,6 +385,40 @@ pub async fn take(
                 return Ok(Json(None));
             }
         }
+    }
+}
+
+/// A claim made for a request that may not live to answer it.
+///
+/// Releasing is a no-op once the job has moved on under this lease -- handed
+/// out, completed, parked, failed or released already -- so only the hand-out
+/// needs to disarm it, and every other way out is safe to leave armed.
+struct Unanswered {
+    pool: sqlx::PgPool,
+    job_id: uuid::Uuid,
+    lease_token: uuid::Uuid,
+    armed: bool,
+}
+
+impl Drop for Unanswered {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let (pool, job_id, lease) = (self.pool.clone(), self.job_id, self.lease_token);
+        tokio::spawn(async move {
+            if let Ok(jobs::Released::Queued) = jobs::release(
+                &pool,
+                job_id,
+                Duration::from_secs(0),
+                jobs::MAX_RELEASES,
+                Some(lease),
+            )
+            .await
+            {
+                tracing::info!(job_id = %job_id, "a turn's asker went away; it is queued again");
+            }
+        });
     }
 }
 
