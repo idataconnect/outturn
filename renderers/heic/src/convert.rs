@@ -15,24 +15,40 @@ const MAX_SIDE: u32 = 2048;
 
 const QUALITY: u8 = 85;
 
-/// Whether these bytes are a HEIF file, by the brand in its `ftyp` box.
+/// Whether these bytes are a HEIC photo, by the brands in its `ftyp` box.
 ///
-/// `mif1` and `msf1` are the generic HEIF brands, which an AVIF also carries
-/// alongside its own; libheif reads both, so neither needs telling apart.
+/// Every brand is read, major and compatible, because a file may name its
+/// HEVC brand only among the compatible ones. The generic HEIF brands count
+/// when nothing says the image is AV1: an AVIF carries them too, and the
+/// decoder here is HEVC's alone. The API sniffs the same way
+/// (crates/api/src/heic.rs); the two are separate workspaces, so it is
+/// written twice rather than shared.
 pub fn is_heif(bytes: &[u8]) -> bool {
-    bytes.len() >= 12
-        && &bytes[4..8] == b"ftyp"
-        && matches!(
-            &bytes[8..12],
-            b"heic" | b"heix" | b"heim" | b"heis" | b"hevc" | b"hevx" | b"mif1" | b"msf1"
-        )
+    if bytes.len() < 16 || &bytes[4..8] != b"ftyp" {
+        return false;
+    }
+    let size = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+    let end = size.clamp(16, bytes.len());
+    let (major, _) = bytes[8..].as_chunks::<4>();
+    let (compatible, _) = bytes[16..end].as_chunks::<4>();
+    let brands = major.iter().take(1).chain(compatible);
+    let (mut hevc, mut generic, mut av1) = (false, false, false);
+    for brand in brands {
+        match brand {
+            b"heic" | b"heix" | b"heim" | b"heis" | b"hevc" | b"hevx" => hevc = true,
+            b"mif1" | b"mif2" | b"msf1" => generic = true,
+            b"avif" | b"avis" => av1 = true,
+            _ => {}
+        }
+    }
+    hevc || (generic && !av1)
 }
 
 /// The most pixels a photo may have before it is decoded.
 ///
-/// A decoded frame is three bytes a pixel, held whole: a 48-megapixel phone
-/// photo is about 145MB. Past this, the file is refused from its header
-/// rather than decoded into a pod that cannot hold it.
+/// A decoded frame is three bytes a pixel, held whole beside libheif's own
+/// planes: a photo at this bound peaks near 350MB. Past it, the file is
+/// refused from its header rather than decoded into a pod that cannot hold it.
 pub const MAX_PIXELS: u64 = 50_000_000;
 
 /// The primary image of a HEIF file, as JPEG.
@@ -74,14 +90,16 @@ pub fn to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
         plane.height as usize,
     );
 
+    // A JPEG's sides are sixteen bits. Only a strip could pass that inside
+    // MAX_PIXELS, and it is refused rather than wrapped.
+    let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
+        return Err(format!(
+            "the photo is {width}x{height}; a JPEG side is at most 65535 pixels"
+        ));
+    };
     let mut out = Vec::new();
     jpeg_encoder::Encoder::new(&mut out, QUALITY)
-        .encode(
-            &rgb,
-            width as u16,
-            height as u16,
-            jpeg_encoder::ColorType::Rgb,
-        )
+        .encode(&rgb, width, height, jpeg_encoder::ColorType::Rgb)
         .map_err(|e| e.to_string())?;
     Ok(out)
 }
@@ -93,7 +111,13 @@ pub fn to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
 /// and turns the small print in a photographed receipt to noise -- the very
 /// thing somebody asks about.
 fn shrink(data: &[u8], stride: usize, width: usize, height: usize) -> (Vec<u8>, usize, usize) {
-    let factor = width.max(height).div_ceil(MAX_SIDE as usize).max(1);
+    // Never so far that the short side vanishes: a strip a few pixels tall
+    // keeps them, and stays longer than MAX_SIDE instead.
+    let factor = width
+        .max(height)
+        .div_ceil(MAX_SIDE as usize)
+        .min(width.min(height))
+        .max(1);
     let (w, h) = (width / factor, height / factor);
     let mut out = Vec::with_capacity(w * h * 3);
     let area = (factor * factor) as u32;
@@ -127,6 +151,25 @@ mod tests {
         assert!(!is_heif(b"\0\0\0\x18ftypisom\0\0\0\0"));
         assert!(!is_heif(b"\xff\xd8\xff\xe0 jpeg"));
         assert!(!is_heif(b"\0\0\0\x18ftyp"));
+    }
+
+    #[test]
+    fn a_heic_brand_among_the_compatible_ones_counts_and_an_avif_does_not() {
+        let mut compatible = b"\0\0\0\x18ftypmif1\0\0\0\0".to_vec();
+        compatible.extend_from_slice(b"heic");
+        assert!(is_heif(&compatible));
+        let mut avif = b"\0\0\0\x1cftypavif\0\0\0\0".to_vec();
+        avif.extend_from_slice(b"mif1miaf");
+        assert!(!is_heif(&avif));
+    }
+
+    #[test]
+    fn a_thin_strip_keeps_its_short_side() {
+        // 6000x2 would shrink by three and leave no rows at all.
+        let data = vec![9u8; 6000 * 2 * 3];
+        let (out, w, h) = shrink(&data, 6000 * 3, 6000, 2);
+        assert_eq!((w, h), (3000, 1));
+        assert_eq!(out.len(), 3000 * 3);
     }
 
     #[test]

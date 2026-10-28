@@ -1,8 +1,8 @@
 //! Converts HEIC photos to JPEG.
 //!
-//! An iPhone saves photos as HEIC, and that is what arrives when one is
-//! uploaded straight off a phone or dragged out of a Mac's photo library. Few
-//! models will read it, and a browser other than Safari will not show it. The
+//! Phones save photos as HEIC, and that is what arrives when one is uploaded
+//! straight off a phone or dragged out of a desktop photo library. Few models
+//! will read it, and only one browser will show it. The
 //! API sends each one here at upload and stores the JPEG beside it, so
 //! nothing after the upload ever sees HEIC.
 //!

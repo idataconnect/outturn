@@ -20,9 +20,10 @@ use tokio::sync::Semaphore;
 /// The largest file accepted: the most the API stores from one upload.
 pub const MAX_HEIC_BYTES: usize = 25 * 1024 * 1024;
 
-/// Conversions one pod runs at once. Each holds a decoded frame, up to
-/// [`crate::MAX_PIXELS`] at three bytes a pixel, so this and the pod's memory
-/// limit are one decision. A request beyond it is told the converter is busy.
+/// Conversions one pod runs at once. Each peaks near 350MB at
+/// [`crate::MAX_PIXELS`] -- the decoded frame and libheif's own planes beside
+/// it -- so this and the pod's 1Gi limit are one decision. A request beyond it
+/// is told the converter is busy at once, not queued.
 pub const CONCURRENT: usize = 2;
 
 /// How long a caller is kept waiting. A phone photo converts in about a

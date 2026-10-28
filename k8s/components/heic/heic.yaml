@@ -52,15 +52,16 @@ spec:
               path: /healthz
               port: 8091
             periodSeconds: 10
-          # Two conversions at once, each holding a decoded frame of up to
-          # 50 megapixels at three bytes a pixel -- about 150MB apiece.
+          # Two conversions at once. Measured, two 50-megapixel photos
+          # together peak at 690MB: the decoded frame is three bytes a pixel,
+          # and libheif holds its own planes beside it while converting.
           resources:
             requests:
               cpu: 50m
               memory: 32Mi
             limits:
               cpu: "2"
-              memory: 512Mi
+              memory: 1Gi
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
