@@ -48,7 +48,7 @@ import { compactSession } from '../lib/chat'
 import type { SkillCommand } from '../lib/useSkillCommands'
 import {
   deleteFile,
-  readPreview,
+  fileUrl,
   uploadFile,
   uploadPastedImage,
   type ResendRecord,
@@ -875,8 +875,14 @@ export default function Thread({
     if (storedPath.endsWith(`/${file.name}`)) {
       return file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
     }
-    const preview = await readPreview(sessionId, storedPath).catch(() => undefined)
-    return preview?.kind === 'image' ? preview.url : undefined
+    // The whole file rather than the preview, which stops at 256KB and would
+    // show a converted phone photo cut off partway down.
+    const scoped = storedPath.split('/').map(encodeURIComponent).join('/')
+    const response = await fetch(fileUrl(sessionId, scoped), {
+      credentials: 'include',
+    }).catch(() => undefined)
+    if (!response?.ok) return undefined
+    return URL.createObjectURL(await response.blob())
   }
 
   async function storeDropped(files: File[]) {
