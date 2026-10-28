@@ -52,6 +52,7 @@ import {
   uploadFile,
   uploadPastedImage,
   type ResendRecord,
+  type StoredFile,
   type WakeRecord,
 } from '../lib/chat'
 import { ApiError } from '../lib/api'
@@ -863,21 +864,19 @@ export default function Thread({
   // file by path, and what it can do with a CSV or a PDF is a question for the
   // agent and its skills -- refusing here would decide it on their behalf, and
   // wrongly for any workspace that installed something to handle it.
-  // A HEIC photo is stored as a JPEG, and only Safari can show the HEIC that
-  // was dropped, so its thumbnail is the JPEG the server made.
+  // A HEIC photo is stored as a JPEG, and most browsers cannot show the
+  // HEIC that was dropped, so its thumbnail is the JPEG the server made.
   async function thumbnail(
     sessionId: string,
-    storedPath: string,
+    stored: StoredFile,
     file: File,
   ): Promise<string | undefined> {
-    // Stored under its own name, so not converted. A browser may not know a
-    // HEIC's type at all, which is why the converted case is told by the path.
-    if (storedPath.endsWith(`/${file.name}`)) {
+    if (!stored.converted_from) {
       return file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
     }
     // The whole file rather than the preview, which stops at 256KB and would
     // show a converted phone photo cut off partway down.
-    const scoped = storedPath.split('/').map(encodeURIComponent).join('/')
+    const scoped = stored.path.split('/').map(encodeURIComponent).join('/')
     const response = await fetch(fileUrl(sessionId, scoped), {
       credentials: 'include',
     }).catch(() => undefined)
@@ -892,7 +891,7 @@ export default function Thread({
       for (const file of files) {
         try {
           const stored = await uploadFile(sessionId, 'session', file)
-          const preview = await thumbnail(sessionId, stored.path, file)
+          const preview = await thumbnail(sessionId, stored, file)
           setAttached((current) => [
             ...current,
             {
