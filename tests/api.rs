@@ -1345,13 +1345,13 @@ async fn refresh_outlives_the_access_token() {
     // is what bounds how long a stolen token or a revoked role stays usable.
     // The refresh token must outlast it by a wide margin, or the user is sent
     // back to the login form during ordinary use.
-    assert!(
-        outturn::api::session::REFRESH_LIFETIME_SECS
-            > outturn::auth::SESSION_TOKEN_LIFETIME_SECS * 100,
-        "refresh lifetime {} must dwarf the access lifetime {}",
-        outturn::api::session::REFRESH_LIFETIME_SECS,
-        outturn::auth::SESSION_TOKEN_LIFETIME_SECS,
-    );
+    const {
+        assert!(
+            outturn::api::session::REFRESH_LIFETIME_SECS
+                > outturn::auth::SESSION_TOKEN_LIFETIME_SECS * 100,
+            "refresh lifetime must dwarf the access lifetime",
+        )
+    };
 
     finish!(h);
 }
@@ -5416,8 +5416,6 @@ async fn a_turn_that_finished_normally_does_not_latch() {
 /// talk to it. See docs/authorities.md.
 #[tokio::test]
 async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
-    use outturn::scope::ScopeStore;
-
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
@@ -5537,8 +5535,6 @@ async fn a_narrowed_person_reaches_only_the_agents_they_were_given() {
 /// read whoever else may not. See docs/authorities.md.
 #[tokio::test]
 async fn an_agents_files_are_narrowed_with_it_but_your_own_stay_yours() {
-    use outturn::scope::ScopeStore;
-
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
@@ -5769,8 +5765,6 @@ async fn setting_a_scope_needs_the_authority_that_assigns_roles() {
 /// in URLs, so "they would have to guess the id" was never the guarantee.
 #[tokio::test]
 async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
-    use outturn::scope::ScopeStore;
-
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let owner = h
@@ -6001,8 +5995,6 @@ async fn a_narrowed_person_cannot_write_to_an_agent_they_were_not_given() {
 /// refuse the history and stream the present. See docs/authorities.md.
 #[tokio::test]
 async fn the_event_feed_is_narrowed_the_same_way_the_transcript_is() {
-    use outturn::scope::ScopeStore;
-
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let owner = h
@@ -6332,7 +6324,7 @@ fn sign(secret: &str, body: &str, at: i64) -> (String, String) {
     (format!("sha256={hex}"), ts)
 }
 
-async fn make_trigger(h: &Harness, token: &str, agent_id: &str, body: &str) -> (String, String) {
+async fn make_trigger(h: &Harness, token: &str, body: &str) -> (String, String) {
     let (status, created) = h.post("/v1/webhook-triggers", Some(token), body).await;
     assert_eq!(status, StatusCode::CREATED, "body: {created}");
     let v: Value = serde_json::from_str(&created).expect("json");
@@ -6376,7 +6368,6 @@ async fn a_signed_delivery_starts_a_turn_and_an_unsigned_one_does_not() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Bookings","prompt":"A booking arrived: {{{{body}}}}","scheme":"hmac"}}"#
         ),
@@ -6473,7 +6464,6 @@ async fn a_path_that_exists_is_indistinguishable_from_one_that_does_not() {
     let (path, _) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(r#"{{"agent_id":"{agent_id}","name":"Real","prompt":"got {{{{body}}}}"}}"#),
     )
     .await;
@@ -6507,7 +6497,6 @@ async fn the_hourly_ceiling_refuses_rather_than_queueing() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Busy","prompt":"got {{{{body}}}}","scheme":"shared_secret","max_per_hour":2}}"#
         ),
@@ -6607,7 +6596,6 @@ async fn a_refusal_before_the_credential_is_proved_writes_nothing() {
     let (path, _secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(r#"{{"agent_id":"{agent_id}","name":"Quiet","prompt":"got {{{{body}}}}"}}"#),
     )
     .await;
@@ -6665,7 +6653,6 @@ async fn a_disabled_trigger_refuses_without_saying_it_exists() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Off","prompt":"got {{{{body}}}}","scheme":"shared_secret","enabled":false}}"#
         ),
@@ -7173,8 +7160,6 @@ async fn a_narrowed_person_cannot_trigger_an_agent_they_were_scoped_away_from() 
     // `agents:update` is deliberately not narrowed per agent, so creating a
     // schedule or a hook was a way around the narrowing rather than a use of
     // it. Two reviews raised this before it was fixed.
-    use outturn::scope::ScopeStore;
-
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
@@ -7288,7 +7273,6 @@ async fn the_same_delivery_is_accepted_once_and_refused_after() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(r#"{{"agent_id":"{agent_id}","name":"Once","prompt":"got {{{{body}}}}"}}"#),
     )
     .await;
@@ -7380,7 +7364,6 @@ async fn a_forgotten_delivery_can_be_sent_again() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(r#"{{"agent_id":"{agent_id}","name":"Sweepable","prompt":"got {{{{body}}}}"}}"#),
     )
     .await;
@@ -7501,7 +7484,6 @@ async fn a_delivery_the_ceiling_refused_can_be_sent_again() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Tight","prompt":"got {{{{body}}}}","max_per_hour":1}}"#
         ),
@@ -7596,7 +7578,6 @@ async fn a_losing_racer_is_not_undone_by_the_winner_failing() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Racy","prompt":"got {{{{body}}}}","max_per_hour":1}}"#
         ),
@@ -7707,7 +7688,6 @@ async fn a_shared_secret_sender_may_repeat_a_payload() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Repeats","prompt":"got {{{{body}}}}","scheme":"shared_secret"}}"#
         ),
@@ -7762,7 +7742,6 @@ async fn a_future_dated_signature_is_remembered_until_it_stops_verifying() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(r#"{{"agent_id":"{agent_id}","name":"Ahead","prompt":"got {{{{body}}}}"}}"#),
     )
     .await;
@@ -9150,8 +9129,6 @@ async fn a_wildcard_host_is_never_exempt_from_the_ceiling() {
 
 #[tokio::test]
 async fn the_roster_says_which_agents_a_caller_may_talk_to() {
-    use outturn::scope::ScopeStore;
-
     let h = harness_or_skip!();
     let acme = h.make_workspace("Acme", "acme").await;
     let admin = h
@@ -13730,7 +13707,6 @@ async fn a_delivery_named_twice_starts_one_turn() {
     let (path, secret) = make_trigger(
         &h,
         &token,
-        agent_id,
         &format!(
             r#"{{"agent_id":"{agent_id}","name":"Bookings","prompt":"A booking: {{{{body}}}}","scheme":"hmac"}}"#
         ),
@@ -13963,7 +13939,6 @@ async fn an_agents_triggers_are_one_list() {
     let (_, secret) = make_trigger(
         &h,
         &token,
-        &agent,
         &format!(
             r#"{{"agent_id":"{agent}","name":"Bookings","prompt":"{{{{body}}}}","scheme":"hmac"}}"#
         ),

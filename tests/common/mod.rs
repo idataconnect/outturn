@@ -1,4 +1,8 @@
 //! Shared setup for the integration tests.
+//!
+//! Each test binary compiles this whole module and uses a slice of it, so
+//! what one binary leaves unused is not dead.
+#![allow(dead_code)]
 
 pub mod fake_gateway;
 
