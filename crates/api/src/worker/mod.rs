@@ -66,6 +66,9 @@ pub struct Worker {
     pub settings: Arc<dyn super::settings::SettingsStore>,
     /// Holds on work: kill switches, and later the approvals a turn waits on.
     pub inhibitors: Arc<dyn super::inhibitor::InhibitorStore>,
+    /// What is waiting on somebody, for the approval a held turn's readers
+    /// can answer where they are.
+    pub actions: Arc<dyn super::actions::ActionStore>,
     /// Signs the token a summary's model call carries. Optional because the
     /// worker runs without one: a deployment with no gateway configured still
     /// prepares turns, it just cannot summarize.

@@ -8,7 +8,6 @@ use outturn_core::jobs;
 use outturn_core::protocol::work::ExecuteEvent;
 use outturn_core::storage::stored;
 
-use crate::actions::ActionStore as _;
 use crate::chat::Usage;
 
 use super::projection::{
@@ -305,7 +304,8 @@ impl Worker {
         //
         // Absent when the hold is anything else: a spend cap and an operator's
         // stop are held the same way and neither is answerable here.
-        let pending = crate::actions::PostgresActionStore::new(self.pool.clone())
+        let pending = self
+            .actions
             .approval_on_session(payload.workspace_id, payload.session_id)
             .await
             .ok()

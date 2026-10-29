@@ -221,6 +221,7 @@ async fn main() {
         inhibitors: Arc::new(outturn_core::inhibitor::PostgresInhibitorStore::new(
             pool.clone(),
         )),
+        actions: Arc::new(outturn_api::actions::PostgresActionStore::new(pool.clone())),
         // A summary is a model call, so it needs both a way to reach the
         // gateway and a token to present. Either missing means the trim
         // does the work alone, which is what it is for.

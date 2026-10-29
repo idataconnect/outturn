@@ -222,6 +222,9 @@ async fn harness_with(
         inhibitors: Arc::new(outturn::inhibitor::PostgresInhibitorStore::new(
             pool.clone(),
         )),
+        actions: Arc::new(outturn::api::actions::PostgresActionStore::new(
+            pool.clone(),
+        )),
         // Without a gateway there is no summarizing, and the trim underneath
         // carries the whole of what most tests exercise. The few about what
         // happens while a summary is written point this at a fake one.
@@ -11683,6 +11686,9 @@ async fn a_conversation_keeps_its_system_prompt_until_it_compacts() {
             h.db.pool.clone(),
         )),
         inhibitors: Arc::new(outturn::inhibitor::PostgresInhibitorStore::new(
+            h.db.pool.clone(),
+        )),
+        actions: Arc::new(outturn::api::actions::PostgresActionStore::new(
             h.db.pool.clone(),
         )),
         minter: None,
