@@ -21,7 +21,9 @@ the tiers in -- is [docs/deployment.md](deployment.md).
 Storage layout and retention are written up separately, in
 [docs/storage.md](storage.md) — including why the object prefixes are
 ordered scope-first rather than as the hierarchy you would expect, which looks
-like a mistake until you know about S3's per-bucket lifecycle rule cap.
+like a mistake until you know about S3's per-bucket lifecycle rule cap. How
+much a workspace may hold, and how that is counted as files are written and
+corrected weekly from the bucket, is [docs/storage-quota.md](storage-quota.md).
 
 How an agent reaches anything outside the platform -- and why the tier running
 workspace code holds no credential and opens no socket -- is in
@@ -216,7 +218,10 @@ Letting a workspace stop being asked about a gate it trusts the agent with is
 built in [docs/auto-approval.md](auto-approval.md):
 policies over the operator's declared `risk` and `auto` ceiling, conditions
 only on the gate's bound fields -- never the agent's own judgment -- decided at
-the gateway and recorded there before the request goes out. Configuring that,
+the gateway and recorded there before the request goes out. How a workspace
+sets it -- one rule per gated operation, in one table and one panel, from
+settings, the skill or the question itself -- is
+[docs/approval-rules.md](approval-rules.md). Configuring that,
 and the rest of a workspace, through an agent is in
 [docs/admin-agent.md](admin-agent.md), and its one rule is that the agent
 proposes and a person confirms through an endpoint its token cannot reach.

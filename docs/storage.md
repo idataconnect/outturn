@@ -64,6 +64,10 @@ these, with a select for where an upload lands that offers only the scopes the
 person may write and defaults to the conversation. A file uploaded there is one
 the agent lists and reads by the same name.
 
+How much a workspace may hold in all of this -- session files and extracted
+text included, skill versions not -- is its storage quota, counted per object
+as files are written and deleted: [storage-quota.md](storage-quota.md).
+
 Not yet: promotion of a file from session scope to something longer-lived,
 retention configured per workspace rather than by one variable, and a sweeper for
 the policies lifecycle rules cannot express.
