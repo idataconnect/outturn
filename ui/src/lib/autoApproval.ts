@@ -1,5 +1,5 @@
 import { allPages, api } from './api'
-import { type Money, type Risk } from './money'
+import { show, type Money, type Risk } from './money'
 
 /** One test a policy applies to a field the gate binds. See docs/auto-approval.md. */
 export type Op = 'eq' | 'ne' | 'in' | 'not_in' | 'lt' | 'le' | 'gt' | 'ge'
@@ -142,15 +142,18 @@ export function policyLink(requires: string, fields: string[] = []): string {
 const upTo = (risk: string | null) =>
   risk === 'low' ? ' of low risk' : risk ? ` of ${risk} risk or lower` : ''
 
-/** What a policy covers, in a line. */
+/** What a policy covers, in a line. A policy over a kind of request names
+ *  the skills it reaches today, where the caller knows them, so a currency or
+ *  a word like "charge" is not left to look like the workspace's own. */
 export function covers(
   p: Pick<Policy, 'selector' | 'max_risk' | 'requires' | 'matches' | 'skill_name'>,
+  skills: string[] = [],
 ): string {
   switch (p.selector) {
     case 'risk':
       return p.max_risk === 'low' ? 'Every low-risk operation' : `Every operation of ${p.max_risk} risk or lower`
     case 'act':
-      return `Every “${p.requires}”${upTo(p.max_risk)}`
+      return `Every “${p.requires}”${upTo(p.max_risk)}${skills.length ? `, in ${skills.join(', ')}` : ''}`
     case 'operation':
       return `${p.matches}${p.skill_name ? ` in ${p.skill_name}` : ''}${upTo(p.max_risk)}`
   }
@@ -307,6 +310,14 @@ export function kindOf(requires: string): string {
   return `${word.charAt(0).toUpperCase()}${word.slice(1)}s`
 }
 
+/** The skills whose money operations need `requires`, in one currency or
+ *  any: what a policy or a band for that kind reaches, named so the page says
+ *  where an operation and its currency come from. */
+export function skillsOf(page: BandsPage | null | undefined, requires: string, currency?: string): string[] {
+  const ops = (page?.operations ?? []).filter((o) => o.requires === requires && (!currency || o.currency === currency))
+  return [...new Set(ops.map((o) => o.skill_name ?? 'an unnamed skill'))]
+}
+
 /** The decimals of each currency the workspace's money operations are in. */
 export function decimalsOf(page: BandsPage | null | undefined):Record<string, number> {
   const out: Record<string, number> = {}
@@ -315,7 +326,7 @@ export function decimalsOf(page: BandsPage | null | undefined):Record<string, nu
   return out
 }
 
-/** A policy's daily totals, as the API writes them. */
+/** A policy's daily totals, in the reader's locale. */
 export function dailyTotals(p: Pick<Policy, 'daily_totals_money'>): string[] {
-  return Object.values(p.daily_totals_money ?? {}).map((m) => m.display)
+  return Object.values(p.daily_totals_money ?? {}).map((m) => show(m))
 }

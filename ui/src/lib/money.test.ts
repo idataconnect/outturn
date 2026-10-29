@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { moneyOf, riskOf, toMinor } from './money'
+import { moneyOf, riskOf, show, toMinor } from './money'
 
 describe('money', () => {
   it('is typed in whole units and kept in minor ones, on the digits', () => {
@@ -33,5 +33,32 @@ describe('money', () => {
     expect(moneyOf({})).toBeNull()
     expect(riskOf({ risk: 'high' })).toBe('high')
     expect(riskOf({ risk: 'severe' })).toBeNull()
+  })
+})
+
+describe('show', () => {
+  const money = (amount: number, currency: string, minor_units: number) => ({
+    amount,
+    currency,
+    minor_units,
+    display: `${currency} ${amount}`,
+  })
+
+  it('writes money as the reader’s locale does, not as one country does', () => {
+    expect(show(money(125000, 'USD', 2), 'en-US')).toBe('$1,250.00')
+    expect(show(money(125000, 'EUR', 2), 'de-DE')).toBe('1.250,00 €')
+  })
+
+  it('keeps the currency’s own decimals', () => {
+    expect(show(money(5000, 'JPY', 0), 'en-US')).toBe('¥5,000')
+    expect(show(money(12345, 'KWD', 3), 'en-US')).toBe('KWD 12.345')
+  })
+
+  it('loses nothing to floating point on a long figure', () => {
+    expect(show(money(900719925474099, 'USD', 2), 'en-US')).toBe('$9,007,199,254,740.99')
+  })
+
+  it('falls back to what the API wrote for a code the browser does not know', () => {
+    expect(show(money(100, 'XYZW', 2), 'en-US')).toBe('XYZW 100')
   })
 })

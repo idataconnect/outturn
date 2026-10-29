@@ -10,7 +10,7 @@ import {
   type BandsView,
   type WriteBands,
 } from '../lib/autoApproval'
-import { toMinor, type Risk } from '../lib/money'
+import { show, toMinor, type Risk } from '../lib/money'
 import RiskBadge from './RiskBadge'
 
 const input =
@@ -24,8 +24,8 @@ const quiet = 'text-xs text-surface-600 dark:text-surface-400'
 /** Bands in a line: where each level ends, and what is above them. */
 function bandsLine(view: BandsView | null, base: Risk | 'its operation’s own'): string {
   const parts: string[] = []
-  if (view?.low) parts.push(`low below ${view.low.display}`)
-  if (view?.medium) parts.push(`medium below ${view.medium.display}`)
+  if (view?.low) parts.push(`low below ${show(view.low)}`)
+  if (view?.medium) parts.push(`medium below ${show(view.medium)}`)
   if (parts.length === 0) return `Every amount is ${base} risk`
   const line = `${parts.join(', ')}, ${base} risk from there`
   return line.charAt(0).toUpperCase() + line.slice(1)
@@ -144,8 +144,8 @@ function OperationBands({ op, mayWrite, onChanged }: { op: BandOperation; mayWri
       {(op.floor.high || op.floor.medium) && (
         <p className={`mt-0.5 ${quiet}`}>
           {[
-            op.floor.medium && `from ${op.floor.medium.display} at least medium`,
-            op.floor.high && `from ${op.floor.high.display} high`,
+            op.floor.medium && `from ${show(op.floor.medium)} at least medium`,
+            op.floor.high && `from ${show(op.floor.high)} high`,
           ]
             .filter(Boolean)
             .join(', ')

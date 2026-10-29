@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 
 import { ApiError, allPages } from '../lib/api'
-import { createOneLine, decimalsOf, kindOf, type BandsPage } from '../lib/autoApproval'
+import { createOneLine, decimalsOf, kindOf, skillsOf, type BandsPage } from '../lib/autoApproval'
 import { toMinor } from '../lib/money'
 import { paths } from '../lib/paths'
 
@@ -42,6 +42,9 @@ export default function OneLinePolicy({ bands, onChanged }: { bands: BandsPage; 
     return c && currencies.includes(c) ? c : (currencies[0] ?? '')
   })
   const ops = bands.operations.filter((o) => o.requires === requires && o.currency === currency)
+  // Named on the line, so the currency reads as the skill's and not the
+  // workspace's.
+  const skills = skillsOf(bands, requires, currency)
   // Both figures are sent in the currency's standard units, whatever its
   // operations count in; the API puts each into an operation's own.
   const minorUnits = decimalsOf(bands)[currency] ?? 2
@@ -140,6 +143,7 @@ export default function OneLinePolicy({ bands, onChanged }: { bands: BandsPage; 
           ) : (
             <span className="font-medium">{kindOf(requires)}</span>
           )}
+          {skills.length > 0 && <span>in {skills.join(', ')}</span>}
           <span>under</span>
           <span className="inline-flex items-center gap-1">
             {currencies.length > 1 ? (
@@ -210,8 +214,8 @@ export default function OneLinePolicy({ bands, onChanged }: { bands: BandsPage; 
         </div>
 
         <p className={hint}>
-          Sets the low band of {ops.length === 1 ? 'its operation' : `its ${ops.length} operations`} in {currency}{' '}
-          where it is not that already.
+          Sets the low band of {ops.map((o) => `${o.matches}${o.skill_name ? ` in ${o.skill_name}` : ''}`).join(', ')},
+          which {ops.length === 1 ? 'counts' : 'count'} in {currency}, where it is not that already.
           At most {PER_TURN} a turn and {PER_DAY} a day; the full editor changes either, and anything else.
         </p>
 

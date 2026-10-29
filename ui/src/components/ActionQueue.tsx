@@ -3,7 +3,7 @@ import { CircleUser, Clock, Inbox, Moon, ShieldQuestion } from 'lucide-react'
 
 import { answerApproval, followUpOf, type ActionItem } from '../lib/actions'
 import { waitingFor } from '../lib/elapsed'
-import { moneyOf, riskOf } from '../lib/money'
+import { moneyOf, riskOf, show } from '../lib/money'
 import RiskBadge from './RiskBadge'
 
 /**
@@ -180,11 +180,11 @@ function ApproveAll({
         {workspace && <span className="font-normal"> in {workspace}</span>}
       </p>
       <ul className="mt-1.5 space-y-0.5 text-xs text-surface-700 dark:text-surface-300">
-        {items.map((item) => (
+        {items.map((item) => ({ item, money: moneyOf(item.payload) })).map(({ item, money }) => (
           <li key={item.id}>
-            {moneyOf(item.payload) && (
+            {money && (
               <span className="font-medium text-surface-900 dark:text-surface-100">
-                {moneyOf(item.payload)?.display} ·{' '}
+                {show(money)} ·{' '}
               </span>
             )}
             {summarize(item) ?? shortId(item.id)}
@@ -255,7 +255,7 @@ function ActionRow({
               <span className="font-medium">{rowLabel(item)}</span>
               {/* The amount before anything else said about it: it is what a
                   yes is mostly a yes to. */}
-              {money && <span className="font-medium"> {money.display}</span>}
+              {money && <span className="font-medium"> {show(money)}</span>}
               {summary && <span className="text-surface-700 dark:text-surface-300"> — {summary}</span>}
             </p>
             {risk && <RiskBadge risk={risk} />}

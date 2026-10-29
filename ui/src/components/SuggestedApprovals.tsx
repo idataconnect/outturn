@@ -12,6 +12,7 @@ import {
   RISK_WORDS,
   type Choice,
 } from '../lib/approvalSuggestion'
+import { currencyCodes } from '../lib/money'
 import type { Annotation, Risk, SkillSource } from '../lib/skills'
 
 type Operation = NonNullable<SkillSource['outline']>['operations'][number]
@@ -179,11 +180,19 @@ export default function SuggestedApprovals({
                 <>
                   <input
                     aria-label="Currency"
-                    placeholder="GBP"
+                    placeholder="Code"
+                    list="currency-codes"
                     value={choice.currency}
                     onChange={(e) => setChoice({ ...choice, currency: e.target.value })}
                     className={`${FIELD} w-16 font-mono`}
                   />
+                  <datalist id="currency-codes">
+                    {currencyCodes().map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </datalist>
                   <input
                     aria-label="Decimal places in the smallest unit"
                     placeholder="2"

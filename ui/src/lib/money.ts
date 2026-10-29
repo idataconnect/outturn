@@ -10,8 +10,9 @@ import type { Risk } from './skills'
 export type { Risk }
 
 /** An amount as the API hands it over: the number in minor units, what it is
- *  in, how a person reads it, and the figure a form starts from. Every amount
- *  a page shows is the API's `display`; nothing here writes money itself. */
+ *  in, how a person reads it, and the figure a form starts from. A page shows
+ *  it with `show`, in the reader's own locale; the API's `display` is what the
+ *  model is told, and the fallback for a code the browser does not know. */
 export type Money = {
   amount: number
   currency: string
@@ -19,6 +20,42 @@ export type Money = {
   display: string
   /** `50`, `12.50`: the amount in whole units, as it is typed. */
   figure: string
+}
+
+/**
+ * An amount as the reader writes money: `£1,250.00` in one locale,
+ * `1.250,00 £` in another, with the currency's own decimals rather than the
+ * locale's. The figure is built from the digits, so nothing is lost to
+ * floating point on its way to the formatter.
+ */
+export function show(
+  m: Pick<Money, 'amount' | 'currency' | 'minor_units' | 'display'>,
+  locale?: string,
+): string {
+  try {
+    const digits = Math.max(0, Math.min(m.minor_units, 20))
+    const abs = Math.abs(m.amount).toString().padStart(digits + 1, '0')
+    const whole = abs.slice(0, abs.length - digits)
+    const part = abs.slice(abs.length - digits)
+    const figure = `${m.amount < 0 ? '-' : ''}${whole}${digits ? `.${part}` : ''}`
+    return new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: m.currency,
+      minimumFractionDigits: digits,
+      maximumFractionDigits: digits,
+    }).format(figure as unknown as number)
+  } catch {
+    return m.display
+  }
+}
+
+/** Every currency code the browser knows, for a field that asks for one. */
+export function currencyCodes(): string[] {
+  try {
+    return Intl.supportedValuesOf('currency')
+  } catch {
+    return []
+  }
 }
 
 /**

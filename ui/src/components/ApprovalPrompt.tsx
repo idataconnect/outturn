@@ -16,7 +16,7 @@ import {
   oneLineLink,
   policyLink,
 } from '../lib/autoApproval'
-import { type FieldMoney, type Risk } from '../lib/money'
+import { show, type FieldMoney, type Risk } from '../lib/money'
 import { useHasAuthority } from '../lib/session'
 import RiskBadge from './RiskBadge'
 
@@ -126,8 +126,8 @@ export default function ApprovalPrompt({
         if (!stale) {
           setOffer({
             money: true,
-            said: `${countOf(chosen.approved, requires)} approved in the last ${amounts.days} days, all under ${chosen.all_under.display}.`,
-            action: `Approve ${kindOf(requires).replace(/^./, (c) => c.toLowerCase())} under ${chosen.suggested_low.display} automatically`,
+            said: `${countOf(chosen.approved, requires)} approved in the last ${amounts.days} days, all under ${show(chosen.all_under)}.`,
+            action: `Approve ${kindOf(requires).replace(/^./, (c) => c.toLowerCase())} under ${show(chosen.suggested_low)} automatically`,
             href: oneLineLink(requires, chosen.currency, chosen.suggested_low),
           })
         }
@@ -183,7 +183,7 @@ export default function ApprovalPrompt({
           </p>
           {approval.money && (
             <p className="mt-1 text-base font-semibold text-surface-900 dark:text-surface-100">
-              {approval.money.display}
+              {show(approval.money)}
             </p>
           )}
           {approval.reason && (
@@ -215,7 +215,7 @@ export default function ApprovalPrompt({
                     {approval.money?.field === field && (
                       <span className="font-sans text-surface-600 dark:text-surface-400">
                         {' '}
-                        ({approval.money.display})
+                        ({show(approval.money)})
                       </span>
                     )}
                   </dd>

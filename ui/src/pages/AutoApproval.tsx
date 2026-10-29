@@ -11,6 +11,7 @@ import {
   dailyTotals,
   listBands,
   listPolicies,
+  skillsOf,
   stateLabel,
   type BandsPage,
   type Policy,
@@ -91,7 +92,7 @@ export default function AutoApproval() {
             key={p.id}
             to={paths.autoApproval(p.id)}
             icon={ShieldCheck}
-            title={covers(p)}
+            title={covers(p, p.selector === 'act' ? skillsOf(bands, p.requires ?? '') : [])}
             badges={
               <Badge>
                 {p.effect === 'exclude' ? 'Exclusion' : stateLabel[p.state]}

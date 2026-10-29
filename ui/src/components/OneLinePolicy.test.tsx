@@ -79,6 +79,12 @@ describe('OneLinePolicy', () => {
     expect(screen.getByText('go through automatically, up to')).toBeTruthy()
   })
 
+  it('names the skill the currency comes from, and the operation it changes', () => {
+    show()
+    expect(screen.getByText('in Bookings')).toBeTruthy()
+    expect(screen.getByText(/Sets the low band of POST \/charges in Bookings, which counts in GBP/)).toBeTruthy()
+  })
+
   it('sends the bands and the policy as one write', async () => {
     show()
     await userEvent.type(screen.getByLabelText('A day'), '500')
