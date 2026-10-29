@@ -28,12 +28,13 @@ import { productName } from './lib/brand'
 import SectionLayout from './components/SectionLayout'
 import InboxProvider from './components/InboxProvider'
 import { useInbox } from './lib/inbox'
-import { ApiError, api, onSessionEnded } from './lib/api'
+import { api, onSessionEnded } from './lib/api'
 import { readFlag, storeFlag } from './lib/layout'
 import { useBreakpoint } from './lib/useBreakpoint'
 import {
   SessionActionsContext,
   SessionContext,
+  restoreSession,
   useSession,
   type Session,
   type SessionActions,
@@ -125,45 +126,21 @@ function useSessionState(): [SessionState, SessionActions] {
    * so anything it cannot supply is missing on every reload.
    */
   const load = useCallback(async () => {
-    // Only the API saying "not you" means signed out. A backend that is down,
-    // restarting or erroring says nothing about the session, and treating that
-    // as a logout throws away a session the server still holds -- during a
-    // redeploy every reload dropped the user at the login form while their
-    // refresh token stayed perfectly valid. So a 401 is decisive and anything
-    // else is retried.
-    for (let attempt = 0; ; attempt++) {
-      try {
-        // api() refreshes and retries on a 401, so a session whose access
-        // token expired while the tab was closed is restored rather than
-        // dropped.
-        const session = await api<Session>('/v1/session')
-        setState({
-          status: 'authenticated',
-          session,
-          displayName: session.display_name,
-          workspaces: session.workspaces,
-        })
-        return
-      } catch (e) {
-        if (e instanceof ApiError && e.status === 401) {
-          setState({ status: 'anonymous' })
-          return
-        }
-        // Say so rather than sitting on a blank page: the retries take
-        // several seconds, and silence during them reads as a broken app.
+    // A 401 is decisive; anything else is asked again until it answers.
+    const session = await restoreSession(
+      () => api<Session>('/v1/session'),
+      // Say so rather than sitting on a blank page: silence while it waits
+      // reads as a broken app.
+      () =>
         setState((prev) =>
           prev.status === 'loading' ? { status: 'loading', reconnecting: true } : prev,
-        )
-
-        if (attempt >= 4) {
-          // Out of patience. An unreachable API is indistinguishable from no
-          // session as far as this screen can tell.
-          setState({ status: 'anonymous' })
-          return
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)))
-      }
-    }
+        ),
+    )
+    setState(
+      session
+        ? { status: 'authenticated', session, displayName: session.display_name, workspaces: session.workspaces }
+        : { status: 'anonymous' },
+    )
   }, [])
 
   // The session cookie is HttpOnly, so its presence cannot be checked here:

@@ -1,5 +1,7 @@
 import { createContext, use } from 'react'
 
+import { ApiError } from './api'
+
 export type WorkspaceMembership = {
   workspace_id: string
   name: string
@@ -59,4 +61,37 @@ export function useSessionActions(): SessionActions {
 export function useHasAuthority(authority: string): boolean {
   const state = useSession()
   return state.status === 'authenticated' && state.session.authorities.includes(authority)
+}
+
+/** How long to wait before asking the API again: one second, then two,
+ *  four, and every ten once it has been a while, so a long outage is not
+ *  asked about many times a second by every open tab. */
+export function retryDelay(attempt: number): number {
+  return Math.min(1000 * 2 ** attempt, 10_000)
+}
+
+/**
+ * The session the API holds, or null where it says there is none.
+ *
+ * Only the API saying "not you" -- a 401, which `api` returns only once a
+ * refresh has been refused too -- means signed out, and it is believed at
+ * once. A backend that is down, restarting or erroring says nothing about
+ * the session, so that is asked again for as long as it takes: giving up used
+ * to show the sign-in form, which could not sign anybody in while the API
+ * was down, over a session that was still good once it came back.
+ */
+export async function restoreSession<T>(
+  read: () => Promise<T>,
+  onReconnecting: () => void,
+  wait: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<T | null> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await read()
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) return null
+      onReconnecting()
+      await wait(retryDelay(attempt))
+    }
+  }
 }
