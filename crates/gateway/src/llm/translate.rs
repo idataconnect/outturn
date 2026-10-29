@@ -3168,3 +3168,313 @@ mod gemini_tests {
         );
     }
 }
+
+/// Each vendor's whole response and its stream, made to say the same thing
+/// and compared. The two paths read the same blocks and parts; where they
+/// still differ, the difference is asserted here as it stands, so changing
+/// it is a decision rather than an accident.
+#[cfg(test)]
+mod path_agreement_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A tool call as both paths can be read for it: id, name, arguments,
+    /// signature.
+    type Call = (String, String, String, Option<String>);
+
+    /// What a stream's chunks add up to, read the way a consumer reads them.
+    #[derive(Debug, Default)]
+    struct Assembled {
+        content: String,
+        reasoning: String,
+        thinking_blocks: Vec<serde_json::Value>,
+        calls: Vec<Call>,
+        finish_reason: Option<String>,
+        refusal: Option<String>,
+    }
+
+    fn assemble(chunks: impl IntoIterator<Item = StreamChunk>) -> Assembled {
+        let mut out = Assembled::default();
+        for chunk in chunks {
+            let choice = &chunk.choices[0];
+            let d = &choice.delta;
+            out.content
+                .push_str(d.content.as_deref().unwrap_or_default());
+            out.reasoning
+                .push_str(d.reasoning.as_deref().unwrap_or_default());
+            out.thinking_blocks.extend(d.thinking_block.clone());
+            for call in d.tool_calls.iter().flatten() {
+                let slot = call.index as usize;
+                if out.calls.len() <= slot {
+                    out.calls.resize(slot + 1, Default::default());
+                }
+                let entry = &mut out.calls[slot];
+                if let Some(id) = &call.id {
+                    entry.0 = id.clone();
+                }
+                if let Some(f) = &call.function {
+                    if let Some(name) = &f.name {
+                        entry.1 = name.clone();
+                    }
+                    entry.2.push_str(f.arguments.as_deref().unwrap_or_default());
+                }
+                if call.provider_signature.is_some() {
+                    entry.3 = call.provider_signature.clone();
+                }
+            }
+            if choice.finish_reason.is_some() {
+                out.finish_reason = choice.finish_reason.clone();
+            }
+            if d.refusal.is_some() {
+                out.refusal = d.refusal.clone();
+            }
+        }
+        out
+    }
+
+    fn calls_of(resp: &ChatCompletionResponse) -> Vec<Call> {
+        resp.choices[0]
+            .message
+            .tool_calls
+            .iter()
+            .flatten()
+            .map(|c| {
+                (
+                    c.id.clone(),
+                    c.function.name.clone(),
+                    c.function.arguments.clone(),
+                    c.provider_signature.clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn text_of(resp: &ChatCompletionResponse) -> String {
+        match &resp.choices[0].message.content {
+            MessageContent::Text(t) => t.clone(),
+            other => panic!("expected text, got {other:?}"),
+        }
+    }
+
+    /// One Anthropic reply, whole and as the events that stream it.
+    fn anthropic_both(
+        content: serde_json::Value,
+        events: Vec<serde_json::Value>,
+        stop_reason: &str,
+        stop_details: serde_json::Value,
+    ) -> (ChatCompletionResponse, Assembled) {
+        let whole = anthropic_to_openai(&json!({
+            "id": "msg_1", "model": "claude-test",
+            "content": content,
+            "stop_reason": stop_reason,
+            "stop_details": stop_details,
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }))
+        .expect("translate");
+        let mut stream = AnthropicStream::new();
+        let mut all = vec![json!({
+            "type": "message_start",
+            "message": {"id": "msg_1", "model": "claude-test",
+                        "usage": {"input_tokens": 10, "output_tokens": 1}},
+        })];
+        all.extend(events);
+        all.push(json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": stop_reason, "stop_details": stop_details},
+            "usage": {"output_tokens": 5},
+        }));
+        all.push(json!({"type": "message_stop"}));
+        let streamed = assemble(all.iter().filter_map(|e| stream.event(e)));
+        (whole, streamed)
+    }
+
+    #[test]
+    fn anthropic_text_and_a_split_tool_call_agree() {
+        let (whole, streamed) = anthropic_both(
+            json!([
+                {"type": "text", "text": "Looking."},
+                {"type": "tool_use", "id": "toolu_1", "name": "search",
+                 "input": {"q": "x"}},
+            ]),
+            vec![
+                json!({"type": "content_block_start", "index": 0,
+                       "content_block": {"type": "text", "text": ""}}),
+                json!({"type": "content_block_delta", "index": 0,
+                       "delta": {"type": "text_delta", "text": "Look"}}),
+                json!({"type": "content_block_delta", "index": 0,
+                       "delta": {"type": "text_delta", "text": "ing."}}),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "content_block_start", "index": 1,
+                       "content_block": {"type": "tool_use", "id": "toolu_1",
+                                         "name": "search", "input": {}}}),
+                json!({"type": "content_block_delta", "index": 1,
+                       "delta": {"type": "input_json_delta", "partial_json": "{\"q\":"}}),
+                json!({"type": "content_block_delta", "index": 1,
+                       "delta": {"type": "input_json_delta", "partial_json": "\"x\"}"}}),
+                json!({"type": "content_block_stop", "index": 1}),
+            ],
+            "tool_use",
+            serde_json::Value::Null,
+        );
+        assert_eq!(text_of(&whole), streamed.content);
+        assert_eq!(calls_of(&whole), streamed.calls);
+        assert_eq!(whole.choices[0].finish_reason, streamed.finish_reason);
+        assert_eq!(streamed.finish_reason.as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn anthropic_max_tokens_agrees() {
+        let (whole, streamed) = anthropic_both(
+            json!([{"type": "text", "text": "cut"}]),
+            vec![
+                json!({"type": "content_block_start", "index": 0,
+                       "content_block": {"type": "text", "text": ""}}),
+                json!({"type": "content_block_delta", "index": 0,
+                       "delta": {"type": "text_delta", "text": "cut"}}),
+            ],
+            "max_tokens",
+            serde_json::Value::Null,
+        );
+        assert_eq!(text_of(&whole), streamed.content);
+        assert_eq!(whole.choices[0].finish_reason, streamed.finish_reason);
+        assert_eq!(streamed.finish_reason.as_deref(), Some("length"));
+    }
+
+    /// Disagreement, kept: the stream forwards thinking as `reasoning` and
+    /// the signed block for replay, and the whole response drops both.
+    #[test]
+    fn anthropic_thinking_reaches_only_the_stream() {
+        let (whole, streamed) = anthropic_both(
+            json!([
+                {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+                {"type": "text", "text": "ok"},
+            ]),
+            vec![
+                json!({"type": "content_block_start", "index": 0,
+                       "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
+                json!({"type": "content_block_delta", "index": 0,
+                       "delta": {"type": "thinking_delta", "thinking": "hmm"}}),
+                json!({"type": "content_block_delta", "index": 0,
+                       "delta": {"type": "signature_delta", "signature": "sig"}}),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "content_block_start", "index": 1,
+                       "content_block": {"type": "text", "text": ""}}),
+                json!({"type": "content_block_delta", "index": 1,
+                       "delta": {"type": "text_delta", "text": "ok"}}),
+            ],
+            "end_turn",
+            serde_json::Value::Null,
+        );
+        assert_eq!(text_of(&whole), streamed.content);
+        assert_eq!(streamed.reasoning, "hmm");
+        assert_eq!(
+            streamed.thinking_blocks,
+            vec![json!({"type": "thinking", "thinking": "hmm", "signature": "sig"})]
+        );
+        assert!(whole.choices[0].message.thinking_blocks.is_empty());
+        assert_eq!(whole.choices[0].parts.len(), 1, "only the text");
+    }
+
+    /// The finish reason agrees; the explanation reaches only the stream,
+    /// since the whole response has no field for it.
+    #[test]
+    fn anthropic_refusal_agrees_on_its_finish_reason() {
+        let details = json!({"explanation": "Not this. More words.", "category": "cyber"});
+        let (whole, streamed) = anthropic_both(json!([]), vec![], "refusal", details);
+        assert_eq!(whole.choices[0].finish_reason, streamed.finish_reason);
+        assert_eq!(streamed.finish_reason.as_deref(), Some("content_filter"));
+        assert_eq!(streamed.refusal.as_deref(), Some("Not this."));
+    }
+
+    /// One Gemini reply: the whole response is the chunks' parts in one
+    /// candidate, with the last chunk's finish reason.
+    fn gemini_both(
+        chunks: Vec<serde_json::Value>,
+        finish: &str,
+    ) -> (ChatCompletionResponse, Assembled) {
+        let parts: Vec<serde_json::Value> = chunks
+            .iter()
+            .flat_map(|c| c.as_array().cloned().unwrap_or_default())
+            .collect();
+        let mut candidate = json!({"content": {"parts": parts}, "finishReason": finish});
+        if finish == "SAFETY" {
+            candidate["finishMessage"] = json!("Blocked.");
+        }
+        let whole = gemini_to_openai(&json!({
+            "candidates": [candidate], "modelVersion": "gemini-test",
+        }))
+        .expect("translate");
+        let mut stream = GeminiStream::new("gemini-test".to_string());
+        let n = chunks.len();
+        let streamed = assemble(chunks.into_iter().enumerate().filter_map(|(i, parts)| {
+            let mut c = json!({"content": {"parts": parts}});
+            if i + 1 == n {
+                c["finishReason"] = json!(finish);
+                if finish == "SAFETY" {
+                    c["finishMessage"] = json!("Blocked.");
+                }
+            }
+            stream.event(&json!({"candidates": [c]}))
+        }));
+        (whole, streamed)
+    }
+
+    #[test]
+    fn gemini_text_and_calls_agree() {
+        let (whole, streamed) = gemini_both(
+            vec![
+                json!([{"text": "Look"}]),
+                json!([{"text": "ing."}]),
+                json!([
+                    {"functionCall": {"name": "search", "args": {"q": "x"}},
+                     "thoughtSignature": "sig"},
+                    {"functionCall": {"id": "own", "name": "fetch", "args": {}}},
+                ]),
+            ],
+            "STOP",
+        );
+        assert_eq!(text_of(&whole), streamed.content);
+        assert_eq!(calls_of(&whole), streamed.calls);
+        assert_eq!(streamed.calls[0].0, "gemini_call_0");
+        assert_eq!(whole.choices[0].finish_reason, streamed.finish_reason);
+        assert_eq!(streamed.finish_reason.as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn gemini_max_tokens_agrees() {
+        let (whole, streamed) = gemini_both(vec![json!([{"text": "cut"}])], "MAX_TOKENS");
+        assert_eq!(text_of(&whole), streamed.content);
+        assert_eq!(whole.choices[0].finish_reason, streamed.finish_reason);
+        assert_eq!(streamed.finish_reason.as_deref(), Some("length"));
+    }
+
+    /// Disagreement, kept: the stream says why the provider declined, and
+    /// the whole response carries only the finish reason.
+    #[test]
+    fn gemini_refusal_agrees_on_its_finish_reason() {
+        let (whole, streamed) = gemini_both(vec![json!([])], "SAFETY");
+        assert_eq!(whole.choices[0].finish_reason, streamed.finish_reason);
+        assert_eq!(streamed.finish_reason.as_deref(), Some("content_filter"));
+        assert_eq!(streamed.refusal.as_deref(), Some("Blocked."));
+    }
+
+    /// Disagreement, kept: a signature on a text part is held by the stream
+    /// for the next round, and the whole response has nowhere it goes.
+    #[test]
+    fn gemini_text_signature_is_kept_only_by_the_stream() {
+        let parts = json!([{"text": "hi"}, {"text": "", "thoughtSignature": "tsig"}]);
+        let mut stream = GeminiStream::new("g".to_string());
+        stream.event(&json!({"candidates": [{"content": {"parts": parts}}]}));
+        assert_eq!(stream.text_signature(), Some("tsig"));
+        let whole = gemini_to_openai(&json!({"candidates": [
+            {"content": {"parts": parts}, "finishReason": "STOP"},
+        ]}))
+        .expect("translate");
+        assert_eq!(text_of(&whole), "hi");
+        assert_eq!(
+            whole.choices[0].parts.len(),
+            2,
+            "an empty part is still a part"
+        );
+    }
+}
