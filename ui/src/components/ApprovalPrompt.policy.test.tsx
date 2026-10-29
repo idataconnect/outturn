@@ -77,15 +77,15 @@ describe('the offer drawn from what was approved', () => {
     amounts.mockReset()
   })
 
-  it('says how many and how large, and opens the one line at the suggested figure', async () => {
+  it('says how many and how large, and opens the rule at the suggested figure', async () => {
     amounts.mockResolvedValue(approvedInPounds(12))
     show(['approvals:answer', 'approvals:delegate'])
     expect(await screen.findByText(/12 charges approved in the last 30 days, all under £40\.00\./)).toBeTruthy()
     const link = screen.getByRole('link', { name: 'Approve charges under £50.00 automatically' })
     const query = new URLSearchParams((link.getAttribute('href') ?? '').split('?')[1])
-    expect(query.get('line')).toBe('charge')
-    expect(query.get('currency')).toBe('GBP')
-    expect(query.get('low')).toBe('50')
+    expect(link.getAttribute('href')).toMatch(/^\/settings\/approvals\?/)
+    expect(query.get('requires')).toBe('charge')
+    expect(query.get('under')).toBe('50')
     // The count alone is not asked for when the amounts said enough.
     expect(counted).not.toHaveBeenCalled()
   })
@@ -116,16 +116,11 @@ describe('ApprovalPrompt and auto-approval', () => {
     amounts.mockResolvedValue({ requires: 'charge', days: 30, currencies: [], may_delegate: true })
   })
 
-  it('links to a prefilled policy once the act has been approved three times', async () => {
+  it('links to the rules for the act once it has been approved three times', async () => {
     counted.mockResolvedValue({ requires: 'charge', approved: 3, may_delegate: true })
     show(['approvals:answer', 'approvals:delegate'])
-    const link = await screen.findByRole('link', { name: /auto-approval policy for “charge”/i })
-    const href = link.getAttribute('href') ?? ''
-    expect(href).toContain('/settings/auto-approval/new?')
-    const query = new URLSearchParams(href.split('?')[1])
-    expect(query.get('requires')).toBe('charge')
-    expect(query.get('selector')).toBe('act')
-    expect(query.getAll('field')).toEqual(['booking_id', 'amount_pence'])
+    const link = await screen.findByRole('link', { name: 'Rules for “charge”' })
+    expect(link.getAttribute('href')).toBe('/settings/approvals?requires=charge')
     // A link, and never a box ticked on the way past.
     expect(screen.queryByRole('checkbox')).toBeNull()
   })

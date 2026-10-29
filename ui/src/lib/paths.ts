@@ -21,9 +21,9 @@ export const paths = {
   roles: '/settings/roles',
   connections: '/settings/connections',
   approvals: '/settings/approvals',
-  /** One operation's rule, opened in its panel, with an amount to start from. */
-  approvalRule: (op: { skill_id: string; requires: string; matches: string }, under?: string) =>
-    `/settings/approvals?${new URLSearchParams({ ...op, ...(under ? { under } : {}) })}`,
+  /** One operation's rule, opened in its panel. */
+  approvalRule: (op: { skill_id: string; requires: string; matches: string }) =>
+    `/settings/approvals?${new URLSearchParams(op)}`,
   newAutoApproval: '/settings/auto-approval/new',
   autoApproval: (id: string) => `/settings/auto-approval/${id}`,
   newRole: '/settings/roles/new',

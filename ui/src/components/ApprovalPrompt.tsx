@@ -13,9 +13,8 @@ import {
   approvedAmounts,
   countOf,
   kindOf,
-  oneLineLink,
-  policyLink,
 } from '../lib/autoApproval'
+import { ruleLink } from '../lib/approvalRules'
 import { show, type FieldMoney, type Risk } from '../lib/money'
 import { useHasAuthority } from '../lib/session'
 import RiskBadge from './RiskBadge'
@@ -106,7 +105,6 @@ export default function ApprovalPrompt({
   const mayDelegate = delegates && answers
   const [offer, setOffer] = useState<Offer | null>(null)
   const requires = approval.requires
-  const fields = (approval.binds ?? []).map((b) => b.field).join(',')
   const followup = approval.followup ?? null
   const currency = approval.money?.currency ?? null
   useEffect(() => {
@@ -128,26 +126,26 @@ export default function ApprovalPrompt({
             money: true,
             said: `${countOf(chosen.approved, requires)} approved in the last ${amounts.days} days, all under ${show(chosen.all_under)}.`,
             action: `Approve ${kindOf(requires).replace(/^./, (c) => c.toLowerCase())} under ${show(chosen.suggested_low)} automatically`,
-            href: oneLineLink(requires, chosen.currency, chosen.suggested_low),
+            href: ruleLink(requires, chosen.suggested_low),
           })
         }
         return
       }
-      // Otherwise the count alone, and the full editor, its fields filled in.
+      // Otherwise the count alone.
       const n = await answeredCount(requires).catch(() => null)
       if (!stale && n?.may_delegate && n.approved >= OFFER_AFTER) {
         setOffer({
           money: false,
           said: 'this workspace has approved it several times before',
-          action: `Auto-approval policy for “${requires}”`,
-          href: policyLink(requires, fields ? fields.split(',') : []),
+          action: `Rules for “${requires}”`,
+          href: ruleLink(requires),
         })
       }
     })()
     return () => {
       stale = true
     }
-  }, [mayDelegate, requires, fields, followup, currency])
+  }, [mayDelegate, requires, followup, currency])
 
   async function answer(approved: boolean) {
     setBusy(true)

@@ -105,3 +105,30 @@ export function ruleSource(rule: InForce): string | null {
   if (rule.selector === 'act') return `by the rule for every “${rule.requires}”`
   return `by the broad rule for ${rule.max_risk ?? 'low'} risk`
 }
+
+/**
+ * The link from a question in the queue to the rules for the same act: its
+ * operation's panel where only one operation needs it, the table narrowed to
+ * them where several do, with the amount to start from as its figure.
+ */
+export function ruleLink(requires: string, under?: Money): string {
+  const query = new URLSearchParams({ requires })
+  if (under) query.set('under', under.figure)
+  return `/settings/approvals?${query.toString()}`
+}
+
+export type Kind = 'ask' | 'on' | 'trial' | 'never'
+
+export const KIND_LABEL: Record<Kind, string> = {
+  ask: 'Always asks',
+  on: 'Automatic',
+  trial: 'In trial',
+  never: 'Never automatic',
+}
+
+/** What an operation's rule is, taken as a whole: for filtering by it. */
+export function kindOf(op: RuleOperation): Kind {
+  if (op.fixed.never) return 'never'
+  if (op.rules.length === 0) return 'ask'
+  return op.rules.some((r) => r.state === 'on') ? 'on' : 'trial'
+}

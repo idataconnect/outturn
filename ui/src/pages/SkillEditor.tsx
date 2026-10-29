@@ -29,6 +29,7 @@ import {
   writtenBy,
 } from '../lib/skills'
 import { useSession } from '../lib/session'
+import SkillApprovals from '../components/SkillApprovals'
 import SkillConnections from '../components/SkillConnections'
 import SkillFiles from '../components/SkillFiles'
 import SkillSource from '../components/SkillSource'
@@ -648,6 +649,8 @@ export default function SkillEditor() {
           </div>
         </form>
       )}
+
+      {skill && <SkillApprovals skillId={skill.id} reloads={reloads} />}
 
       {!creating && versions.length > 0 && (
         <section className="mt-10">

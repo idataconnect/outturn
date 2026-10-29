@@ -4,13 +4,15 @@ import { Link, useSearchParams } from 'react-router'
 
 import ApprovalRulePanel, { type Prefill } from '../components/ApprovalRulePanel'
 import HighRiskRoute from '../components/HighRiskRoute'
+import RuleChips from '../components/RuleChips'
 import { PageHeader } from '../components/IndexPage'
 import { ApiError } from '../lib/api'
 import {
+  KIND_LABEL,
+  kindOf,
   listRules,
-  ruleLine,
-  ruleSource,
   sameOperation,
+  type Kind,
   type OperationRef,
   type RuleOperation,
   type RulesPage,
@@ -23,52 +25,7 @@ import { useBreakpoint } from '../lib/useBreakpoint'
 const control =
   'rounded-md border border-surface-300 bg-white px-2 py-1.5 text-sm text-surface-900 dark:border-surface-700 dark:bg-surface-800 dark:text-surface-100'
 
-const CHIP: Record<string, string> = {
-  ask: 'border-surface-300 text-surface-600 dark:border-surface-700 dark:text-surface-400',
-  on: 'border-green-300 text-green-800 dark:border-green-900 dark:text-green-300',
-  trial: 'border-amber-300 text-amber-800 dark:border-amber-900 dark:text-amber-300',
-  never: 'border-red-300 text-red-700 dark:border-red-900 dark:text-red-300',
-}
-
-type Kind = keyof typeof CHIP
-
 const key = (o: OperationRef) => `${o.skill_id} ${o.requires} ${o.matches}`
-
-/** What each line of an operation's rule says, one per rule in force. */
-function lines(op: RuleOperation): { kind: Kind; text: string; note: string | null }[] {
-  if (op.fixed.never) return [{ kind: 'never', text: ruleLine(op, undefined), note: null }]
-  if (op.rules.length === 0) return [{ kind: 'ask', text: ruleLine(op, undefined), note: null }]
-  const everyone = op.rules.length === 1 && op.rules[0].agents.length === op.agents.length
-  const lines = op.rules.map((r) => {
-    const who = everyone ? null : `${r.agents.map((a) => a.name).join(', ')} only`
-    const from = ruleSource(r)
-    return {
-      kind: r.state as Kind,
-      text: `${r.state === 'trial' ? 'Trial · ' : ''}${ruleLine(op, r)}`,
-      note: [who, from].filter(Boolean).join(', ') || null,
-    }
-  })
-  // The agents no rule speaks for still ask.
-  const covered = new Set(op.rules.flatMap((r) => r.agents.map((a) => a.id)))
-  const asking = op.agents.filter((a) => !covered.has(a.id))
-  if (asking.length > 0) {
-    lines.push({ kind: 'ask', text: 'Always asks', note: `${asking.map((a) => a.name).join(', ')}` })
-  }
-  return lines
-}
-
-function kindOf(op: RuleOperation): Kind {
-  if (op.fixed.never) return 'never'
-  if (op.rules.length === 0) return 'ask'
-  return op.rules.some((r) => r.state === 'on') ? 'on' : 'trial'
-}
-
-const KIND_LABEL: Record<Kind, string> = {
-  ask: 'Always asks',
-  on: 'Automatic',
-  trial: 'In trial',
-  never: 'Never automatic',
-}
 
 /**
  * Every operation an agent here can reach that needs a person's yes, and the
@@ -112,16 +69,20 @@ export default function Approvals() {
   // with the amount it was offered.
   useEffect(() => {
     if (!page) return
-    const asked = {
-      skill_id: params.get('skill_id') ?? '',
-      requires: params.get('requires') ?? '',
-      matches: params.get('matches') ?? '',
-    }
-    if (!asked.skill_id) return
-    const op = page.operations.find((o) => sameOperation(o, asked))
-    if (op) {
-      setOpen([key(op)])
+    const requires = params.get('requires')
+    if (!requires) return
+    const asked = { skill_id: params.get('skill_id') ?? '', requires, matches: params.get('matches') ?? '' }
+    // Named exactly, from a skill; or by its act alone, from the queue, which
+    // is the operation where only one needs that act and the table narrowed
+    // to them where several do.
+    const ops = asked.skill_id
+      ? page.operations.filter((o) => sameOperation(o, asked))
+      : page.operations.filter((o) => o.requires === requires)
+    if (ops.length === 1) {
+      setOpen([key(ops[0])])
       setPrefill(params.get('under') ? { under: params.get('under') ?? undefined } : undefined)
+    } else if (ops.length > 1) {
+      setSearch(requires)
     }
     setParams({}, { replace: true })
   }, [page, params, setParams])
@@ -136,7 +97,7 @@ export default function Approvals() {
     const q = search.trim().toLowerCase()
     return ops.filter(
       (o) =>
-        (!q || `${o.name} ${o.matches} ${o.skill_name}`.toLowerCase().includes(q)) &&
+        (!q || `${o.name} ${o.matches} ${o.skill_name} ${o.requires}`.toLowerCase().includes(q)) &&
         (!skill || o.skill_name === skill) &&
         (!agent || o.agents.some((a) => a.id === agent)) &&
         (!kind || kindOf(o) === kind),
@@ -338,14 +299,7 @@ export default function Approvals() {
                             </td>
                           )}
                           <td className="px-3 py-3">
-                            {lines(o).map((l, i) => (
-                              <div key={i} className={i > 0 ? 'mt-1.5' : ''}>
-                                <span className={`inline-block whitespace-nowrap rounded-full border px-2 py-0.5 text-xs ${CHIP[l.kind]}`}>
-                                  {l.text}
-                                </span>
-                                {l.note && <div className="mt-0.5 text-xs text-surface-600 dark:text-surface-400">{l.note}</div>}
-                              </div>
-                            ))}
+                            <RuleChips op={o} />
                           </td>
                           <td className="hidden px-3 py-3 text-xs text-surface-600 sm:table-cell dark:text-surface-400">
                             {o.asked === 0 ? '—' : `${o.asked} asked · ${o.approved} approved`}
