@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from 'react-router'
 import {
   Boxes,
@@ -31,6 +31,7 @@ import { useInbox } from './lib/inbox'
 import { api, onSessionEnded } from './lib/api'
 import { readFlag, storeFlag } from './lib/layout'
 import { useBreakpoint } from './lib/useBreakpoint'
+import { useFocusTrap } from './lib/useFocusTrap'
 import {
   SessionActionsContext,
   SessionContext,
@@ -340,16 +341,12 @@ function Shell() {
   const location = useLocation()
   useEffect(() => setDrawer(false), [location.pathname])
 
-  // And Escape, which is how a drawer that covers the page is put away without
-  // reaching for the scrim.
-  useEffect(() => {
-    if (!phone || !drawer) return
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setDrawer(false)
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [phone, drawer])
+  // A drawer over the page is a dialog while it is open: focus goes into it,
+  // Tab stays there, Escape puts it away and focus goes back to the button
+  // that opened it.
+  const navRef = useRef<HTMLElement>(null)
+  const closeDrawer = useCallback(() => setDrawer(false), [])
+  useFocusTrap(navRef, closeDrawer, undefined, phone && drawer)
 
   // Labels are shown in the drawer even though it is a phone: the drawer is
   // wide, and an icon rail the reader deliberately opened should say what its
@@ -368,6 +365,10 @@ function Shell() {
       )}
 
       <nav
+        ref={navRef}
+        // Said to be modal only while it covers the page, so a screen reader
+        // reads the drawer alone rather than the page beneath it as well.
+        {...(phone && drawer ? { role: 'dialog', 'aria-modal': true, 'aria-label': 'Navigation' } : {})}
         className={`${phone ? (drawer ? 'fixed inset-y-0 left-0 z-40 w-56 shadow-xl flex' : 'hidden') : 'flex'} ${
           railed ? 'w-14' : 'w-56'
         } shrink-0 border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 flex-col transition-[width]`}

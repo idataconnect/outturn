@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { triggerHref } from '../lib/useAnchor'
 import { Link, NavLink, useNavigate, useParams, useSearchParams } from 'react-router'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
@@ -36,6 +36,7 @@ import { ModelChangesProvider } from '../components/ModelChange'
 import { readFlag, storeFlag } from '../lib/layout'
 import { currentBreakpoint, useBreakpoint } from '../lib/useBreakpoint'
 import { iconButtonLarge } from '../lib/buttons'
+import { useFocusTrap } from '../lib/useFocusTrap'
 
 /**
  * Conversations: the list, the one open, and -- under `/sessions/new` -- one
@@ -204,18 +205,16 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
     storeFlag('chat.sessions', next)
   }
 
-  // On a phone the list covers the thread, so Escape puts it away.
-  useEffect(() => {
-    if (!sessionsOpen || breakpoint !== 'phone') return
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        setSessionsOpen(false)
-        storeFlag('chat.sessions', false)
-      }
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [sessionsOpen, breakpoint])
+  // On a phone the list covers the thread, so it is a dialog while it is
+  // open: focus goes into it and stays, Escape puts it away, and focus goes
+  // back to the toggle.
+  const sessionsRef = useRef<HTMLElement>(null)
+  const closeSessions = useCallback(() => {
+    setSessionsOpen(false)
+    storeFlag('chat.sessions', false)
+  }, [])
+  const sessionsCover = sessionsOpen && breakpoint === 'phone'
+  useFocusTrap(sessionsRef, closeSessions, undefined, sessionsCover)
 
   useEffect(() => {
     let cancelled = false
@@ -432,6 +431,8 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
       <ModelChangesProvider sessionId={active ?? null}>
         <div className="flex h-full relative">
           <aside
+            ref={sessionsRef}
+            {...(sessionsCover ? { role: 'dialog', 'aria-modal': true, 'aria-label': 'Conversations' } : {})}
             className={`${sessionsOpen ? 'flex' : 'hidden'} flex-col ${
               breakpoint === 'phone' ? 'fixed inset-y-0 left-0 shadow-xl' : 'static'
             } z-30 w-64 shrink-0 border-r border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900`}

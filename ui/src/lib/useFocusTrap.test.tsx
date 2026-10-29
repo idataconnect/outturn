@@ -77,3 +77,53 @@ describe('keeping focus inside a dialog', () => {
     expect(document.activeElement).toBe(opener)
   })
 })
+
+/** A drawer: always mounted, trapping only while `open`. */
+function Drawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const drawer = useRef<HTMLDivElement>(null)
+  useFocusTrap(drawer, onClose, undefined, open)
+  return (
+    <>
+      <button>page</button>
+      <div ref={drawer}>
+        <button>inside</button>
+        <button>also inside</button>
+      </div>
+    </>
+  )
+}
+
+describe('a trap that is only sometimes on', () => {
+  it('does nothing while off, and takes focus when switched on', async () => {
+    const onClose = vi.fn()
+    const view = render(<Drawer open={false} onClose={onClose} />)
+    const page = screen.getByRole('button', { name: 'page' })
+    page.focus()
+    await userEvent.keyboard('{Escape}')
+    expect(onClose).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(page)
+
+    view.rerender(<Drawer open onClose={onClose} />)
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'inside' }))
+    view.rerender(<Drawer open={false} onClose={onClose} />)
+    expect(document.activeElement).toBe(page)
+  })
+
+  it('does not move focus when its caller renders with a new onClose', async () => {
+    const view = render(<Drawer open onClose={() => {}} />)
+    const also = screen.getByRole('button', { name: 'also inside' })
+    also.focus()
+    const onClose = vi.fn()
+    view.rerender(<Drawer open onClose={onClose} />)
+    expect(document.activeElement).toBe(also)
+    await userEvent.keyboard('{Escape}')
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('brings focus back in from the page behind on the next Tab', async () => {
+    render(<Drawer open onClose={() => {}} />)
+    screen.getByRole('button', { name: 'page' }).focus()
+    await userEvent.tab()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'inside' }))
+  })
+})

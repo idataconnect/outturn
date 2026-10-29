@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState, type ComponentType } from 'react'
+import { useCallback, useEffect, useRef, useState, type ComponentType } from 'react'
 import { X } from 'lucide-react'
 
 import { readFlag, readOneOf, storeFlag, storeOneOf } from '../lib/layout'
 import { useBreakpoint } from '../lib/useBreakpoint'
 import { iconButton } from '../lib/buttons'
+import { useFocusTrap } from '../lib/useFocusTrap'
 
 /**
  * One thing the pane can show. `render` is a component rather than an element
@@ -73,15 +74,11 @@ export default function SidePane({
     storeFlag(`${storageKey}.open`, false)
   }, [storageKey])
 
-  // An overlay traps the reader until it is dismissed, so Escape must work.
-  useEffect(() => {
-    if (!open || breakpoint === 'desktop') return
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') close()
-    }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [open, breakpoint, close])
+  // Floating over the page, the panel is a dialog: focus goes into it and
+  // stays until it is put away, by its close button or Escape, and then goes
+  // back to the icon that opened it.
+  const panel = useRef<HTMLElement>(null)
+  useFocusTrap(panel, close, undefined, open && breakpoint !== 'desktop')
 
   // A tab that went away with someone's authorities must not stay selected.
   useEffect(() => {
@@ -107,7 +104,9 @@ export default function SidePane({
       <div className="flex h-full shrink-0">
         {open && (
           <section
+            ref={panel}
             aria-label={current.label}
+            {...(floating ? { role: 'dialog', 'aria-modal': true } : {})}
             className={`flex flex-col bg-white dark:bg-surface-900 border-l border-surface-200 dark:border-surface-800 ${
               floating ? 'fixed inset-y-0 right-12 z-30 w-72 max-w-[calc(100vw-3rem)] shadow-xl' : 'w-72'
             }`}

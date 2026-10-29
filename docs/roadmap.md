@@ -78,12 +78,6 @@ can be picked up without rereading the review. Ordered by what it protects.
   and a refusal's explanation reach only the stream on both vendors, as does
   a Gemini text signature; `path_agreement_tests` pins each as it stands.
 
-### The browser
-
-- The phone nav and sessions drawers close on Escape but have no focus trap;
-  the existing overlays have none either, so adding one is a decision for
-  all of them.
-
 ### Build, CI and tests
 
 - No `cargo audit` or `cargo deny` step; two generations of the RustCrypto

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useSearchParams } from 'react-router'
 
@@ -21,6 +21,7 @@ import { covers, listPolicies, stateLabel, type Policy } from '../lib/autoApprov
 import { paths } from '../lib/paths'
 import { useSession } from '../lib/session'
 import { useBreakpoint } from '../lib/useBreakpoint'
+import { useFocusTrap } from '../lib/useFocusTrap'
 
 const control =
   'rounded-md border border-surface-300 bg-white px-2 py-1.5 text-sm text-surface-900 dark:border-surface-700 dark:bg-surface-800 dark:text-surface-100'
@@ -146,6 +147,15 @@ export default function Approvals() {
   // With the panel beside it, the table gives up the agents column, which the
   // panel names.
   const narrow = Boolean(panel) && beside
+
+  // Over the table, the panel is a dialog: focus goes into it and stays until
+  // it is closed, and then goes back to the row that opened it.
+  const overlay = useRef<HTMLDivElement>(null)
+  const closePanel = useCallback(() => {
+    setOpen([])
+    setPrefill(undefined)
+  }, [])
+  useFocusTrap(overlay, closePanel, undefined, Boolean(panel) && !beside)
 
   return (
     <div className="p-6">
@@ -368,11 +378,11 @@ export default function Approvals() {
             // undimmed beside it.
             createPortal(
             <div
+              ref={overlay}
               className="fixed inset-0 z-40 overflow-y-auto bg-black/50 p-4"
               role="dialog"
               aria-modal="true"
               aria-label="Rule"
-              onKeyDown={(e) => e.key === 'Escape' && setOpen([])}
             >
               <div className="mx-auto max-w-md">{panel}</div>
             </div>,

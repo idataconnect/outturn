@@ -1,4 +1,4 @@
-import { useEffect, type RefObject } from 'react'
+import { useEffect, useRef, type RefObject } from 'react'
 
 /**
  * Everything inside a dialog that a Tab can land on.
@@ -28,17 +28,29 @@ const FOCUSABLE = [
  * live together rather than being re-derived per dialog.
  *
  * @param dialog The element focus is kept within.
- * @param onClose Called on Escape. Closing is the caller's to do.
+ * @param onClose Called on Escape. Closing is the caller's to do. Read when
+ *   Escape is pressed rather than when the trap is set, so a caller passing a
+ *   new function each render does not move focus every time it renders.
  * @param initial Focused on open. Defaults to the first thing in the dialog,
  *   which is right for a viewer; a form passes its field instead, so typing
  *   can start without a Tab.
+ * @param active Whether it is trapping now. For something that stays mounted
+ *   and is only sometimes over the page -- a drawer on a phone, a pane that
+ *   floats on a narrow screen -- and is part of the page the rest of the time.
  */
 export function useFocusTrap(
   dialog: RefObject<HTMLElement | null>,
   onClose: () => void,
   initial?: RefObject<HTMLElement | null>,
+  active = true,
 ) {
+  const close = useRef(onClose)
   useEffect(() => {
+    close.current = onClose
+  }, [onClose])
+
+  useEffect(() => {
+    if (!active) return
     const opener = document.activeElement as HTMLElement | null
     const target =
       initial?.current ?? dialog.current?.querySelector<HTMLElement>(FOCUSABLE)
@@ -47,7 +59,7 @@ export function useFocusTrap(
     function onKey(event: KeyboardEvent) {
       if (event.key === 'Escape') {
         event.stopPropagation()
-        onClose()
+        close.current()
         return
       }
       if (event.key !== 'Tab') return
@@ -55,7 +67,13 @@ export function useFocusTrap(
       if (!focusable || focusable.length === 0) return
       const first = focusable[0]
       const last = focusable[focusable.length - 1]
-      if (event.shiftKey && document.activeElement === first) {
+      // Focus that has somehow left -- a click on the page behind -- is
+      // brought back in rather than allowed to walk on from there.
+      const inside = dialog.current?.contains(document.activeElement)
+      if (!inside) {
+        event.preventDefault()
+        ;(event.shiftKey ? last : first).focus()
+      } else if (event.shiftKey && document.activeElement === first) {
         event.preventDefault()
         last.focus()
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -71,7 +89,5 @@ export function useFocusTrap(
       // the top of the document.
       opener?.focus?.()
     }
-    // The refs are stable; re-running on a new onClose is what keeps a stale
-    // closure from closing the wrong thing.
-  }, [dialog, onClose, initial])
+  }, [dialog, initial, active])
 }
