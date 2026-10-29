@@ -37,3 +37,13 @@ describe('restoring a session', () => {
     expect(retryDelay(50)).toBe(10_000)
   })
 })
+
+describe('an answer that is not an outage', () => {
+  it('is said rather than retried, since it will be the same next time', async () => {
+    const reconnecting = vi.fn()
+    const read = vi.fn().mockRejectedValue(new ApiError(403, 'not allowed here'))
+    await expect(restoreSession(read, reconnecting, async () => {})).rejects.toThrow('not allowed here')
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(reconnecting).not.toHaveBeenCalled()
+  })
+})

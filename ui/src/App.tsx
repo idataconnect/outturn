@@ -126,16 +126,25 @@ function useSessionState(): [SessionState, SessionActions] {
    * so anything it cannot supply is missing on every reload.
    */
   const load = useCallback(async () => {
-    // A 401 is decisive; anything else is asked again until it answers.
-    const session = await restoreSession(
-      () => api<Session>('/v1/session'),
-      // Say so rather than sitting on a blank page: silence while it waits
-      // reads as a broken app.
-      () =>
-        setState((prev) =>
-          prev.status === 'loading' ? { status: 'loading', reconnecting: true } : prev,
-        ),
-    )
+    // A 401 is decisive, an outage is waited out, and any other answer is said.
+    let session: Session | null
+    try {
+      session = await restoreSession(
+        () => api<Session>('/v1/session'),
+        // Say so rather than sitting on a blank page: silence while it waits
+        // reads as a broken app.
+        () =>
+          setState((prev) =>
+            prev.status === 'loading' ? { status: 'loading', reconnecting: true } : prev,
+          ),
+      )
+    } catch (e) {
+      setState({
+        status: 'loading',
+        failed: e instanceof Error ? e.message : 'The session could not be read.',
+      })
+      return
+    }
     setState(
       session
         ? { status: 'authenticated', session, displayName: session.display_name, workspaces: session.workspaces }
@@ -768,16 +777,22 @@ function Shell() {
  * the API is slow to answer, and an empty document is indistinguishable from
  * a crash.
  */
-function Loading({ reconnecting }: { reconnecting?: boolean }) {
+function Loading({ reconnecting, failed }: { reconnecting?: boolean; failed?: string }) {
   return (
     <div className="flex h-dvh flex-col items-center justify-center gap-3">
       {/* The same mark the shell uses, so the app looks like itself while
           it is still deciding what to show. */}
       <Logo className="h-8 w-8 animate-pulse" />
-      {reconnecting && (
-        <p className="text-sm text-surface-600 dark:text-surface-400">
-          Reconnecting&hellip;
+      {failed ? (
+        <p role="alert" className="max-w-sm px-4 text-center text-sm text-red-600 dark:text-red-400">
+          {failed}
         </p>
+      ) : (
+        reconnecting && (
+          <p className="text-sm text-surface-600 dark:text-surface-400">
+            Reconnecting&hellip;
+          </p>
+        )
       )}
     </div>
   )
@@ -790,7 +805,7 @@ function App() {
     <SessionContext value={state}>
       <SessionActionsContext value={actions}>
         {state.status === 'loading' ? (
-          <Loading reconnecting={state.reconnecting} />
+          <Loading reconnecting={state.reconnecting} failed={state.failed} />
         ) : state.status === 'anonymous' ? (
           <Login />
         ) : (

@@ -1,6 +1,6 @@
 import { createContext, use } from 'react'
 
-import { ApiError } from './api'
+import { ApiError, NetworkError } from './api'
 
 export type WorkspaceMembership = {
   workspace_id: string
@@ -27,7 +27,7 @@ export type SessionState =
    * being retried -- a down backend says nothing about whether there is a
    * session, so it must not be mistaken for being signed out.
    */
-  | { status: 'loading'; reconnecting?: boolean }
+  | { status: 'loading'; reconnecting?: boolean; failed?: string }
   | { status: 'anonymous' }
   | {
       status: 'authenticated'
@@ -75,10 +75,13 @@ export function retryDelay(attempt: number): number {
  *
  * Only the API saying "not you" -- a 401, which `api` returns only once a
  * refresh has been refused too -- means signed out, and it is believed at
- * once. A backend that is down, restarting or erroring says nothing about
- * the session, so that is asked again for as long as it takes: giving up used
- * to show the sign-in form, which could not sign anybody in while the API
- * was down, over a session that was still good once it came back.
+ * once. A backend that is unreachable or answering with a server error says
+ * nothing about the session, so that is asked again for as long as it takes:
+ * giving up used to show the sign-in form, which could not sign anybody in
+ * while the API was down, over a session that was still good once it came
+ * back. Any other answer -- a refusal that is not a 401, a body that is not a
+ * session -- will be the same next time, so it is thrown for the page to say,
+ * rather than retried behind "reconnecting" for ever.
  */
 export async function restoreSession<T>(
   read: () => Promise<T>,
@@ -90,6 +93,8 @@ export async function restoreSession<T>(
       return await read()
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) return null
+      const outage = e instanceof NetworkError || (e instanceof ApiError && e.status >= 500)
+      if (!outage) throw e
       onReconnecting()
       await wait(retryDelay(attempt))
     }
