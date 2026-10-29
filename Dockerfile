@@ -1,4 +1,19 @@
 # syntax=docker/dockerfile:1
+
+# The agent component the runtime executes, built from its source here so the
+# image cannot ship a binary older than the code beside it. A copy is still
+# committed under assets/ for the tests and for a runtime run outside a
+# container; this stage is what makes that copy irrelevant to a release.
+# rust-lld needs libLLVM, from llvm-tools, to link a component.
+FROM rust:1 AS agent
+RUN rustup target add wasm32-wasip2 && rustup component add llvm-tools
+WORKDIR /agent
+COPY agents/default/ ./
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/agent/target \
+    cargo build --locked --release --target wasm32-wasip2 && \
+    cp target/wasm32-wasip2/release/outturn_agent_default.wasm /agent_default.wasm
+
 FROM rust:1 AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
@@ -23,9 +38,6 @@ RUN mkdir -p tests && \
 COPY migrations/ migrations/
 # Read by wasmtime's bindgen! macro at compile time.
 COPY wit/ wit/
-# The agent component the runtime executes. Committed as a build artifact so
-# the image does not need the wasm toolchain.
-COPY assets/agent_default.wasm /agent_default.wasm
 # The model catalog the API starts from, compiled into the core crate.
 COPY assets/catalog.json.gz assets/catalog.json.gz
 # `release` unless told otherwise; local development asks for `local`, which
@@ -62,7 +74,7 @@ ENTRYPOINT ["gateway"]
 
 FROM gcr.io/distroless/cc-debian13 AS runtime
 COPY --from=builder /usr/local/bin/runtime /usr/local/bin/runtime
-COPY --from=builder /agent_default.wasm /usr/local/share/outturn/agent_default.wasm
+COPY --from=agent /agent_default.wasm /usr/local/share/outturn/agent_default.wasm
 ENV LISTEN_ADDR=0.0.0.0:8082
 EXPOSE 8082
 USER 65534:65534

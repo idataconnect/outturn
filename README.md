@@ -160,8 +160,11 @@ them is left to you.
 
 `wit/agent.wit` is the boundary between the host and the components it runs,
 and two generated files are committed beside it: `assets/agent_default.wasm`,
-so an image build needs no wasm toolchain, and `agents/default/src/bindings.rs`,
-so the guest crate builds without one either. Neither regenerates on its own.
+which the tests and a runtime run outside a container load, and
+`agents/default/src/bindings.rs`, so the guest crate builds without the
+bindings generator. Neither regenerates on its own. The image does not use the
+committed component: it builds its own from `agents/default`, so a release
+always runs the agent's current source.
 
 Change the interface without rebuilding them and the guest still compiles --
 against its stale bindings -- while every turn fails at runtime with "component

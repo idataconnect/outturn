@@ -20,10 +20,8 @@ committed and verified, and new work goes in where it belongs, not at the end.
 
 1. **What the review of 2026-10-20 left** (*From the review*, below): the
    ten fixes, the retention sweeps, the indexes, name uniqueness, the prompt
-   and sandbox boundaries and the gateway's findings are in. Next, in order:
-   1. The agent component rebuilt in CI (*Build, CI and tests*).
-
-   The rest goes in the order given there.
+   and sandbox boundaries and the gateway's findings are in; the rest goes in
+   the order given there.
 2. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
 3. **A first real call to Amazon Bedrock**, by whoever first has an AWS
@@ -97,9 +95,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### Build, CI and tests
 
-- The agent component is a committed binary nobody rebuilds in CI
-  (`assets/agent_default.wasm`, `Dockerfile`). Rebuild it in CI and fail if
-  it differs from the commit, or build it in the image.
 - No `cargo audit` or `cargo deny` step; two generations of the RustCrypto
   crates are linked at once. Add the step and align the pins.
 - Images for production should be pinned by digest; everything first-party
