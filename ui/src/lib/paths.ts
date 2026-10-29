@@ -20,7 +20,10 @@ export const paths = {
   user: (id: string) => `/settings/users/${id}`,
   roles: '/settings/roles',
   connections: '/settings/connections',
-  autoApprovals: '/settings/auto-approval',
+  approvals: '/settings/approvals',
+  /** One operation's rule, opened in its panel, with an amount to start from. */
+  approvalRule: (op: { skill_id: string; requires: string; matches: string }, under?: string) =>
+    `/settings/approvals?${new URLSearchParams({ ...op, ...(under ? { under } : {}) })}`,
   newAutoApproval: '/settings/auto-approval/new',
   autoApproval: (id: string) => `/settings/auto-approval/${id}`,
   newRole: '/settings/roles/new',

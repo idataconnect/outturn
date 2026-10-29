@@ -57,7 +57,7 @@ import Users from './pages/Users'
 import UserEditor, { Account } from './pages/UserEditor'
 import WorkspaceSettings from './pages/WorkspaceSettings'
 import Connections from './pages/Connections'
-import AutoApproval from './pages/AutoApproval'
+import Approvals from './pages/Approvals'
 import AutoApprovalEditor from './pages/AutoApprovalEditor'
 import PlatformDefaults from './pages/PlatformDefaults'
 import PlatformModels from './pages/PlatformModels'
@@ -271,8 +271,8 @@ function SettingsSection() {
           allowed: authorities.includes('settings:read'),
         },
         {
-          to: paths.autoApprovals,
-          label: 'Auto-approval',
+          to: paths.approvals,
+          label: 'Approvals',
           icon: ShieldCheck,
           allowed:
             authorities.includes('approvals:answer') || authorities.includes('approvals:delegate'),
@@ -294,7 +294,7 @@ function SettingsHome() {
   if (authorities.includes('users:read')) return <Navigate to={paths.users} replace />
   if (authorities.includes('roles:assign')) return <Navigate to={paths.roles} replace />
   if (authorities.includes('approvals:answer') || authorities.includes('approvals:delegate')) {
-    return <Navigate to={paths.autoApprovals} replace />
+    return <Navigate to={paths.approvals} replace />
   }
   return <Navigate to="/" replace />
 }
@@ -662,13 +662,15 @@ function Shell() {
               }
             />
             <Route
-              path="auto-approval"
+              path="approvals"
               element={
                 <RequireAnyAuthority authorities={['approvals:answer', 'approvals:delegate']}>
-                  <AutoApproval />
+                  <Approvals />
                 </RequireAnyAuthority>
               }
             />
+            {/* Where the page was, for links and bookmarks made before. */}
+            <Route path="auto-approval" element={<Navigate to={paths.approvals} replace />} />
             <Route
               path="auto-approval/new"
               element={

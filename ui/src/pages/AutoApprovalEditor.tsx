@@ -250,7 +250,7 @@ export default function AutoApprovalEditor() {
 
   return (
     <div className="p-6 max-w-3xl">
-      <Link to={paths.autoApprovals} className="text-sm text-brand-700 hover:underline dark:text-brand-300">
+      <Link to={paths.approvals} className="text-sm text-brand-700 hover:underline dark:text-brand-300">
         Auto-approval
       </Link>
       <h1 className="mt-2 text-2xl font-semibold text-surface-900 dark:text-surface-100">
