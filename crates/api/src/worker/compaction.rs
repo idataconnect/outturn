@@ -1,7 +1,5 @@
 use uuid::Uuid;
 
-use outturn_core::events;
-
 use super::Worker;
 use super::projection::projected_with_sources;
 use super::turn::{model_for, source_of, traffic_type_for};
@@ -79,22 +77,6 @@ impl Worker {
         )
         .await;
         summary
-    }
-
-    /// Best effort: an event nobody receives must not cost the work it
-    /// describes.
-    async fn tell(
-        &self,
-        workspace_id: Uuid,
-        session_id: Uuid,
-        kind: &str,
-        payload: serde_json::Value,
-    ) {
-        if let Err(e) =
-            events::append(&self.pool, workspace_id, Some(session_id), kind, payload).await
-        {
-            tracing::warn!(%session_id, error = %e, kind, "could not announce");
-        }
     }
 
     /// Compacts a conversation because somebody asked: summarizes what the

@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
+use outturn_core::events;
+
 use super::agent::AgentStore;
 use super::chat::ChatStore;
 
@@ -89,4 +91,27 @@ pub(crate) enum Prepared {
     Nothing,
     /// Keep the job. A hold refused it, and releasing the hold gives it back.
     Park,
+}
+
+impl Worker {
+    /// One way for this tier to tell a conversation's readers something.
+    ///
+    /// Best effort by design: an event that could not be written has not
+    /// broken the turn it was about, and failing the job to retry the telling
+    /// would re-run work that already happened. An event nobody receives must
+    /// not cost the work it describes, so a failure is logged and nothing
+    /// more.
+    async fn tell(
+        &self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+        kind: &str,
+        payload: serde_json::Value,
+    ) {
+        if let Err(e) =
+            events::append(&self.pool, workspace_id, Some(session_id), kind, payload).await
+        {
+            tracing::warn!(%session_id, error = %e, kind, "could not announce");
+        }
+    }
 }

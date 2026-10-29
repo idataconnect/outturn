@@ -317,8 +317,9 @@ impl Worker {
             .ok()
             .flatten();
 
-        self.announce(
-            payload,
+        self.tell(
+            payload.workspace_id,
+            payload.session_id,
             "chat.held",
             serde_json::json!({
                 "message": why,
@@ -330,22 +331,6 @@ impl Worker {
                 "approval": pending,
                 "asleep": asleep,
             }),
-        )
-        .await;
-    }
-
-    /// One way for this tier to tell a conversation's readers something.
-    ///
-    /// Best effort by design: an event that could not be written has not
-    /// broken the turn it was about, and failing the job to retry the telling
-    /// would re-run work that already happened.
-    async fn announce(&self, payload: &ChatTurnPayload, kind: &str, body: serde_json::Value) {
-        let _ = events::append(
-            &self.pool,
-            payload.workspace_id,
-            Some(payload.session_id),
-            kind,
-            body,
         )
         .await;
     }
