@@ -47,14 +47,34 @@ pub async fn record<'e>(
 
 /// Forgets an object, and the text extracted from it, which goes with it.
 pub async fn forget<'e>(executor: impl PgExecutor<'e>, key: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("delete from stored_objects where key = any($1)")
-        .bind(vec![
+    forget_keys(
+        executor,
+        &[
             key.to_string(),
             extract::text_key(key),
             extract::failed_key(key),
-        ])
-        .execute(executor)
-        .await?;
+        ],
+    )
+    .await
+}
+
+/// Forgets objects by key, and notes when, so a listing already under way
+/// does not count them again (`forgotten_since`).
+pub async fn forget_keys<'e>(
+    executor: impl PgExecutor<'e>,
+    keys: &[String],
+) -> Result<(), sqlx::Error> {
+    let owners: Vec<Option<Uuid>> = keys.iter().map(|k| workspace_of(k)).collect();
+    sqlx::query(
+        "with gone as (delete from stored_objects where key = any($1)) \
+         insert into stored_forgets (key, workspace_id) \
+         select k, w from unnest($1::text[], $2::uuid[]) as t(k, w) where w is not null \
+         on conflict (key) do update set forgotten_at = now()",
+    )
+    .bind(keys)
+    .bind(&owners)
+    .execute(executor)
+    .await?;
     Ok(())
 }
 
@@ -65,10 +85,15 @@ pub async fn forget_under<'e>(
 ) -> Result<(), sqlx::Error> {
     // A prefix is a key's start; `like` would read its `_` and `%` as
     // patterns, so it is compared as text.
-    sqlx::query("delete from stored_objects where left(key, length($1)) = $1")
-        .bind(prefix)
-        .execute(executor)
-        .await?;
+    sqlx::query(
+        "with gone as (delete from stored_objects where left(key, length($1)) = $1 \
+                       returning key, workspace_id) \
+         insert into stored_forgets (key, workspace_id) select key, workspace_id from gone \
+         on conflict (key) do update set forgotten_at = now()",
+    )
+    .bind(prefix)
+    .execute(executor)
+    .await?;
     Ok(())
 }
 

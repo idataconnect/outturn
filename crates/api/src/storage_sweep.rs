@@ -116,9 +116,13 @@ async fn recount_one(
         .bind(began)
         .execute(&mut *tx)
         .await?;
+    // Neither a key written since the listing began, which is kept as it
+    // is, nor one deleted since, which the listing may still have seen.
     sqlx::query(
         "insert into stored_objects (key, workspace_id, bytes, written_at) \
          select k, $1, b, $4 from unnest($2::text[], $3::bigint[]) as t(k, b) \
+         where not exists (select 1 from stored_forgets f \
+                           where f.key = t.k and f.forgotten_at >= $4) \
          on conflict (key) do nothing",
     )
     .bind(workspace_id)
@@ -133,6 +137,11 @@ async fn recount_one(
     .bind(workspace_id)
     .fetch_one(&mut *tx)
     .await?;
+    // A forget matters only while a listing that began before it is under
+    // way, and none takes a day.
+    sqlx::query("delete from stored_forgets where forgotten_at < now() - interval '1 day'")
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     if before != after {
         // A pattern here -- the same workspace corrected upward week after
@@ -222,13 +231,18 @@ async fn remove_under(
     prefix: &str,
 ) -> anyhow::Result<()> {
     for under in [prefix.to_string(), outturn_core::extract::text_key(prefix)] {
+        let mut gone = Vec::new();
         for object in storage.list(&under).await? {
             match storage.delete(&object.path).await {
                 Ok(()) | Err(outturn_core::storage::StorageError::NotFound) => {}
                 Err(e) => return Err(e.into()),
             }
+            gone.push(object.path);
         }
+        // What was counted under it, and what was removed whether counted or
+        // not: a listing under way may have seen either.
         outturn_core::storage::stored::forget_under(pool, &under).await?;
+        outturn_core::storage::stored::forget_keys(pool, &gone).await?;
     }
     Ok(())
 }

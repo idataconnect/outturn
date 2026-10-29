@@ -63,7 +63,10 @@ counted exactly as today, and refuses the write that would cross it with a
 message the model can act on: the workspace's storage is full.
 
 The files API checks the same total before accepting an upload and answers
-`413` with code `too_large` when the upload would cross it.
+`413` with code `too_large` when the upload would cross it. The check and the
+write are not one step, so uploads arriving together can each pass and land
+past the quota by what they hold between them -- the same slack, accepted for
+the same reason, as turns starting together below.
 
 Two turns starting together may each be handed the same remaining allowance
 and overrun the quota by up to one turn's writes. That is accepted: the
@@ -144,7 +147,9 @@ text ([roadmap.md](roadmap.md)), and on a sweep that would do it.
 - **Uploads** are checked by `api::quota::check` before anything is stored,
   giving back what the files replaced: `413`, code `too_large`.
 - **The listing** is `storage_sweep::recount`, ten workspaces an hour, each
-  every seven days; rows written after a listing began are kept.
+  every seven days; rows written after a listing began are kept, and a key
+  forgotten after it began is not counted again (`stored_forgets`, migration
+  0073, kept a day).
 - **Settings.** `max_stored_bytes` and `stored_bytes_set_by`, both
   operator-only; the first names the second in `Setting::delegated_by`, which
   any setting can use. The operator sets one workspace's at

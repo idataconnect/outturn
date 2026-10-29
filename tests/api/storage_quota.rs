@@ -287,3 +287,27 @@ async fn the_listing_counts_what_nobody_reported() {
     assert_eq!(storage(&h, &s).await["stored_bytes"], 140);
     finish!(h);
 }
+
+/// A file deleted after the listing saw it, and before the listing wrote what
+/// it found, is not counted again. Stood in for here by a forget dated after
+/// the listing begins, for an object the store still lists.
+#[tokio::test]
+async fn the_listing_does_not_count_again_what_was_deleted_while_it_ran() {
+    let h = harness_or_skip!();
+    let s = a_space(&h).await;
+    let key = format!("agents/{}/{}/gone.md", s.acme, s.agent);
+    h.storage.write(&key, &[0; 70]).await.unwrap();
+    sqlx::query(
+        "insert into stored_forgets (key, workspace_id, forgotten_at) \
+         values ($1, $2, now() + interval '1 minute')",
+    )
+    .bind(&key)
+    .bind(s.acme)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+
+    outturn::api::storage_sweep::sweep(&h.db.pool, &h.storage, 30).await;
+    assert_eq!(storage(&h, &s).await["stored_bytes"], 0);
+    finish!(h);
+}
