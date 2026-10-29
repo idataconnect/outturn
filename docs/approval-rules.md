@@ -173,8 +173,9 @@ the narrower reading wins.
   them, adds an exclusion. Stored as an operation policy with an amount test
   and a daily total, which the gateway already enforced, so it did not change.
   Everything is checked before a transaction writes any of it. A rule for one
-  agent lifts an exclusion for every agent by replacing it with exclusions for
-  the others.
+  agent leaves an exclusion for every agent standing: the agent's own rule
+  outranks it for that agent alone (auto-approval.md, *Resolution*), so every
+  other agent, and one made later, keeps asking.
 - **Preview.** `GET /v1/approval-rules/preview?skill_id&requires&matches&under&daily_total`
   replays the rule against the last thirty days of its operation's questions
   with `api::replay`.

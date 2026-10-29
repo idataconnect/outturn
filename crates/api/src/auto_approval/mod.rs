@@ -246,10 +246,23 @@ pub fn choose<'a>(
             && p.selects(declared)
     });
 
-    // Deny overrides: any exclusion that applies wins, however broad.
+    // Deny overrides: any exclusion that applies wins, however broad -- with
+    // one exception. An operation's own rule naming this agent outranks that
+    // operation's own exclusion for every agent: "always asks, except for
+    // Front Desk" said in the only way the rows can say it. Nothing broader
+    // gets past an exclusion, and an agent the rule does not name keeps
+    // asking, including one created after it.
+    let applicable: Vec<&Policy> = applicable.collect();
+    let named_rule = applicable.iter().any(|p| {
+        p.effect == "include" && p.selector == "operation" && p.agent_id == Some(agent_id)
+    });
     let mut inclusions = Vec::new();
     for p in applicable {
         if p.effect == "exclude" {
+            let for_everyone_here = p.selector == "operation" && p.agent_id.is_none();
+            if for_everyone_here && named_rule {
+                continue;
+            }
             return None;
         }
         // A policy covers a gate only if the gate binds every field it tests,
@@ -849,6 +862,54 @@ mod tests {
             .is_some()
         );
         assert!(pick(&declared("charge", Risk::High), &policies, Some(Risk::High)).is_none());
+    }
+
+    /// "Always asks, except for Front Desk": the operation's own rule naming
+    /// an agent outranks the operation's exclusion for every agent, for that
+    /// agent alone. A broad rule still does not, and another agent -- one made
+    /// later included -- keeps asking.
+    #[test]
+    fn an_agents_own_rule_outranks_its_operations_exclusion_for_everyone() {
+        let d = declared("charge", Risk::Low);
+        let broad = policy("risk");
+        let mut everyone_asks = policy("operation");
+        everyone_asks.effect = "exclude".into();
+        everyone_asks.conditions.clear();
+        let mut front_desk = policy("operation");
+        front_desk.agent_id = Some(agent());
+
+        let without = vec![broad.clone(), everyone_asks.clone()];
+        assert!(
+            pick(&d, &without, Some(Risk::High)).is_none(),
+            "everyone asks"
+        );
+
+        let with = vec![broad, everyone_asks.clone(), front_desk.clone()];
+        let chosen = pick(&d, &with, Some(Risk::High)).expect("front desk's rule");
+        assert_eq!(chosen.policy().id, front_desk.id);
+        let night_desk = Uuid::now_v7();
+        assert!(
+            choose(
+                &d,
+                &with,
+                workspace(),
+                night_desk,
+                Some(Risk::High),
+                Utc::now()
+            )
+            .is_none(),
+            "an agent the rule does not name keeps asking"
+        );
+
+        // An exclusion naming the agent, or a broader one, still wins.
+        let mut agent_asks = everyone_asks.clone();
+        agent_asks.agent_id = Some(agent());
+        assert!(pick(&d, &[front_desk.clone(), agent_asks], Some(Risk::High)).is_none());
+        let mut all_risk = policy("risk");
+        all_risk.effect = "exclude".into();
+        all_risk.max_risk = Some("high".into());
+        all_risk.conditions.clear();
+        assert!(pick(&d, &[front_desk, all_risk], Some(Risk::High)).is_none());
     }
 
     #[test]

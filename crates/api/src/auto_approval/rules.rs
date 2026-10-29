@@ -553,8 +553,10 @@ fn exclusion_for(
 }
 
 /// An operation's own rules that an edit for `agent_id` replaces: a rule for
-/// every agent replaces them all, one for an agent replaces its own, and the
-/// exclusion making every agent ask, which would otherwise win over it.
+/// every agent replaces them all, and one for an agent replaces its own. An
+/// exclusion for every agent stays when one agent is given a rule: that rule
+/// outranks it for that agent alone (`choose`), and every other agent, and
+/// any made later, keeps asking.
 fn own<'a>(
     policies: &'a [Policy],
     d: &Declared,
@@ -565,11 +567,7 @@ fn own<'a>(
         .iter()
         .filter(|p| p.revoked_at.is_none() && p.expires_at > now)
         .filter(|p| p.selector == "operation")
-        .filter(|p| {
-            agent_id.is_none()
-                || p.agent_id == agent_id
-                || (p.agent_id.is_none() && p.effect == "exclude")
-        })
+        .filter(|p| agent_id.is_none() || p.agent_id == agent_id)
         .filter(|p| {
             p.skill_id == Some(d.skill_id)
                 && p.requires.as_deref() == Some(d.gate.requires.as_str())
@@ -640,15 +638,7 @@ pub async fn put(
     let mut tx = state.pool.begin().await.map_err(internal)?;
     let mut revoked = Vec::new();
     for (d, agents, write) in &targets {
-        // Lifting every agent's exclusion for one agent leaves the others
-        // asking, as they were.
-        let mut kept = Vec::new();
         for p in own(&policies, d, input.agent_id, now) {
-            if input.agent_id.is_some() && p.agent_id.is_none() {
-                for other in agents.iter().filter(|a| Some(a.id) != input.agent_id) {
-                    kept.push(exclusion_for(d, Some(other.id), now)?);
-                }
-            }
             sqlx::query(
                 "update approval_policies set revoked_at = now(), revoked_by = $3 \
                  where workspace_id = $1 and id = $2 and revoked_at is null",
@@ -681,7 +671,7 @@ pub async fn put(
         } else {
             None
         };
-        for c in write.iter().chain(exclusion.as_ref()).chain(&kept) {
+        for c in write.iter().chain(exclusion.as_ref()) {
             super::api::insert(&mut *tx, workspace_id, Uuid::now_v7(), claims.subject, c).await?;
         }
     }

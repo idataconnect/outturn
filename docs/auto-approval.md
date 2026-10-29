@@ -480,7 +480,12 @@ waved through, which is the one outcome this whole design must not permit.
   counted over the day before each from what the replay let out. One stopped by
   its amount says why: `£290.00 is medium risk`, or the total it would pass. `GET /v1/approvals/answered?requires=` is the count the prompt reads.
 - **Resolution** is `api::auto_approval::choose`, called from `prepare_turn`
-  through `for_turn`. Deny overrides; specificity chooses among inclusions;
+  through `for_turn`. Deny overrides, with one exception settled on
+  2026-10-29: an operation's own rule naming an agent outranks that
+  operation's own exclusion for every agent, for that agent alone -- "always
+  asks, except for Front Desk", which the rows had no other way to say.
+  Nothing broader gets past an exclusion, and every other agent, including
+  one made later, keeps asking. Specificity chooses among inclusions;
   *two equally specific inclusions choose neither*, and a person is asked,
   rather than one winning by an order nobody set. A risk or act selector covers
   a gate published after the policy was last accepted only in trial.
