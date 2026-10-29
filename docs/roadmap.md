@@ -68,8 +68,10 @@ can be picked up without rereading the review. Ordered by what it protects.
   gateway's protocol code. Split by capability with a thin dispatcher; the
   missing admission charges were invisible because of the accretion.
 - `crates/gateway/src/llm/translate.rs`: each vendor's stream and non-stream
-  paths are separate reimplementations. The usage branch collapses the usage
-  and stop-reason pairs; the rest of each pair should follow.
+  usage, stop reasons, block classification and tool calls are now read once
+  for both paths. What is left is a decision rather than duplication: thinking
+  and a refusal's explanation reach only the stream on both vendors, as does
+  a Gemini text signature; `path_agreement_tests` pins each as it stands.
 - `tool_name_of` in the default agent duplicates `operation_tool_name` in
   `crates/api/src/skill/mod.rs`; one should be generated from the other or
   shared through the WIT.

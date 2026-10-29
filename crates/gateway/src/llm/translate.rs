@@ -311,36 +311,38 @@ pub fn anthropic_to_openai(
     // more is three blocks whose arrangement is the whole of its meaning.
     let mut parts: Vec<Part> = Vec::new();
 
-    if let Some(content) = resp["content"].as_array() {
-        for block in content {
-            match block["type"].as_str() {
-                Some("text") => {
-                    if let Some(t) = block["text"].as_str() {
-                        parts.push(Part::Text {
-                            text: t.to_string(),
-                        });
-                    }
-                }
-                Some("tool_use") => {
-                    parts.push(Part::ToolCall {
-                        call: ToolCall {
-                            provider_signature: None,
-                            id: block["id"].as_str().unwrap_or("").to_string(),
-                            tool_type: "function".to_string(),
-                            function: FunctionCall {
-                                name: block["name"].as_str().unwrap_or("").to_string(),
-                                arguments: block["input"].to_string(),
-                            },
-                        },
+    // Each block classified as the stream classifies the block it opens, so
+    // the two paths cannot disagree on which blocks are text or calls.
+    for block in resp["content"].as_array().into_iter().flatten() {
+        match BlockKind::of(block) {
+            BlockKind::Text => {
+                if let Some(t) = block["text"].as_str() {
+                    parts.push(Part::Text {
+                        text: t.to_string(),
                     });
                 }
-                // Dropped: a thinking block cannot be replayed to the provider
-                // on a later turn, so keeping it here would only put it in a
-                // transcript that must not send it back. What it cost is still
-                // counted -- see `reasoning_tokens` in the usage below.
-                Some("thinking") | Some("redacted_thinking") => {}
-                _ => {}
             }
+            BlockKind::ToolUse => {
+                let (id, name) = tool_use_head(block);
+                parts.push(Part::ToolCall {
+                    call: ToolCall {
+                        provider_signature: None,
+                        id,
+                        tool_type: "function".to_string(),
+                        function: FunctionCall {
+                            name,
+                            // Whole here; the stream sends the same text in
+                            // fragments after the head.
+                            arguments: block["input"].to_string(),
+                        },
+                    },
+                });
+            }
+            // Dropped, where the stream forwards them: a thinking block
+            // cannot be replayed from a whole response on a later turn, so
+            // keeping it here would only put it in a transcript that must not
+            // send it back. What it cost is still counted in the usage below.
+            BlockKind::Thinking | BlockKind::Other => {}
         }
     }
 
@@ -873,6 +875,29 @@ enum BlockKind {
     Other,
 }
 
+impl BlockKind {
+    /// What a content block is, read the one way for both paths: the whole
+    /// response's blocks and the stream's `content_block_start`. Redacted
+    /// thinking is `Other`, since nothing streams into it.
+    fn of(block: &serde_json::Value) -> Self {
+        match block["type"].as_str() {
+            Some("text") => Self::Text,
+            Some("thinking") => Self::Thinking,
+            Some("tool_use") => Self::ToolUse,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// A `tool_use` block's id and name, which the whole response carries beside
+/// the arguments and the stream carries on the block's opening.
+fn tool_use_head(block: &serde_json::Value) -> (String, String) {
+    (
+        block["id"].as_str().unwrap_or_default().to_string(),
+        block["name"].as_str().unwrap_or_default().to_string(),
+    )
+}
+
 /// Usage as it accumulates, which is not the same shape as usage once known.
 ///
 /// Every field is optional because Anthropic reveals them at different times,
@@ -1004,65 +1029,49 @@ impl AnthropicStream {
             "content_block_start" => {
                 let index = event["index"].as_u64().unwrap_or(0) as u32;
                 let block = &event["content_block"];
-                match block["type"].as_str() {
-                    Some("text") => {
-                        self.blocks.insert(index, BlockKind::Text);
-                        None
-                    }
-                    Some("thinking") => {
-                        self.blocks.insert(index, BlockKind::Thinking);
+                let kind = BlockKind::of(block);
+                self.blocks.insert(index, kind);
+                match kind {
+                    BlockKind::Text => None,
+                    BlockKind::Thinking => {
                         self.thinking.insert(index, Default::default());
                         None
                     }
                     // Nothing to show, but it is the model's and goes back
                     // with the reply, whole, like any other thinking block.
-                    Some("redacted_thinking") => {
-                        self.blocks.insert(index, BlockKind::Other);
+                    BlockKind::Other if block["type"] == "redacted_thinking" => Some(self.chunk(
+                        Delta {
+                            thinking_block: Some(block.clone()),
+                            ..Delta::default()
+                        },
+                        None,
+                    )),
+                    BlockKind::ToolUse => {
+                        let slot = self.next_tool_slot;
+                        self.next_tool_slot += 1;
+                        self.tool_slots.insert(index, slot);
+                        let (id, name) = tool_use_head(block);
                         Some(self.chunk(
                             Delta {
-                                thinking_block: Some(block.clone()),
+                                tool_calls: Some(vec![ToolCallDelta {
+                                    index: slot,
+                                    provider_signature: None,
+                                    id: Some(id),
+                                    tool_type: Some("function".to_string()),
+                                    function: Some(FunctionCallDelta {
+                                        name: Some(name),
+                                        arguments: Some(String::new()),
+                                    }),
+                                }]),
                                 ..Delta::default()
                             },
                             None,
                         ))
                     }
-                    Some("tool_use") => {
-                        self.blocks.insert(index, BlockKind::ToolUse);
-                        let slot = self.next_tool_slot;
-                        self.next_tool_slot += 1;
-                        self.tool_slots.insert(index, slot);
-                        Some(self.chunk(
-                            Delta {
-                                role: None,
-                                content: None,
-                                tool_calls: Some(vec![ToolCallDelta {
-                                    index: slot,
-                                    provider_signature: None,
-                                    id: Some(block["id"].as_str().unwrap_or_default().to_string()),
-                                    tool_type: Some("function".to_string()),
-                                    function: Some(FunctionCallDelta {
-                                        name: Some(
-                                            block["name"].as_str().unwrap_or_default().to_string(),
-                                        ),
-                                        arguments: Some(String::new()),
-                                    }),
-                                }]),
-                                reasoning: None,
-                                reasoning_content: None,
-                                thinking_block: None,
-                                refusal: None,
-                                refusal_category: None,
-                            },
-                            None,
-                        ))
-                    }
-                    // Server-side tool blocks and redacted thinking: noted so their
-                    // deltas are ignored knowingly rather than mistaken for
-                    // something to forward.
-                    _ => {
-                        self.blocks.insert(index, BlockKind::Other);
-                        None
-                    }
+                    // Server-side tool blocks: noted so their deltas are
+                    // ignored knowingly rather than mistaken for something to
+                    // forward.
+                    BlockKind::Other => None,
                 }
             }
 
@@ -2159,6 +2168,42 @@ pub fn gemini_finish_reason(reason: &str, called_a_tool: bool) -> String {
     }
 }
 
+/// A candidate's finish reason, if it has one yet, read the same for a whole
+/// response and for the chunk that ends a stream.
+fn gemini_finish(candidate: &serde_json::Value, called_a_tool: bool) -> Option<String> {
+    candidate["finishReason"]
+        .as_str()
+        .map(|r| gemini_finish_reason(r, called_a_tool))
+}
+
+/// The function call a part carries, if any, as the `slot`th of the reply.
+///
+/// The one reading of a call for both paths: the stream sends each call whole
+/// in one chunk, so its delta is this call and nothing is assembled.
+fn gemini_call(part: &serde_json::Value, slot: u32) -> Option<ToolCall> {
+    let call = part.get("functionCall").filter(|c| !c.is_null())?;
+    Some(ToolCall {
+        // Gemini 3 and newer name their own call ids, and a function response
+        // is matched back by id on those models. Kept rather than replaced: an
+        // invented id matches nothing. Older models send none, so one is made
+        // up for them, which is harmless where nothing compares it.
+        id: call["id"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("gemini_call_{slot}")),
+        tool_type: "function".to_string(),
+        function: FunctionCall {
+            name: call["name"].as_str().unwrap_or_default().to_string(),
+            arguments: call["args"].to_string(),
+        },
+        // From the part this call arrived on, and never from any other, and
+        // required back: Gemini signs the first call of a parallel batch and
+        // bills the previous turn's reasoning again for every copy replayed,
+        // without saying so.
+        provider_signature: part["thoughtSignature"].as_str().map(str::to_string),
+    })
+}
+
 /// Turns Gemini's stream into OpenAI-shaped chunks.
 ///
 /// Simpler than Anthropic's, because Gemini repeats whole candidates rather
@@ -2247,42 +2292,25 @@ impl GeminiStream {
                 // reason this branch exists.
                 self.text_signature = Some(signature.to_string());
             }
-            if let Some(call) = part.get("functionCall").filter(|c| !c.is_null()) {
-                let slot = self.next_tool_slot;
-                self.next_tool_slot += 1;
+            if let Some(call) = gemini_call(part, self.next_tool_slot) {
                 self.called_a_tool = true;
                 tool_calls.push(ToolCallDelta {
-                    index: slot,
-                    // From the part this call arrived on, and never from any
-                    // other: Gemini signs the first call of a parallel batch
-                    // and bills the previous turn's reasoning again for every
-                    // copy replayed, without saying so.
-                    provider_signature: part["thoughtSignature"].as_str().map(str::to_string),
-                    // Gemini 3 and newer name their own call ids, and a
-                    // function response is matched back by id on those models.
-                    // Kept rather than replaced: an invented id matches
-                    // nothing. Older models send none, so one is made up for
-                    // them, which is harmless where nothing compares it.
-                    id: Some(
-                        call["id"]
-                            .as_str()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| format!("gemini_call_{slot}")),
-                    ),
-                    tool_type: Some("function".to_string()),
+                    index: self.next_tool_slot,
+                    provider_signature: call.provider_signature,
+                    id: Some(call.id),
+                    tool_type: Some(call.tool_type),
                     function: Some(FunctionCallDelta {
-                        name: Some(call["name"].as_str().unwrap_or_default().to_string()),
+                        name: Some(call.function.name),
                         // Whole, not in fragments: this protocol sends a
                         // finished object rather than partial JSON.
-                        arguments: Some(call["args"].to_string()),
+                        arguments: Some(call.function.arguments),
                     }),
                 });
+                self.next_tool_slot += 1;
             }
         }
 
-        let finish = candidate["finishReason"]
-            .as_str()
-            .map(|r| gemini_finish_reason(r, self.called_a_tool));
+        let finish = gemini_finish(candidate, self.called_a_tool);
         // Said, not left as a stream that merely ended: the provider's own
         // message where it gave one, else which filter it was.
         let refusal = (finish.as_deref() == Some("content_filter")).then(|| {
@@ -2349,33 +2377,13 @@ pub fn gemini_to_openai(
                 text: t.to_string(),
             });
         }
-        if let Some(call) = part.get("functionCall").filter(|c| !c.is_null()) {
-            let tool_call = ToolCall {
-                // Gemini names its own call ids now. Kept rather than
-                // replaced: a function response is matched back by id, and an
-                // invented one matches nothing.
-                id: call["id"]
-                    .as_str()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| format!("gemini_call_{}", tool_calls.len())),
-                tool_type: "function".to_string(),
-                function: FunctionCall {
-                    name: call["name"].as_str().unwrap_or_default().to_string(),
-                    arguments: call["args"].to_string(),
-                },
-                // Rides the same part as the call, and is required back.
-                provider_signature: part["thoughtSignature"].as_str().map(str::to_string),
-            };
-            parts.push(Part::ToolCall {
-                call: tool_call.clone(),
-            });
-            tool_calls.push(tool_call);
+        if let Some(call) = gemini_call(part, tool_calls.len() as u32) {
+            parts.push(Part::ToolCall { call: call.clone() });
+            tool_calls.push(call);
         }
     }
 
-    let finish_reason = candidate["finishReason"]
-        .as_str()
-        .map(|r| gemini_finish_reason(r, !tool_calls.is_empty()));
+    let finish_reason = gemini_finish(candidate, !tool_calls.is_empty());
 
     // Joined as the stream joins them, with nothing between: several text
     // parts are one reply arriving in pieces, and this path once put a line
