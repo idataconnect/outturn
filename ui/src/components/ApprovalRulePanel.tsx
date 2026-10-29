@@ -12,7 +12,7 @@ import {
   type RulesPage,
 } from '../lib/approvalRules'
 import { iconButton } from '../lib/buttons'
-import { show, toMinor } from '../lib/money'
+import { currencySign, show, toMinor } from '../lib/money'
 
 const field =
   'mt-1 block w-full rounded-md border border-surface-300 bg-white px-3 py-2 text-sm text-surface-900 focus:outline-none focus:ring-2 focus:ring-brand-500/40 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-100'
@@ -27,18 +27,6 @@ const LIFETIME_DAYS = 90
 
 /** What the panel starts from when it opens on a question in the queue. */
 export type Prefill = { under?: string }
-
-/** The currency's sign in the reader's locale, `£`, or its code. */
-function sign(currency: string): string {
-  try {
-    const part = new Intl.NumberFormat(undefined, { style: 'currency', currency, currencyDisplay: 'narrowSymbol' })
-      .formatToParts(0)
-      .find((p) => p.type === 'currency')
-    return part?.value ?? currency
-  } catch {
-    return currency
-  }
-}
 
 /** A date input's value, `2027-01-27`, for a moment. */
 const day = (d: Date) => {
@@ -66,7 +54,7 @@ function MoneyInput({
   return (
     <div className="mt-1 flex items-center rounded-md border border-surface-300 bg-white focus-within:ring-2 focus-within:ring-brand-500/40 dark:border-surface-700 dark:bg-surface-900">
       <span className="pl-3 text-sm text-surface-500" aria-hidden>
-        {sign(currency)}
+        {currencySign(currency)}
       </span>
       <input
         aria-labelledby={labelledBy}
@@ -129,6 +117,9 @@ export default function ApprovalRulePanel({
   })
   const [trial, setTrial] = useState(() => (own ? own.state === 'trial' : true))
   const [preview, setPreview] = useState<Preview | null>(null)
+  // Why there is no preview, where the API said: often what saving would be
+  // refused for too, worth knowing before the button is pressed.
+  const [previewError, setPreviewError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -141,13 +132,22 @@ export default function ApprovalRulePanel({
   useEffect(() => {
     if (!one || !automatic || (money && !underMinor)) {
       setPreview(null)
+      setPreviewError(null)
       return
     }
     let stale = false
     const timer = setTimeout(() => {
       previewRule(one, { agent_id: agentId || null, under: underMinor, daily_total: totalMinor })
-        .then((p) => !stale && setPreview(p))
-        .catch(() => !stale && setPreview(null))
+        .then((p) => {
+          if (stale) return
+          setPreview(p)
+          setPreviewError(null)
+        })
+        .catch((e) => {
+          if (stale) return
+          setPreview(null)
+          setPreviewError(e instanceof ApiError ? e.message : 'What it would have done could not be worked out.')
+        })
     }, 300)
     return () => {
       stale = true
@@ -339,7 +339,9 @@ export default function ApprovalRulePanel({
       {one && (
         <section aria-label="Evidence" className="mt-5 border-t border-surface-200 pt-4 text-sm dark:border-surface-800">
           <h3 className="font-medium text-surface-900 dark:text-surface-100">Last {days} days</h3>
-          {automatic && preview ? (
+          {automatic && previewError ? (
+            <p className="mt-1 text-amber-700 dark:text-amber-300">{previewError}</p>
+          ) : automatic && preview ? (
             <>
               <p className="mt-1 text-surface-700 dark:text-surface-300">
                 {preview.asked === 0

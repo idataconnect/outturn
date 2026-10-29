@@ -152,3 +152,15 @@ describe('ApprovalRulePanel', () => {
     expect(put.mock.calls[0][0].operations).toHaveLength(2)
   })
 })
+
+describe('ApprovalRulePanel preview', () => {
+  it('says why there is no preview when the API refuses one', async () => {
+    vi.mocked(previewRule).mockRejectedValueOnce(
+      new ApiError(400, 'POST /charges: at most £200.00 can go through without a person'),
+    )
+    render(<ApprovalRulePanel ops={[charge]} days={30} mayWrite onSaved={vi.fn()} onClose={vi.fn()} />)
+    await userEvent.click(screen.getByRole('radio', { name: 'Automatic' }))
+    await userEvent.type(screen.getByLabelText('Only under'), '300')
+    expect(await screen.findByText(/at most £200.00/)).toBeTruthy()
+  })
+})
