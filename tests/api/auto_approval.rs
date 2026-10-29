@@ -1702,3 +1702,134 @@ async fn the_rules_page_says_each_operations_rule_in_money() {
     assert_eq!(rule["daily_total"]["amount"], 15000);
     assert_eq!(op["asked"], 0);
 }
+
+/// A rule set on an operation is that operation's own, and is what the
+/// gateway holds a charge to: under £30 goes, though the broader policy for
+/// charges says under £50.
+#[tokio::test]
+async fn an_operations_own_rule_is_what_the_gateway_enforces() {
+    let h = harness_or_skip!();
+    let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
+    let rule = |body: Value| {
+        let h = &h;
+        let admin = c.admin.clone();
+        async move { put(h, "/v1/approval-rules", &admin, &body.to_string()).await }
+    };
+    let op = serde_json::json!({
+        "skill_id": c.skill, "requires": "charge", "matches": "POST /charges"
+    });
+
+    // Past where medium ends, which is all this deployment lets through.
+    let (status, body) = rule(serde_json::json!({
+        "operations": [op], "automatic": true, "under": 30000, "mode": "on"
+    }))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body.contains("£200.00"), "{body}");
+
+    let (status, body) = rule(serde_json::json!({
+        "operations": [op], "automatic": true, "under": 3000,
+        "daily_total": 10000, "mode": "on"
+    }))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page: Value = serde_json::from_str(&body).unwrap();
+    let r = &page["operations"][0]["rules"][0];
+    assert_eq!(r["selector"], "operation");
+    assert_eq!(r["under"]["amount"], 3000);
+    assert_eq!(r["daily_total"]["amount"], 10000);
+
+    let (_, _, assignment) = a_turn(&h, &c).await;
+    let token = assignment["gateway_token"].as_str().unwrap();
+    let gateway = Gateway::new(&h);
+    let charge = |amount| gateway.charge(c.acme, &assignment, token, &assignment["gates"], amount);
+    assert_eq!(charge(2500).await.0, StatusCode::OK, "£25 is under £30");
+    let (status, body) = charge(4000).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "£40 is not: {body}");
+
+    // Setting it again replaces it rather than adding a second.
+    let (status, body) = rule(serde_json::json!({
+        "operations": [op], "automatic": true, "under": 2000, "mode": "on"
+    }))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let live: i64 = sqlx::query_scalar(
+        "select count(*) from approval_policies where selector = 'operation' and revoked_at is null",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(live, 1);
+}
+
+/// "Always asks" on an operation a broader policy reaches excludes it, so a
+/// person is asked whatever the broader policy says; and lifting it for one
+/// agent leaves every other still asking.
+#[tokio::test]
+async fn always_asks_wins_over_a_broader_policy() {
+    let h = harness_or_skip!();
+    let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
+    let op = serde_json::json!({
+        "skill_id": c.skill, "requires": "charge", "matches": "POST /charges"
+    });
+    let (status, body) = put(
+        &h,
+        "/v1/approval-rules",
+        &c.admin,
+        &serde_json::json!({ "operations": [op], "automatic": false }).to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        page["operations"][0]["rules"],
+        serde_json::json!([]),
+        "{body}"
+    );
+
+    let (_, _, assignment) = a_turn(&h, &c).await;
+    let token = assignment["gateway_token"].as_str().unwrap();
+    let gateway = Gateway::new(&h);
+    let (status, body) = gateway
+        .charge(c.acme, &assignment, token, &assignment["gates"], 1000)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "£10 asks now: {body}");
+
+    // For one agent, automatic again; the exclusion for everyone goes.
+    let (status, body) = put(
+        &h,
+        "/v1/approval-rules",
+        &c.admin,
+        &serde_json::json!({
+            "operations": [op], "agent_id": c.agent, "automatic": true,
+            "under": 1500, "mode": "on"
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        page["operations"][0]["rules"][0]["under"]["amount"], 1500,
+        "{body}"
+    );
+}
+
+/// The preview replays a rule against what its operation asked, and refuses
+/// what the rule itself would be refused for.
+#[tokio::test]
+async fn a_rule_is_previewed_before_it_is_set() {
+    let h = harness_or_skip!();
+    let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
+    let q = format!(
+        "/v1/approval-rules/preview?skill_id={}&requires=charge&matches=POST%20/charges",
+        c.skill
+    );
+    let (status, body) = h.get(&format!("{q}&under=3000"), Some(&c.admin)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let preview: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(preview["days"], 30);
+    assert_eq!(preview["would"], 0);
+    let (status, _) = h.get(&format!("{q}&under=900000"), Some(&c.admin)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

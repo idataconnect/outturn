@@ -129,7 +129,7 @@ pub struct WritePolicy {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
-fn include() -> String {
+pub(super) fn include() -> String {
     "include".into()
 }
 
@@ -138,7 +138,7 @@ fn trial() -> String {
 }
 
 /// A write, checked: everything a row may say, and nothing it may not.
-struct Checked {
+pub(super) struct Checked {
     agent_id: Option<Uuid>,
     effect: &'static str,
     selector: &'static str,
@@ -161,7 +161,7 @@ fn invalid(why: impl Into<String>) -> ApiError {
     (StatusCode::BAD_REQUEST, why.into())
 }
 
-fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, ApiError> {
+pub(super) fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, ApiError> {
     let effect = match input.effect.as_str() {
         "include" => "include",
         "exclude" => "exclude",
@@ -318,7 +318,7 @@ fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, ApiError> {
 }
 
 /// The agent and skill a write names have to be ones this workspace can see.
-async fn check_references(
+pub(super) async fn check_references(
     state: &ApiState,
     workspace_id: Uuid,
     checked: &Checked,
@@ -382,15 +382,59 @@ pub async fn get(
         .map(|p| Json(view(p)))
 }
 
-async fn found(state: &ApiState, workspace_id: Uuid, id: Uuid) -> Result<Policy, ApiError> {
+pub(super) async fn found(
+    state: &ApiState,
+    workspace_id: Uuid,
+    id: Uuid,
+) -> Result<Policy, ApiError> {
     super::get(&state.pool, workspace_id, id)
         .await
         .map_err(internal)?
         .ok_or((StatusCode::NOT_FOUND, "no such policy".to_string()))
 }
 
+/// A checked policy as it would read once written, for asking what it would
+/// have done before anybody sets it.
+pub(super) fn draft(workspace_id: Uuid, c: &Checked, now: DateTime<Utc>) -> Policy {
+    Policy {
+        id: Uuid::nil(),
+        workspace_id,
+        agent_id: c.agent_id,
+        agent_name: None,
+        effect: c.effect.to_string(),
+        selector: c.selector.to_string(),
+        max_risk: c.max_risk.clone(),
+        requires: c.requires.clone(),
+        skill_id: c.skill_id,
+        skill_name: None,
+        matches: c.matches.clone(),
+        conditions: c.conditions.clone(),
+        per_turn: c.per_turn,
+        per_day: c.per_day,
+        sum_field: c.sum_field.clone(),
+        sum_per_day: c.sum_per_day,
+        daily_totals: c.daily_totals.clone(),
+        mode: c.mode.to_string(),
+        version: 0,
+        note: c.note.clone(),
+        created_by: None,
+        created_by_name: None,
+        created_at: now,
+        updated_by: None,
+        updated_by_name: None,
+        updated_at: now,
+        accepted_at: now,
+        expires_at: c.expires_at,
+        revoked_by: None,
+        revoked_by_name: None,
+        revoked_at: None,
+        setter_present: true,
+        auto_approved: 0,
+    }
+}
+
 /// Writes a checked policy as a new row.
-async fn insert<'e>(
+pub(super) async fn insert<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     workspace_id: Uuid,
     id: Uuid,

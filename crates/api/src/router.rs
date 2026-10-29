@@ -2027,7 +2027,14 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/approval-policies/{id}/evidence",
             get(super::auto_approval::api::evidence),
         )
-        .route("/v1/approval-rules", get(super::auto_approval::rules::list))
+        .route(
+            "/v1/approval-rules",
+            get(super::auto_approval::rules::list).put(super::auto_approval::rules::put),
+        )
+        .route(
+            "/v1/approval-rules/preview",
+            get(super::auto_approval::rules::preview),
+        )
         .route(
             "/v1/approval-bands",
             get(super::auto_approval::bands::list).put(super::auto_approval::bands::put),
