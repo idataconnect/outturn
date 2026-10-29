@@ -7,6 +7,7 @@ import { TOKEN_KINDS, cacheHitRate, compact, dayLabel, exact, measured, share } 
 import UsageArea, { type Bucket } from '../components/UsageArea'
 import UsageRanked, { type Slice } from '../components/UsageRanked'
 import StatTile from '../components/StatTile'
+import { bytesLabel, getStorage, type Storage } from '../lib/storage'
 import SkillStatsPanel, { type SkillStats } from '../components/SkillStats'
 import WaitingOnYou from '../components/WaitingOnYou'
 import AgentActivity from '../components/AgentActivity'
@@ -78,6 +79,15 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [table, setTable] = useState(false)
+  // What the workspace holds against its quota: not a figure of the window,
+  // but where a workspace looks to see what it is using.
+  const [storage, setStorage] = useState<Storage | null>(null)
+  useEffect(() => {
+    if (!canRead) return
+    void getStorage()
+      .then(setStorage)
+      .catch(() => setStorage(null))
+  }, [canRead])
 
   useEffect(() => {
     // Not gated on `canRead` alone: the two panels read different things under
@@ -331,7 +341,7 @@ export default function Dashboard() {
             )}
           </section>
 
-          <section className="grid gap-4 grid-cols-2 lg:grid-cols-4">
+          <section className={`grid gap-4 grid-cols-2 ${storage && !everywhere ? 'lg:grid-cols-5' : 'lg:grid-cols-4'}`}>
             <StatTile label="Model calls" value={totals!.calls} hint="one per round" />
             <StatTile label="Sessions" value={totals!.sessions} hint="conversations touched" />
             <StatTile label="Agents" value={totals!.agents} hint="that answered" />
@@ -345,6 +355,19 @@ export default function Dashboard() {
               display={cacheRate === null ? '—' : share(totals!.cache_read_tokens, cacheInput)}
               hint={`${compact(totals!.cache_read_tokens)} input tokens from cache`}
             />
+            {/* This workspace's, so not shown when looking across all of them. */}
+            {storage && !everywhere && (
+              <StatTile
+                label="Storage"
+                value={storage.stored_bytes}
+                display={bytesLabel(storage.stored_bytes)}
+                hint={
+                  storage.quota > 0
+                    ? `of ${bytesLabel(storage.quota)}${storage.full ? ', full' : ''}`
+                    : 'no limit'
+                }
+              />
+            )}
           </section>
 
           <section className="rounded-lg border border-surface-200 dark:border-surface-800 bg-white dark:bg-surface-900 p-5">

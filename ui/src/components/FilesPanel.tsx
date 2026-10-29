@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Building2, Check, ChevronDown, Clock, Download, FileText, MessagesSquare, Trash2, Upload } from 'lucide-react'
 
+import { FULL, getStorage } from '../lib/storage'
 import { ApiError } from '../lib/api'
 import {
   deleteFile,
@@ -83,6 +84,9 @@ export default function FilesPanel({
   const [more, setMore] = useState<FilePage['more']>({})
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Whether the workspace has room, so a full one is told before anybody
+  // picks a file rather than after it fails.
+  const [full, setFull] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const input = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -107,6 +111,9 @@ export default function FilesPanel({
 
   useEffect(() => {
     void load()
+    void getStorage()
+      .then((s) => setFull(s.full))
+      .catch(() => setFull(false))
   }, [load, reloadKey])
 
   // The chosen scope must be one this person may write; if their rights
@@ -127,6 +134,8 @@ export default function FilesPanel({
       await load()
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'upload failed')
+      // Refused for room: the notice says so from here on.
+      if (e instanceof ApiError && e.code === 'too_large') setFull(true)
     } finally {
       setBusy(false)
       if (input.current) input.current.value = ''
@@ -214,6 +223,11 @@ export default function FilesPanel({
         </div>
       )}
       <div className="p-3 border-b border-surface-200 dark:border-surface-800 space-y-2">
+        {full && writable.length > 0 && (
+          <p role="status" className="text-xs text-amber-700 dark:text-amber-300">
+            {FULL}
+          </p>
+        )}
         {writable.length > 0 && (
           <>
             <input
@@ -239,7 +253,7 @@ export default function FilesPanel({
               </button>
               <button
                 type="button"
-                disabled={busy}
+                disabled={busy || full}
                 onClick={() => input.current?.click()}
                 className="flex-1 flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
               >

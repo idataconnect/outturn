@@ -4,6 +4,7 @@ import { ArrowLeft, Plus, Save, Trash2 } from 'lucide-react'
 
 import { ApiError, api } from '../lib/api'
 import { paths } from '../lib/paths'
+import WorkspaceStorage from '../components/WorkspaceStorage'
 
 export type Workspace = {
   id: string
@@ -185,6 +186,7 @@ export default function WorkspaceEditor() {
           </div>
         </form>
       )}
+      {!creating && id && workspace && <WorkspaceStorage workspaceId={id} />}
     </div>
   )
 }
