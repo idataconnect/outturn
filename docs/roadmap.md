@@ -21,8 +21,7 @@ committed and verified, and new work goes in where it belongs, not at the end.
 1. **What the review of 2026-10-20 left** (*From the review*, below): the
    ten fixes, the retention sweeps, the indexes, name uniqueness, the prompt
    and sandbox boundaries and the gateway's findings are in. Next, in order:
-   1. Zero and empty meaning what they say in `puller.rs` (*Shape of the code*).
-   2. The agent component rebuilt in CI (*Build, CI and tests*).
+   1. The agent component rebuilt in CI (*Build, CI and tests*).
 
    The rest goes in the order given there.
 2. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
@@ -89,9 +88,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 - `tool_name_of` in the default agent duplicates `operation_tool_name` in
   `crates/api/src/skill/mod.rs`; one should be generated from the other or
   shared through the WIT.
-- `puller.rs` maps `max_tool_rounds <= 0` to unbounded and an empty
-  `write_scopes` to `["session"]`: a setting that meant "none" becomes
-  "everything". Make zero and empty mean what they say.
 
 ### The browser
 
