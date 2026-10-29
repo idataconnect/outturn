@@ -22,9 +22,12 @@ committed and verified, and new work goes in where it belongs, not at the end.
    ten fixes, the retention sweeps, the indexes and the migration lock, name uniqueness, the prompt
    and sandbox boundaries and the gateway's findings are in; the rest goes in
    the order given there.
-2. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
+2. **Every document checked against the code.** An audit found docs that
+   no longer match what is built. Each file in `docs/`, the README and
+   AGENTS.md read against the source, and corrected or cut where it is wrong.
+3. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
-3. **A first real call to Amazon Bedrock**, by whoever first has an AWS
+4. **A first real call to Amazon Bedrock**, by whoever first has an AWS
    account: everything in [bedrock.md](bedrock.md) is tried against
    stand-ins only, and the two-doors recipe says so until then.
 
@@ -50,6 +53,7 @@ can be picked up without rereading the review. Ordered by what it protects.
   turns are not, and nothing counts what a workspace holds. Needs the bytes
   each workspace stores kept as files are written and deleted, read by the API
   when it hands out a turn, and the turn's remaining allowance sent with it.
+  Designed in [storage-quota.md](storage-quota.md).
 
 ### The gateway
 
