@@ -22,10 +22,16 @@ committed and verified, and new work goes in where it belongs, not at the end.
    ten fixes, the retention sweeps, the indexes and the migration lock, name uniqueness, the prompt
    and sandbox boundaries and the gateway's findings are in; the rest goes in
    the order given there.
-2. **Every document checked against the code.** An audit found docs that
+2. **Approval rules** ([approval-rules.md](approval-rules.md)), in order:
+   the read API (`GET /v1/approval-rules`, done); writing one operation's
+   rule, several at once, and the preview; the table and panel replacing
+   Settings → Auto-approval; the panel on the skill's page and from the
+   queue; the migration of bands and act policies, and removing both with
+   the one-line form; auto-approval.md's *As built* rewritten.
+3. **Every document checked against the code.** An audit found docs that
    no longer match what is built. Each file in `docs/`, the README and
    AGENTS.md read against the source, and corrected or cut where it is wrong.
-3. **Text an operator can change, in any language.** Designed before built.
+4. **Text an operator can change, in any language.** Designed before built.
    Every user-facing block of text -- UI strings, refusals, the platform
    preamble, notices such as being over a storage quota -- named by key
    with a shipped default, overridable per deployment, and translated per
@@ -33,9 +39,9 @@ committed and verified, and new work goes in where it belongs, not at the end.
    without a build; dropping a new block into code is one call with a key
    and a default. When a block's source text changes, its translations are
    marked stale and an agent drafts new ones for a person to accept.
-4. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
+5. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
-5. **A first real call to Amazon Bedrock**, by whoever first has an AWS
+6. **A first real call to Amazon Bedrock**, by whoever first has an AWS
    account: everything in [bedrock.md](bedrock.md) is tried against
    stand-ins only, and the two-doors recipe says so until then.
 

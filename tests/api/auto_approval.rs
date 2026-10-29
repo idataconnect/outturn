@@ -1670,3 +1670,35 @@ async fn a_delete_by_path_is_gated_by_its_id() {
     assert_eq!(gateway.sent(), 2);
     finish!(h);
 }
+
+/// The rules page lists the operation an agent reaches, with the rule each
+/// agent is under said as an amount: a policy up to low risk is one under the
+/// low band, and the deployment's cap of medium is where no rule may reach.
+#[tokio::test]
+async fn the_rules_page_says_each_operations_rule_in_money() {
+    let h = harness_or_skip!();
+    let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
+
+    let (status, body) = h.get("/v1/approval-rules", Some(&c.admin)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(page["may_write"], true);
+    let ops = page["operations"].as_array().unwrap();
+    assert_eq!(ops.len(), 1, "{body}");
+    let op = &ops[0];
+    assert_eq!(op["skill_name"], "Charging");
+    assert_eq!(op["matches"], "POST /charges");
+    assert_eq!(op["name"], "Charge");
+    assert_eq!(op["agents"][0]["name"], "Desk");
+    assert_eq!(op["amount"]["currency"], "GBP");
+    assert_eq!(op["fixed"]["never"], false);
+    assert_eq!(op["fixed"]["most"]["amount"], 20000, "medium ends at £200");
+
+    let rule = &op["rules"][0];
+    assert_eq!(rule["policy_id"], c.policy);
+    assert_eq!(rule["state"], "on");
+    assert_eq!(rule["agents"][0]["id"], c.agent.to_string());
+    assert_eq!(rule["under"]["amount"], 5000, "low ends at £50");
+    assert_eq!(rule["daily_total"]["amount"], 15000);
+    assert_eq!(op["asked"], 0);
+}

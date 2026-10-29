@@ -17,6 +17,7 @@
 pub mod api;
 pub mod bands;
 pub mod routes;
+pub mod rules;
 pub mod waiting;
 
 use std::collections::BTreeMap;
@@ -42,6 +43,9 @@ pub const MAX_LIFETIME_DAYS: i64 = 365;
 pub struct Declared {
     pub gate: Gate,
     pub skill_id: Uuid,
+    /// The skill file declaring the operation, `charge_payment_account.md`,
+    /// whose name is what a person calls it.
+    pub file: String,
     pub risk: Risk,
     /// `auto: allowed`.
     pub auto: bool,
@@ -381,7 +385,7 @@ pub async fn declared_for(
     }
     let versions: Vec<Uuid> = skills.iter().map(|s| s.version_id).collect();
     let rows = sqlx::query(
-        "select g.requires, g.host, g.method, g.path_pattern, g.identified_by, \
+        "select g.path as file, g.requires, g.host, g.method, g.path_pattern, g.identified_by, \
                 g.risk, g.auto, g.numbers, g.free, g.amount, v.skill_id, v.created_at, \
                 coalesce( \
                     array_agg(b.field order by b.position) \
@@ -431,6 +435,7 @@ pub async fn declared_for(
                     binds: r.get("binds"),
                 },
                 skill_id: r.get("skill_id"),
+                file: r.get("file"),
                 // A value the check constraint allows and this cannot read is the
                 // most guarded one.
                 risk,
@@ -748,6 +753,7 @@ mod tests {
                 binds: vec!["booking_id".into(), "amount_pence".into()],
             },
             skill_id: skill(),
+            file: format!("{requires}.md"),
             risk,
             auto: true,
             numbers: vec!["amount_pence".into()],
