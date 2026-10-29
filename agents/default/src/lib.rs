@@ -12,6 +12,12 @@
 #[allow(warnings)]
 mod bindings;
 
+// The API's own definition, included rather than depended on: this crate is
+// built for the sandbox from its own manifest. The image's agent stage copies
+// the file to the same place relative to this one.
+#[path = "../../../crates/core/src/tool_name.rs"]
+mod tool_name;
+
 mod archive;
 
 use std::collections::BTreeSet;
@@ -601,21 +607,10 @@ fn skill_operations(names: &[String]) -> Vec<(String, String)> {
 /// being pointed at the file lets it make the call by hand.
 fn tool_name_of(path: &str) -> String {
     let rest = path.strip_prefix("skill/").unwrap_or(path);
-    let rest = rest.strip_suffix(".md").unwrap_or(rest);
-    let Some((slug, stem)) = rest.split_once('/') else {
+    let Some((slug, file)) = rest.split_once('/') else {
         return String::new();
     };
-    format!("{slug}_{stem}")
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .take(64)
-        .collect()
+    tool_name::tool_name(slug, file)
 }
 
 /// What to say about those names, or nothing if there are none.

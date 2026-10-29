@@ -9,6 +9,8 @@ FROM rust:1 AS agent
 RUN rustup target add wasm32-wasip2 && rustup component add llvm-tools
 WORKDIR /agent
 COPY agents/default/ ./
+# Shared with the API by path; see crates/core/src/tool_name.rs.
+COPY crates/core/src/tool_name.rs /crates/core/src/tool_name.rs
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/agent/target \
     cargo build --locked --release --target wasm32-wasip2 && \

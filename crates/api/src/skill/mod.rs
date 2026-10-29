@@ -493,19 +493,7 @@ pub fn operations_for_turn(skills: &[ResolvedSkill]) -> Vec<SkillOperation> {
 /// `_` and `-`, at most 64 -- because a name one provider refuses fails the
 /// whole request, not just the tool.
 pub fn operation_tool_name(slug: &str, path: &str) -> String {
-    let stem = path.strip_suffix(".md").unwrap_or(path);
-    let name: String = format!("{slug}_{stem}")
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .take(64)
-        .collect();
-    name
+    outturn_core::tool_name::tool_name(slug, path)
 }
 
 #[derive(Debug, thiserror::Error)]

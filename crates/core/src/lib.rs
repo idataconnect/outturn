@@ -21,5 +21,6 @@ pub mod model_settings;
 pub mod protocol;
 pub mod scope;
 pub mod storage;
+pub mod tool_name;
 pub mod utf8;
 pub mod vision;
