@@ -136,6 +136,11 @@ mod tests {
             assert_eq!(workspace_of(&key), Some(ws), "{key}");
         }
         assert_eq!(workspace_of(&format!("skills/{ws}/abc123")), None);
+        // What a runtime may report is the same answer, less extracted text.
+        let own = format!("sessions/{ws}/{agent}/{agent}/upload.pdf");
+        assert!(extract::belongs_to(&own, ws));
+        assert!(!extract::belongs_to(&own, Uuid::now_v7()));
+        assert!(!extract::belongs_to(&extract::text_key(&own), ws));
         assert_eq!(workspace_of("workspaces/not-a-uuid/x"), None);
     }
 }

@@ -61,12 +61,14 @@ pub async fn invalidate(storage: &dyn crate::storage::StorageBackend, key: &str)
 ///
 /// The runtime resolves keys before it reports them, so an honest runtime
 /// never sends one that is not. This is for the other kind.
+///
+/// A file the guest or a person wrote, never the text read out of one: that
+/// is this module's to write, and nothing reports it. Which workspace a key is
+/// in is `storage::stored::workspace_of`'s answer, the same one the storage
+/// quota counts it against.
 pub fn belongs_to(key: &str, workspace_id: Uuid) -> bool {
-    use crate::storage::scope::Scope;
-    Scope::ALL.iter().any(|s| {
-        let root = format!("{}{workspace_id}/", s.bucket_prefix());
-        key.starts_with(&root)
-    })
+    !key.starts_with("extracted/")
+        && crate::storage::stored::workspace_of(key) == Some(workspace_id)
 }
 
 /// Whether this is worth handing to Tika.
