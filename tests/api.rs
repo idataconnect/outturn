@@ -15355,7 +15355,14 @@ async fn names_the_platform_picks_by_are_unique() {
         )
         .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert!(body.contains("\"Anthropic\""), "{body}");
+    assert_eq!(json(&body)["code"], "conflict", "{body}");
+    assert!(
+        json(&body)["message"]
+            .as_str()
+            .unwrap()
+            .contains("\"Anthropic\""),
+        "{body}"
+    );
     let (status, body) = h
         .post(
             "/v1/platform/provider-accounts",

@@ -2345,4 +2345,5 @@ pub fn routes(state: Arc<ApiState>) -> Router {
                 .delete(delete_workspace),
         )
         .with_state(state)
+        .layer(axum::middleware::map_response(crate::error_body::as_json))
 }

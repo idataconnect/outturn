@@ -21,10 +21,8 @@ committed and verified, and new work goes in where it belongs, not at the end.
 1. **What the review of 2026-10-20 left** (*From the review*, below): the
    ten fixes, the retention sweeps, the indexes, name uniqueness, the prompt
    and sandbox boundaries and the gateway's findings are in. Next, in order:
-   1. Older messages in a long session: the page link (*The browser*).
-   2. Errors as `{code, message}` (*Shape of the code*).
-   3. Zero and empty meaning what they say in `puller.rs` (*Shape of the code*).
-   4. The agent component rebuilt in CI (*Build, CI and tests*).
+   1. Zero and empty meaning what they say in `puller.rs` (*Shape of the code*).
+   2. The agent component rebuilt in CI (*Build, CI and tests*).
 
    The rest goes in the order given there.
 2. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
@@ -88,9 +86,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 - `crates/gateway/src/llm/translate.rs`: each vendor's stream and non-stream
   paths are separate reimplementations. The usage branch collapses the usage
   and stop-reason pairs; the rest of each pair should follow.
-- Errors are `(StatusCode, String)` (`crates/api/src/router.rs`): no code a
-  client can match on, so the UI matches prose. A `{code, message}` body is
-  cheap now and a migration later.
 - `tool_name_of` in the default agent duplicates `operation_tool_name` in
   `crates/api/src/skill/mod.rs`; one should be generated from the other or
   shared through the WIT.
@@ -100,9 +95,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### The browser
 
-- The transcript read is paged and reports `has_more`, but the client type
-  omits it and nothing sends `before` (`ui/src/lib/chat.ts`, `History`).
-  Older messages in a long session are simply absent. Add the page link.
 - The phone nav and sessions drawers close on Escape but have no focus trap;
   the existing overlays have none either, so adding one is a decision for
   all of them.

@@ -12,6 +12,7 @@ pub mod chat;
 pub mod compact;
 mod credentials;
 pub mod egress;
+mod error_body;
 mod events;
 pub mod fetch;
 pub use outturn_core::extract;

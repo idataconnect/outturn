@@ -602,7 +602,7 @@ export async function readPreview(
   // either way the download is the answer.
   if (response.status === 415 || response.status === 413) return { kind: 'none' }
   if (!response.ok) {
-    throw new ApiError(response.status, await response.text())
+    throw await ApiError.from(response)
   }
 
   const type = response.headers.get('content-type') ?? ''

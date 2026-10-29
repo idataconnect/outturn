@@ -26,10 +26,33 @@ export class ApiError extends Error {
   // Declared and assigned explicitly rather than as a parameter property,
   // which erasableSyntaxOnly disallows.
   readonly status: number
+  /** What kind of failure, to match on rather than the message: one per
+   *  status, or a narrower one where a status means two things. */
+  readonly code: string | undefined
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: string) {
     super(message)
     this.status = status
+    this.code = code
+  }
+
+  /** From a failed response: `{code, message}`, or plain text from anything
+   *  that is not the API -- a proxy, say. */
+  static async from(response: Response): Promise<ApiError> {
+    const text = await response.text().catch(() => '')
+    try {
+      const body = JSON.parse(text) as { code?: unknown; message?: unknown }
+      if (typeof body?.message === 'string') {
+        return new ApiError(
+          response.status,
+          body.message,
+          typeof body.code === 'string' ? body.code : undefined,
+        )
+      }
+    } catch {
+      // Not JSON; the text is the message.
+    }
+    return new ApiError(response.status, text || response.statusText)
   }
 }
 
@@ -158,8 +181,7 @@ async function call<T>(
   }
 
   if (!response.ok) {
-    const detail = await response.text().catch(() => '')
-    throw new ApiError(response.status, detail || response.statusText)
+    throw await ApiError.from(response)
   }
 
   if (response.status === 204) return undefined as T
