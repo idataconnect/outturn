@@ -1514,7 +1514,22 @@ async fn may_write(
         }
         Level::Workspace(_) | Level::Agent { .. } => {
             require(state, claims, Authority::SettingsUpdate).await?;
-            if setting.owner == Owner::OperatorOnly {
+            if setting.delegated_by.is_some() && matches!(level, Level::Agent { .. }) {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("{} is set per workspace, not per agent", setting.label),
+                ));
+            }
+            // As the workspace sees it now: a setting the operator handed to
+            // workspaces is theirs to write.
+            let owner = state
+                .settings
+                .view(level, None)
+                .await?
+                .into_iter()
+                .find(|e| e.setting.key == key)
+                .map_or(setting.owner, |e| e.setting.owner);
+            if owner == Owner::OperatorOnly {
                 return Err((
                     StatusCode::FORBIDDEN,
                     format!(
@@ -1592,6 +1607,72 @@ async fn view_operator_settings(
             .view(Level::Operator, for_model.model)
             .await?,
     ))
+}
+
+/// The operator's own way to one workspace's settings, including those it
+/// keeps to itself: a quota set per workspace by hand, or by whatever sells
+/// the plan. Only for a system admin.
+async fn operator_for_workspace(
+    state: &ApiState,
+    headers: &axum::http::HeaderMap,
+    id: Uuid,
+) -> Result<SessionClaims, ApiError> {
+    let claims = authenticate(state, headers)?;
+    if !claims.is_system_admin() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "only the operator sets a workspace's settings from here".into(),
+        ));
+    }
+    let found: Option<i32> = sqlx::query_scalar("select 1 from workspaces where id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if found.is_none() {
+        return Err((StatusCode::NOT_FOUND, "no such workspace".into()));
+    }
+    Ok(claims)
+}
+
+/// `GET /v1/workspaces/{id}/settings`.
+async fn view_workspace_settings_as_operator(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<super::settings::Effective>>, ApiError> {
+    operator_for_workspace(&state, &headers, id).await?;
+    Ok(Json(state.settings.view(Level::Workspace(id), None).await?))
+}
+
+/// `PUT /v1/workspaces/{id}/settings/{key}`.
+async fn set_workspace_setting_as_operator(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path((id, key)): Path<(Uuid, String)>,
+    Json(input): Json<SetSetting>,
+) -> Result<StatusCode, ApiError> {
+    let claims = operator_for_workspace(&state, &headers, id).await?;
+    state
+        .settings
+        .set(Level::Workspace(id), None, &key, input.value)
+        .await?;
+    tracing::info!(actor = %claims.subject, workspace_id = %id, key = %key, "workspace setting set by the operator");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /v1/workspaces/{id}/settings/{key}`.
+async fn clear_workspace_setting_as_operator(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path((id, key)): Path<(Uuid, String)>,
+) -> Result<StatusCode, ApiError> {
+    operator_for_workspace(&state, &headers, id).await?;
+    state
+        .settings
+        .clear(Level::Workspace(id), None, &key)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn set_operator_setting(
@@ -2023,6 +2104,7 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/approval-policies/{id}/evidence",
             get(super::auto_approval::api::evidence),
         )
+        .route("/v1/storage", get(super::quota::view))
         .route(
             "/v1/approval-rules",
             get(super::auto_approval::rules::list).put(super::auto_approval::rules::put),
@@ -2333,6 +2415,19 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         .route(
             "/v1/workspaces",
             get(list_workspaces).post(create_workspace),
+        )
+        .route(
+            "/v1/workspaces/{id}/storage",
+            get(super::quota::view_as_operator),
+        )
+        .route(
+            "/v1/workspaces/{id}/settings",
+            get(view_workspace_settings_as_operator),
+        )
+        .route(
+            "/v1/workspaces/{id}/settings/{key}",
+            axum::routing::put(set_workspace_setting_as_operator)
+                .delete(clear_workspace_setting_as_operator),
         )
         .route(
             "/v1/workspaces/{id}",

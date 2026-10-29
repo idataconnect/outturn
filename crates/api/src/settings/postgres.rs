@@ -247,10 +247,20 @@ impl SettingsStore for PostgresSettingsStore {
             // the product, and an agent's page offering it would be offering
             // something that does nothing.
             .filter(|setting| {
-                !(setting.owner == super::Owner::OperatorCeiling
+                !((setting.owner == super::Owner::OperatorCeiling
+                    || setting.delegated_by.is_some())
                     && matches!(level, Level::Agent { .. }))
             })
-            .map(|setting| {
+            .map(|mut setting| {
+                // Who may set it here, as the operator has it now, so the page
+                // offers a control exactly where a write would be taken.
+                if let Some((flag, _)) = setting.delegated_by {
+                    let flag_default = super::find(flag)
+                        .map(|f| f.default)
+                        .unwrap_or(serde_json::Value::Null);
+                    let delegating = walk(&chain[..1], flag, &flag_default).0;
+                    setting.owner = setting.owner_given(Some(&delegating));
+                }
                 let (mut value, mut source) = walk(&chain, setting.key, &setting.default);
                 let (inherited, _) = walk(&without, setting.key, &setting.default);
                 if setting.owner == super::Owner::OperatorCeiling {

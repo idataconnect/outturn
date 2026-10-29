@@ -462,6 +462,7 @@ impl Puller {
             max_written_bytes: request
                 .max_written_bytes
                 .unwrap_or(super::component::DEFAULT_MAX_WRITTEN_BYTES),
+            remaining_stored_bytes: request.remaining_stored_bytes,
             // A template agent's, chosen by its operator; empty for every other
             // agent, which reaches each tool through the guest's loader.
             eager_tools: request.eager_tools.clone(),

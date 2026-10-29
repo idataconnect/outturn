@@ -306,9 +306,22 @@ pub async fn upload(
     };
 
     let key = scope::resolve(&space, &scoped).map_err(storage_failed)?;
+    let kept_key = match &original {
+        Some((kept, _)) => Some(scope::resolve(&space, kept).map_err(storage_failed)?),
+        None => None,
+    };
+    // Before anything is stored, against what the workspace holds less what
+    // these replace.
+    let keys: Vec<String> = std::iter::once(key.clone())
+        .chain(kept_key.clone())
+        .collect();
+    let bytes = body.len() + original.as_ref().map_or(0, |(_, b)| b.len());
+    super::quota::check(&state, claims.workspace_id, &keys, bytes as u64).await?;
+
     store.write(&key, &body).await.map_err(storage_failed)?;
     // Whatever was read out of the previous version is wrong now.
     super::extract::invalidate(store.as_ref(), &key).await;
+    counted(&state, &key, body.len()).await;
 
     // The JPEG first and the original after it, so that a failure between
     // the two can be undone by removing one file: an upload either stores
@@ -319,10 +332,15 @@ pub async fn upload(
             Err(e) => Err(e),
         };
         match written {
-            Ok(at) => super::extract::invalidate(store.as_ref(), &at).await,
+            Ok(at) => {
+                super::extract::invalidate(store.as_ref(), &at).await;
+                counted(&state, &at, bytes.len()).await;
+            }
             Err(e) => {
                 if let Err(undo) = store.delete(&key).await {
                     tracing::warn!(key = %key, error = %undo, "could not remove a half-stored photo");
+                } else {
+                    uncounted(&state, &key).await;
                 }
                 return Err(storage_failed(e));
             }
@@ -576,8 +594,23 @@ pub async fn delete(
     store.delete(&key).await.map_err(storage_failed)?;
     // And its text, or a deleted report stays readable to anyone who names it.
     super::extract::invalidate(store.as_ref(), &key).await;
+    uncounted(&state, &key).await;
     tracing::info!(actor = %claims.subject, session_id = %session_id, path = %path, "file deleted");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Records a stored object for the quota. Logged rather than failed: the
+/// file is stored either way, and the weekly listing corrects the count.
+async fn counted(state: &ApiState, key: &str, bytes: usize) {
+    if let Err(e) = outturn_core::storage::stored::record(&state.pool, key, bytes as u64).await {
+        tracing::warn!(key, error = %e, "could not count a stored file");
+    }
+}
+
+async fn uncounted(state: &ApiState, key: &str) {
+    if let Err(e) = outturn_core::storage::stored::forget(&state.pool, key).await {
+        tracing::warn!(key, error = %e, "could not uncount a deleted file");
+    }
 }
 
 #[cfg(test)]

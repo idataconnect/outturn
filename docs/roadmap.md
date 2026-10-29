@@ -20,7 +20,7 @@ committed and verified, and new work goes in where it belongs, not at the end.
 
 1. **What the review of 2026-10-20 left** (*From the review*, below): the
    ten fixes, the retention sweeps, the indexes and the migration lock, name uniqueness, the prompt
-   and sandbox boundaries and the gateway's findings are in; the rest goes in
+   and sandbox boundaries with the storage quota, and the gateway's findings are in; the rest goes in
    the order given there.
 2. **Every document checked against the code.** An audit found docs that
    no longer match what is built. Each file in `docs/`, the README and
@@ -53,15 +53,6 @@ and timer firings made once-only with session delete taking its work along.
 
 What follows is the remainder: each is the exact change, with where, so it
 can be picked up without rereading the review. Ordered by what it protects.
-
-### Prompt and sandbox boundaries
-
-- No workspace has a storage quota. One turn is bounded now -- a thousand
-  requests, a thousand listings, and `max_written_bytes` written -- but many
-  turns are not, and nothing counts what a workspace holds. Needs the bytes
-  each workspace stores kept as files are written and deleted, read by the API
-  when it hands out a turn, and the turn's remaining allowance sent with it.
-  Designed in [storage-quota.md](storage-quota.md).
 
 ### The gateway
 

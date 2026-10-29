@@ -124,12 +124,20 @@ pub fn sinks_for(tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>) -> Sinks
 
     let on_write: WriteSink = {
         let tx = tx.clone();
-        Arc::new(move |path: &str, key: &str| {
-            let _ = tx.send(ExecuteEvent::Wrote {
-                path: path.to_string(),
-                key: key.to_string(),
-            });
-        })
+        Arc::new(
+            move |path: &str, key: &str, what: crate::component::Stored| {
+                let _ = tx.send(match what {
+                    crate::component::Stored::Wrote(bytes) => ExecuteEvent::Wrote {
+                        path: path.to_string(),
+                        key: key.to_string(),
+                        bytes: Some(bytes),
+                    },
+                    crate::component::Stored::Deleted => ExecuteEvent::Deleted {
+                        key: key.to_string(),
+                    },
+                });
+            },
+        )
     };
 
     let on_usage: UsageSink = {

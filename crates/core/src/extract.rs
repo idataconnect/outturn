@@ -255,6 +255,13 @@ pub fn spawn(
                         let done = match outcome {
                             Ok(bytes) => {
                                 tracing::info!(job_id = %job.id, bytes, "document extracted");
+                                // The text is held for the workspace like any
+                                // file: it counts against its storage.
+                                if let Ok(payload) =
+                                    serde_json::from_value::<ExtractPayload>(job.payload.clone())
+                                {
+                                    count(&pool, &text_key(&payload.key), bytes as u64).await;
+                                }
                                 jobs::complete(&pool, job.id, job.lease_token).await
                             }
                             Err(e) => {
@@ -269,9 +276,10 @@ pub fn spawn(
                                     && let Ok(payload) =
                                         serde_json::from_value::<ExtractPayload>(job.payload.clone())
                                     {
-                                        let _ = storage
-                                            .write(&failed_key(&payload.key), e.as_bytes())
-                                            .await;
+                                        let at = failed_key(&payload.key);
+                                        if storage.write(&at, e.as_bytes()).await.is_ok() {
+                                            count(&pool, &at, e.len() as u64).await;
+                                        }
                                     }
                                 jobs::fail(
                                     &pool,
@@ -291,6 +299,14 @@ pub fn spawn(
             }
         }
     });
+}
+
+/// Records extracted text for the storage quota; logged rather than failed,
+/// since the weekly listing corrects the count.
+async fn count(pool: &sqlx::PgPool, key: &str, bytes: u64) {
+    if let Err(e) = crate::storage::stored::record(pool, key, bytes).await {
+        tracing::warn!(key, error = %e, "could not count extracted text");
+    }
 }
 
 async fn run_one(

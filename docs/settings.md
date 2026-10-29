@@ -71,6 +71,15 @@ workspace: a ceiling is about the people using the product, so an agent's page
 does not offer it and a template cannot fix it. Dictation is one;
 `auto_approve_max_risk` ([auto-approval.md](auto-approval.md)) is the other.
 
+A deployment may also hand an operator-only setting to workspaces, where who
+should set it depends on how the deployment is sold: `Setting::delegated_by`
+names the operator-only setting that does it and the value that means yes.
+While it says yes, the setting is workspace-overridable -- per workspace,
+never per agent. The storage quota is the one (`max_stored_bytes`, handed
+over by `stored_bytes_set_by`; see [storage-quota.md](storage-quota.md)). The
+operator also sets any setting for one workspace, including one it keeps to
+itself, at `PUT /v1/workspaces/{id}/settings/{key}`.
+
 - Every setting in the catalog today: temperature, reasoning effort, file
   access for both scopes, new-host approval, model calls per turn, context
   budget and session naming. All workspace-overridable.
@@ -121,6 +130,8 @@ below is workspace-overridable, and so overridable per agent too.
 | `approve_new_hosts` | Approve new hosts | `reach_freely` | `reach_freely` (Reach freely), `approve_new_hosts` (Ask for approval) |
 | `max_tool_rounds` | Model calls per turn | 100 | 0 to 10,000; zero is no limit |
 | `max_written_bytes` | File writes per turn | 1 GiB | 0 to 1 TiB, in bytes; zero is no limit |
+| `max_stored_bytes` | Storage | 0, no limit | 0 to 1 PiB, in bytes; per workspace only; operator-only unless handed over |
+| `stored_bytes_set_by` | Who sets storage | `operator` | `operator`, `workspace`; operator-only |
 | `context_budget` | Conversation size sent to the model | 400,000 bytes, or two bytes a token of the model's window where less | 1,000 to 100,000,000 bytes; at most two bytes a token of the window |
 | `session_naming` | When to name a conversation | `after_first_turn` | `after_message`, `after_first_turn`, `after_second_turn` |
 | `dictation` | Dictation | `on` | `off`, `on`; an operator ceiling, per workspace only |
@@ -182,6 +193,23 @@ How many bytes one turn may write to files. It stops an agent stuck writing
 in a loop from filling the store. A write that would go past it is refused
 before anything is stored. Raise it for agents that produce large files on
 purpose, such as exports; zero removes the limit.
+
+### Storage {#max_stored_bytes}
+
+How many bytes of files a workspace may hold, session files and the text read
+out of documents included. A workspace past it can still read, list and
+delete its files, but not write or upload; uploads are refused before
+anything is stored, and an agent is told the storage is full. Counted as files
+are written and deleted, and corrected weekly from what the store holds; no
+quota applies to a workspace until it has first been counted. Set by the
+operator, for every workspace or for one, unless *Who sets storage* hands it
+to each workspace's admins. See [storage-quota.md](storage-quota.md).
+
+### Who sets storage {#stored_bytes_set_by}
+
+Whether each workspace's storage quota is set by the operator -- by hand, or
+from whatever sells the plan -- or by the workspace's own admins, for a
+deployment that sells storage by use. Operator-only.
 
 ### Conversation size sent to the model {#context_budget}
 

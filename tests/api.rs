@@ -50,6 +50,9 @@ struct Harness {
     /// cache, and without the listener a test runs without, writing through
     /// one would leave the other answering from before the write.
     scopes: Arc<dyn outturn::scope::ScopeStore>,
+    /// The object store the app and its worker share, for a test that runs a
+    /// sweep as the worker would.
+    storage: Arc<dyn outturn::storage::StorageBackend>,
 }
 
 /// What the test's pretend runtime presents to the work endpoints.
@@ -226,7 +229,7 @@ async fn harness_with(
             .as_ref()
             .map(|_| Arc::new(TokenMinter::new(&seed).expect("minter"))),
         gateway_url,
-        storage: Some(storage),
+        storage: Some(storage.clone()),
     }));
 
     Harness {
@@ -243,6 +246,7 @@ async fn harness_with(
         public_key,
         roles,
         scopes,
+        storage,
     }
 }
 
@@ -15324,6 +15328,8 @@ async fn an_invoked_skill_is_stored_beside_the_message_and_brought_into_the_turn
 // it uses.
 #[path = "api/auto_approval.rs"]
 mod auto_approval;
+#[path = "api/storage_quota.rs"]
+mod storage_quota;
 
 /// Accounts, models and chains are picked by name, so a second of one name is
 /// refused as a conflict -- except a model's name nobody typed, the

@@ -91,6 +91,7 @@ fn options(gateway: &FakeGateway, progress: Option<Progress>) -> RunOptions {
         traffic_type: "assistant".into(),
         max_tool_rounds: 100,
         max_written_bytes: 0,
+        remaining_stored_bytes: None,
         reply_id: Uuid::now_v7(),
         // Production waits five minutes; a test cannot.
         idle_timeout: std::time::Duration::from_secs(2),
@@ -1591,6 +1592,53 @@ async fn a_write_past_the_turns_limit_is_refused_before_it_lands() {
             "a 20-byte write under a {limit}-byte limit"
         );
     }
+}
+
+/// A write past what the workspace has left to store is refused before it
+/// lands, and the model is told the storage is full rather than that the turn
+/// wrote too much.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_past_the_workspaces_quota_is_refused_as_storage_full() {
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "write_object".into(),
+        arguments:
+            r#"{"path":"session/big.txt","content":"twenty bytes exactly","action":"Saving"}"#
+                .into(),
+        reply: "Done.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    options.remaining_stored_bytes = Some(10);
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+    runner()
+        .run(&component(), user("Save it."), String::new(), options)
+        .await
+        .expect("run");
+
+    let key = scope::resolve(&space, "session/big.txt").unwrap();
+    assert!(
+        store.read(&key, 0, u32::MAX).await.is_err(),
+        "nothing landed"
+    );
+    let requests = gateway.requests();
+    let result = requests[1]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("tool result")["content"]
+        .as_str()
+        .expect("content")
+        .to_string();
+    assert!(result.contains("storage is full"), "{result}");
 }
 
 /// A path that names no scope is answered with how to write one.

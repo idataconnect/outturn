@@ -303,7 +303,7 @@ are near before changing it.
 - Running a release: [deployment.md](docs/deployment.md).
 - Sending mail (designed, not built): [mail.md](docs/mail.md).
 - Storage and search: [storage.md](docs/storage.md),
-  [storage-quota.md](docs/storage-quota.md) (designed, not built),
+  [storage-quota.md](docs/storage-quota.md),
   [streaming-storage.md](docs/streaming-storage.md),
   [document-extraction.md](docs/document-extraction.md),
   [pdf-rendering.md](docs/pdf-rendering.md),

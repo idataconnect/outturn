@@ -62,6 +62,11 @@ pub struct ExecuteRequest {
     /// from an older API, is the runtime's default.
     #[serde(default)]
     pub max_written_bytes: Option<u64>,
+    /// What the workspace may still store, in bytes: its quota less what it
+    /// holds. Absent for no quota, and from an older API. Counted down as the
+    /// turn writes, beside `max_written_bytes`.
+    #[serde(default)]
+    pub remaining_stored_bytes: Option<u64>,
     /// The reply this turn is writing, so a message absorbed mid-turn can
     /// name what took it.
     pub reply_id: Uuid,
@@ -218,7 +223,18 @@ pub enum ExecuteEvent {
     /// treat it exactly as it treats an upload -- a document landing is a
     /// document to extract, whoever put it there. The runtime cannot enqueue
     /// that itself: it holds no database, on purpose.
-    Wrote { path: String, key: String },
+    Wrote {
+        path: String,
+        key: String,
+        /// Its size, which it counts against the workspace's storage. Absent
+        /// from an older runtime, whose writes the weekly listing counts.
+        #[serde(default)]
+        bytes: Option<u64>,
+    },
+    /// The guest deleted an object, which stops counting against the
+    /// workspace's storage. An older runtime never says so; the weekly listing
+    /// catches up with what it deleted.
+    Deleted { key: String },
     /// The guest started a tool, with the model's own label for what it is
     /// doing.
     Tool {

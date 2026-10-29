@@ -1,6 +1,7 @@
 pub mod memory;
 pub mod s3;
 pub mod scope;
+pub mod stored;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

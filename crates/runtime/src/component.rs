@@ -147,8 +147,18 @@ pub struct CallUsage {
 /// Reports each model call's cost as it completes.
 pub type UsageSink = Arc<dyn Fn(&CallUsage) + Send + Sync>;
 
-/// Reports an object the guest wrote, as `(scoped path, resolved key)`.
-pub type WriteSink = Arc<dyn Fn(&str, &str) + Send + Sync>;
+/// What became of an object the guest touched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stored {
+    /// Written, at this many bytes.
+    Wrote(u64),
+    Deleted,
+}
+
+/// Reports an object the guest wrote or deleted, as `(scoped path, resolved
+/// key, what became of it)`: the API counts it against the workspace's
+/// storage, and extracts a document written.
+pub type WriteSink = Arc<dyn Fn(&str, &str, Stored) + Send + Sync>;
 
 /// Told when the gateway refused a request because somebody has to approve it.
 ///
@@ -614,6 +624,10 @@ pub struct AgentHost {
     bytes_written: u64,
     /// The workspace's limit on that; zero for none.
     max_written_bytes: u64,
+    /// What the workspace had left to store when the turn began; `None` for
+    /// no quota. Counted against with every byte written, overwrites
+    /// included, so a turn can only stop short of the quota, never pass it.
+    remaining_stored_bytes: Option<u64>,
     /// What the user has said since this turn began, as reported by the
     /// gateway on the responses it was already sending. Drained when the guest
     /// asks, so each message is injected once. Each keeps the id of the
@@ -838,10 +852,11 @@ impl AgentHost {
         storage: &dyn outturn_core::storage::StorageBackend,
         path: &str,
         resolved: &str,
+        what: Stored,
     ) {
         outturn_core::extract::invalidate(storage, resolved).await;
         if let Some(sink) = &self.on_write {
-            sink(path, resolved);
+            sink(path, resolved, what);
         }
     }
 
@@ -1008,7 +1023,8 @@ impl outturn::agent::host::HostObjectWriter for AgentHost {
             .finish()
             .await
             .map_err(|e| self.storage_failed("write", e))?;
-        self.stored(storage.as_ref(), &path, &resolved).await;
+        self.stored(storage.as_ref(), &path, &resolved, Stored::Wrote(size))
+            .await;
         Ok(ObjectInfo { path, size })
     }
 
@@ -1086,6 +1102,20 @@ impl AgentHost {
                 "this turn may write {} bytes to files, and this would take it past that",
                 self.max_written_bytes
             ));
+        }
+        if let Some(left) = self.remaining_stored_bytes
+            && after > left
+        {
+            tracing::warn!(
+                session_id = %self.session_id,
+                "guest reached its workspace's storage quota"
+            );
+            return Err(
+                "this workspace's storage is full: files can still be read and \
+                        deleted, but not written. Deleting files that are no longer \
+                        needed makes room."
+                    .to_string(),
+            );
         }
         self.bytes_written = after;
         Ok(())
@@ -1689,7 +1719,8 @@ impl outturn::agent::host::Host for AgentHost {
             .write(&resolved, &data)
             .await
             .map_err(|e| self.storage_failed("write", e))?;
-        self.stored(storage.as_ref(), &path, &resolved).await;
+        self.stored(storage.as_ref(), &path, &resolved, Stored::Wrote(written))
+            .await;
         Ok(written)
     }
 
@@ -1761,7 +1792,13 @@ impl outturn::agent::host::Host for AgentHost {
             .write(&resolved, &pdf)
             .await
             .map_err(|e| self.storage_failed("write", e))?;
-        self.stored(storage.as_ref(), &destination, &resolved).await;
+        self.stored(
+            storage.as_ref(),
+            &destination,
+            &resolved,
+            Stored::Wrote(size),
+        )
+        .await;
         Ok(ObjectInfo {
             path: destination,
             size,
@@ -1782,7 +1819,8 @@ impl outturn::agent::host::Host for AgentHost {
         })?;
         // Or the words of a deleted document stay readable to anyone who
         // names it, which is the deletion not having happened.
-        outturn_core::extract::invalidate(storage.as_ref(), &resolved).await;
+        self.stored(storage.as_ref(), &path, &resolved, Stored::Deleted)
+            .await;
         Ok(())
     }
 
@@ -2749,6 +2787,8 @@ pub struct RunOptions {
     pub max_tool_rounds: u32,
     /// Bytes this turn may write to files; zero for no limit.
     pub max_written_bytes: u64,
+    /// What the workspace may still store; `None` for no quota.
+    pub remaining_stored_bytes: Option<u64>,
     /// Tools to offer from the first round, by name; empty defers every tool
     /// to an explicit request from the guest. Names the component does not
     /// have are ignored, so a stale policy is harmless.
@@ -2902,6 +2942,7 @@ impl AgentRunner {
             traffic_type: options.traffic_type,
             max_tool_rounds: options.max_tool_rounds,
             max_written_bytes: options.max_written_bytes,
+            remaining_stored_bytes: options.remaining_stored_bytes,
             fetches_used: 0,
             lists_used: 0,
             bytes_written: 0,

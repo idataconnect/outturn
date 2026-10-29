@@ -42,6 +42,104 @@ pub async fn sweep(pool: &PgPool, storage: &Arc<dyn StorageBackend>, ttl_days: u
         Ok(n) => tracing::info!(sessions = n, ttl_days, "swept idle sessions' files"),
         Err(e) => tracing::warn!(error = %e, "could not sweep idle sessions' files"),
     }
+    match recount(pool, storage).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(workspaces = n, "counted what workspaces hold"),
+        Err(e) => tracing::warn!(error = %e, "could not count what workspaces hold"),
+    }
+}
+
+/// How often what a workspace holds is listed from the bucket, to correct
+/// what was counted as it was written.
+const RECOUNT_DAYS: i32 = 7;
+
+/// Workspaces listed per sweep: a listing is many requests to the store, and
+/// the sweep is hourly, so the week's round is spread across it.
+const RECOUNT_BATCH: i64 = 10;
+
+/// Replaces each due workspace's count with what the bucket holds: what the
+/// runtime never reported -- a pod that died mid-turn, a runtime too old to
+/// say -- and the first count of a workspace, until which no quota applies.
+/// See docs/storage-quota.md, *Reconciliation*.
+async fn recount(pool: &PgPool, storage: &Arc<dyn StorageBackend>) -> anyhow::Result<u64> {
+    let due: Vec<Uuid> = sqlx::query_scalar(
+        "select id from workspaces \
+         where stored_counted_at is null \
+            or stored_counted_at < now() - make_interval(days => $1) \
+         order by stored_counted_at nulls first limit $2",
+    )
+    .bind(RECOUNT_DAYS)
+    .bind(RECOUNT_BATCH)
+    .fetch_all(pool)
+    .await?;
+    let mut done = 0;
+    for workspace_id in due {
+        if let Err(e) = recount_one(pool, storage, workspace_id).await {
+            tracing::warn!(%workspace_id, error = %e, "could not count a workspace's files");
+            continue;
+        }
+        done += 1;
+    }
+    Ok(done)
+}
+
+async fn recount_one(
+    pool: &PgPool,
+    storage: &Arc<dyn StorageBackend>,
+    workspace_id: Uuid,
+) -> anyhow::Result<()> {
+    // Rows written after the listing began are the writes it may have missed,
+    // so they are kept rather than replaced.
+    let began: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("select now()").fetch_one(pool).await?;
+    let mut keys = Vec::new();
+    let mut sizes = Vec::new();
+    for s in Scope::ALL {
+        let root = format!("{}{workspace_id}/", s.bucket_prefix());
+        for under in [root.clone(), outturn_core::extract::text_key(&root)] {
+            for object in storage.list(&under).await? {
+                if !object.is_dir {
+                    keys.push(object.path);
+                    sizes.push(i64::try_from(object.size).unwrap_or(i64::MAX));
+                }
+            }
+        }
+    }
+
+    let mut tx = pool.begin().await?;
+    let before: i64 = sqlx::query_scalar("select stored_bytes from workspaces where id = $1")
+        .bind(workspace_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    sqlx::query("delete from stored_objects where workspace_id = $1 and written_at < $2")
+        .bind(workspace_id)
+        .bind(began)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "insert into stored_objects (key, workspace_id, bytes, written_at) \
+         select k, $1, b, $4 from unnest($2::text[], $3::bigint[]) as t(k, b) \
+         on conflict (key) do nothing",
+    )
+    .bind(workspace_id)
+    .bind(&keys)
+    .bind(&sizes)
+    .bind(began)
+    .execute(&mut *tx)
+    .await?;
+    let after: i64 = sqlx::query_scalar(
+        "update workspaces set stored_counted_at = now() where id = $1 returning stored_bytes",
+    )
+    .bind(workspace_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    if before != after {
+        // A pattern here -- the same workspace corrected upward week after
+        // week -- is writes going unreported, which is worth a look.
+        tracing::info!(%workspace_id, before, after, "corrected what a workspace holds");
+    }
+    Ok(())
 }
 
 async fn deleted(pool: &PgPool, storage: &Arc<dyn StorageBackend>) -> anyhow::Result<u64> {
@@ -52,7 +150,7 @@ async fn deleted(pool: &PgPool, storage: &Arc<dyn StorageBackend>) -> anyhow::Re
             .await?;
     let mut done = 0;
     for (prefix,) in prefixes {
-        if let Err(e) = remove_under(storage, &prefix).await {
+        if let Err(e) = remove_under(pool, storage, &prefix).await {
             tracing::warn!(prefix, error = %e, "could not remove a deleted thing's files");
             continue;
         }
@@ -100,7 +198,7 @@ async fn idle(
             },
             Scope::Session,
         );
-        if let Err(e) = remove_under(storage, &prefix).await {
+        if let Err(e) = remove_under(pool, storage, &prefix).await {
             tracing::warn!(%session_id, error = %e, "could not sweep an idle session's files");
             continue;
         }
@@ -115,7 +213,14 @@ async fn idle(
 
 /// Every object under a prefix, and the text read out of each: what a reader
 /// could still be served for a file the listing no longer shows.
-async fn remove_under(storage: &Arc<dyn StorageBackend>, prefix: &str) -> anyhow::Result<()> {
+///
+/// Uncounted from the storage quota once each is gone, so a workspace is
+/// never held over for what a sweep removed.
+async fn remove_under(
+    pool: &PgPool,
+    storage: &Arc<dyn StorageBackend>,
+    prefix: &str,
+) -> anyhow::Result<()> {
     for under in [prefix.to_string(), outturn_core::extract::text_key(prefix)] {
         for object in storage.list(&under).await? {
             match storage.delete(&object.path).await {
@@ -123,6 +228,7 @@ async fn remove_under(storage: &Arc<dyn StorageBackend>, prefix: &str) -> anyhow
                 Err(e) => return Err(e.into()),
             }
         }
+        outturn_core::storage::stored::forget_under(pool, &under).await?;
     }
     Ok(())
 }

@@ -8,6 +8,7 @@ use uuid::Uuid;
 use outturn_core::events;
 use outturn_core::jobs;
 use outturn_core::protocol::work::ExecuteEvent;
+use outturn_core::storage::stored;
 
 use super::actions::ActionStore as _;
 use super::agent::AgentStore;
@@ -1613,7 +1614,7 @@ impl Worker {
                         )
                         .await?;
                     }
-                    Ok(ExecuteEvent::Wrote { path, key }) => {
+                    Ok(ExecuteEvent::Wrote { path, key, bytes }) => {
                         // Same call the upload handler makes. A document is a
                         // document whether a person dragged it in or an agent
                         // unpacked it from an archive, and only this tier can
@@ -1627,6 +1628,26 @@ impl Worker {
                         } else {
                             super::extract::enqueue(&self.pool, payload.workspace_id, &key, &path)
                                 .await;
+                            // Counted against the workspace's storage, with
+                            // the text the runtime dropped beside it uncounted.
+                            if let Some(bytes) = bytes {
+                                let counted = async {
+                                    stored::forget(&self.pool, &key).await?;
+                                    stored::record(&self.pool, &key, bytes).await
+                                };
+                                if let Err(e) = counted.await {
+                                    tracing::warn!(key = %key, error = %e, "could not count a write");
+                                }
+                            }
+                        }
+                    }
+                    Ok(ExecuteEvent::Deleted { key }) => {
+                        // Checked as a write is: uncounting another
+                        // workspace's file would hand it storage it is using.
+                        if super::extract::belongs_to(&key, payload.workspace_id)
+                            && let Err(e) = stored::forget(&self.pool, &key).await
+                        {
+                            tracing::warn!(key = %key, error = %e, "could not uncount a delete");
                         }
                     }
                     Ok(ExecuteEvent::Usage {
@@ -2577,6 +2598,19 @@ impl Worker {
                 traffic_type: Some(traffic),
                 max_tool_rounds: Some(i64::from(settings.max_tool_rounds)),
                 max_written_bytes: Some(settings.max_written_bytes),
+                remaining_stored_bytes: super::quota::remaining(
+                    self.settings.as_ref(),
+                    &self.pool,
+                    payload.workspace_id,
+                )
+                .await
+                .unwrap_or_else(|e| {
+                    // Unreadable is not "no quota": the turn may write nothing
+                    // it could not later be held to.
+                    tracing::warn!(workspace_id = %payload.workspace_id, error = %e,
+                        "could not read the storage quota; the turn may write nothing");
+                    Some(0)
+                }),
                 reply_id: placeholder.message.id,
                 egress,
                 egress_commitment,

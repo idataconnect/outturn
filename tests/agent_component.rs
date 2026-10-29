@@ -130,6 +130,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 traffic_type: "assistant".into(),
                 max_tool_rounds: 100,
                 max_written_bytes: 0,
+                remaining_stored_bytes: None,
                 // As the runtime runs a turn: every tool behind the loader.
                 eager_tools: Vec::new(),
                 skill_operations: Vec::new(),

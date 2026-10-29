@@ -101,6 +101,25 @@ pub struct Setting {
     /// About a model, and so may be chosen for one model as well as for all
     /// of them (`model_settings::PER_MODEL`).
     pub per_model: bool,
+    /// For an operator-only setting a deployment may hand to workspaces: the
+    /// operator-only setting that says so, and the value of it that does.
+    /// While it says so the setting is workspace-overridable -- per
+    /// workspace, never per agent. Who may set something is the deployment's
+    /// choice here rather than the catalog's: a plan sold per workspace wants
+    /// the operator to set it, storage sold by use wants the workspace to.
+    pub delegated_by: Option<(&'static str, &'static str)>,
+}
+
+impl Setting {
+    /// Who may set it below the operator, now: `owner`, unless the operator
+    /// has handed it to workspaces. `delegating` is the operator's value of
+    /// the setting that would.
+    pub fn owner_given(&self, delegating: Option<&serde_json::Value>) -> Owner {
+        match (self.delegated_by, delegating) {
+            (Some((_, on)), Some(v)) if v.as_str() == Some(on) => Owner::WorkspaceOverridable,
+            _ => self.owner,
+        }
+    }
 }
 
 /// The `reasoning_effort` value that turns thinking off and repeats the
@@ -134,6 +153,7 @@ fn settings() -> Vec<Setting> {
             default: serde_json::Value::Null,
             owner: Owner::WorkspaceOverridable,
             per_model: false,
+            delegated_by: None,
         },
         Setting {
             key: "reasoning_effort",
@@ -172,6 +192,7 @@ fn settings() -> Vec<Setting> {
             default: serde_json::json!(outturn_core::model_settings::DEFAULT_REASONING_EFFORT),
             owner: Owner::WorkspaceOverridable,
             per_model: false,
+            delegated_by: None,
         },
         // One ordered choice per scope rather than a read flag beside a write
         // flag. Prevents strange combinations, such as write but not read.
@@ -199,6 +220,7 @@ fn settings() -> Vec<Setting> {
             default: serde_json::json!("read_write"),
             owner: Owner::WorkspaceOverridable,
             per_model: false,
+            delegated_by: None,
         },
         Setting {
             key: "workspace_file_access",
@@ -224,6 +246,7 @@ fn settings() -> Vec<Setting> {
             default: serde_json::json!("read"),
             owner: Owner::WorkspaceOverridable,
             per_model: false,
+            delegated_by: None,
         },
         // A ceiling rather than an addition, which is why it is a setting and not
         // a declaration in a skill. The per-operation gates in docs/approvals.md
@@ -256,6 +279,7 @@ fn settings() -> Vec<Setting> {
             default: serde_json::json!("reach_freely"),
             owner: Owner::WorkspaceOverridable,
             per_model: false,
+            delegated_by: None,
         },
         Setting {
             key: "max_tool_rounds",
@@ -269,6 +293,7 @@ fn settings() -> Vec<Setting> {
             default: serde_json::json!(100),
             owner: Owner::WorkspaceOverridable,
             per_model: false,
+            delegated_by: None,
         },
         Setting {
             key: "max_written_bytes",
@@ -282,6 +307,44 @@ fn settings() -> Vec<Setting> {
             default: serde_json::json!(1u64 << 30),
             owner: Owner::WorkspaceOverridable,
             per_model: false,
+            delegated_by: None,
+        },
+        Setting {
+            key: "max_stored_bytes",
+            label: "Storage",
+            description: "How many bytes of files a workspace may hold, session \
+                          files included. Past it, files can still be read and \
+                          deleted, but not written. Zero means no limit.",
+            kind: Kind::Integer {
+                min: 0,
+                max: 1 << 50,
+            },
+            default: serde_json::json!(0),
+            owner: Owner::OperatorOnly,
+            per_model: false,
+            delegated_by: Some(("stored_bytes_set_by", "workspace")),
+        },
+        Setting {
+            key: "stored_bytes_set_by",
+            label: "Who sets storage",
+            description: "Whether each workspace's storage is set by the operator, \
+                          or by the workspace's own admins.",
+            kind: Kind::Choice {
+                options: &[
+                    ChoiceOption {
+                        value: "operator",
+                        label: "The operator",
+                    },
+                    ChoiceOption {
+                        value: "workspace",
+                        label: "Each workspace's admins",
+                    },
+                ],
+            },
+            default: serde_json::json!("operator"),
+            owner: Owner::OperatorOnly,
+            per_model: false,
+            delegated_by: None,
         },
         Setting {
             key: "context_budget",
@@ -302,6 +365,7 @@ fn settings() -> Vec<Setting> {
             default: serde_json::json!(outturn_core::model_settings::DEFAULT_CONTEXT_BUDGET),
             owner: Owner::WorkspaceOverridable,
             per_model: false,
+            delegated_by: None,
         },
         Setting {
             key: "session_naming",
@@ -328,6 +392,7 @@ fn settings() -> Vec<Setting> {
             default: serde_json::json!("after_first_turn"),
             owner: Owner::WorkspaceOverridable,
             per_model: false,
+            delegated_by: None,
         },
         // The browser's own speech recognition, which in most browsers sends
         // the audio to the browser's maker to transcribe. On by default, since
@@ -356,6 +421,7 @@ fn settings() -> Vec<Setting> {
             default: serde_json::json!("on"),
             owner: Owner::OperatorCeiling,
             per_model: false,
+            delegated_by: None,
         },
         // How far a workspace's auto-approval policies may reach, by the risk an
         // operation declares (docs/auto-approval.md). A ceiling, so a deployment
@@ -391,6 +457,7 @@ fn settings() -> Vec<Setting> {
             default: serde_json::json!("none"),
             owner: Owner::OperatorCeiling,
             per_model: false,
+            delegated_by: None,
         },
     ]
 }

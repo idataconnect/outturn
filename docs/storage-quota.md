@@ -1,7 +1,7 @@
 # Storage quota
 
-Designed, not built. How many bytes a workspace may hold in files, and how
-that is counted.
+Built; *As built*, at the end, says where. How many bytes a workspace may
+hold in files, and how that is counted.
 
 ## The problem
 
@@ -126,3 +126,32 @@ is over quota before they try, not only in the refusal.
 Not yet: wording an operator chooses for this, such as a warning that storage
 over the quota will be swept after a date. That waits on operator-editable
 text ([roadmap.md](roadmap.md)), and on a sweep that would do it.
+
+## As built
+
+- **The count.** `stored_objects` and `workspaces.stored_bytes`, kept by a
+  trigger, with `workspaces.stored_counted_at` (migration 0072). Recorded and
+  forgotten by `outturn_core::storage::stored`: by the files API on upload
+  and delete, by extraction for the text it writes, by the storage sweep for
+  what it removes, and by the worker for what a runtime reports --
+  `ExecuteEvent::Wrote` now carries `bytes`, and `ExecuteEvent::Deleted` is
+  new. Text extracted from a file counts, under the file's workspace.
+- **The allowance.** `ExecuteRequest::remaining_stored_bytes`, from
+  `api::quota::remaining`; the runtime counts every byte written against it
+  beside `max_written_bytes` (`AgentHost::take_bytes`) and refuses with
+  "this workspace's storage is full". A quota that cannot be read hands the
+  turn nothing to write rather than no limit.
+- **Uploads** are checked by `api::quota::check` before anything is stored,
+  giving back what the files replaced: `413`, code `too_large`.
+- **The listing** is `storage_sweep::recount`, ten workspaces an hour, each
+  every seven days; rows written after a listing began are kept.
+- **Settings.** `max_stored_bytes` and `stored_bytes_set_by`, both
+  operator-only; the first names the second in `Setting::delegated_by`, which
+  any setting can use. The operator sets one workspace's at
+  `PUT /v1/workspaces/{id}/settings/{key}`.
+- **The API.** `GET /v1/storage` for the caller's workspace and
+  `GET /v1/workspaces/{id}/storage` for the operator: `stored_bytes`,
+  `quota`, `counted`, `full`.
+- **The pages.** A storage tile on the dashboard; the files panel says the
+  workspace is full and disables uploading; the operator's workspace page
+  sets the quota in gigabytes.
