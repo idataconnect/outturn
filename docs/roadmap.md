@@ -62,19 +62,21 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### Shape of the code
 
-- `crates/runtime/src/component.rs`: `AgentHost` has some fifty fields and one
-  `Host` impl spans storage, model streaming, egress, timers and the clock.
-  `stream_completion` is an SSE parser that belongs in `core` beside the
-  gateway's protocol code. Split by capability with a thin dispatcher; the
-  missing admission charges were invisible because of the accretion.
+- The runtime's host calls that hold memory for the guest without charging
+  admission, found when `component.rs` was split by capability: reads of up
+  to 4 MiB (`read_object`, `read_bytes`, a reader's reads), `describe_image`
+  and its base64 copy, `chat`'s request and buffered reply, `fetch`'s
+  response, `list_objects`'s listing, and a writer chunk's host copy. Each
+  wants a `charge` sized to what it holds, as `write_object` has.
+- The model stream is parsed in the runtime's `component/stream.rs` rather
+  than in core: it reads newline-delimited JSON the gateway already unwrapped
+  into the interface's own types. Moving it means first making it an event
+  iterator over decoded lines.
 - `crates/gateway/src/llm/translate.rs`: each vendor's stream and non-stream
   usage, stop reasons, block classification and tool calls are now read once
   for both paths. What is left is a decision rather than duplication: thinking
   and a refusal's explanation reach only the stream on both vendors, as does
   a Gemini text signature; `path_agreement_tests` pins each as it stands.
-- `tool_name_of` in the default agent duplicates `operation_tool_name` in
-  `crates/api/src/skill/mod.rs`; one should be generated from the other or
-  shared through the WIT.
 
 ### The browser
 
