@@ -1086,11 +1086,17 @@ async fn act_policies_and_bands_become_rules_without_widening() {
     let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
     // As a workspace had them before rules: the policy over the act, and its
     // own band on the charge.
-    sqlx::query("update approval_policies set selector = 'act', requires = 'charge' where id = $1")
-        .bind(c.policy.parse::<Uuid>().unwrap())
-        .execute(&h.db.pool)
-        .await
-        .unwrap();
+    // With a lower bound of its own, which the rule keeps: only its upper
+    // bound is what the band's figure replaces.
+    sqlx::query(
+        "update approval_policies set selector = 'act', requires = 'charge', \
+                conditions = '[{\"field\": \"amount_pence\", \"op\": \"ge\", \"value\": 1000}]' \
+         where id = $1",
+    )
+    .bind(c.policy.parse::<Uuid>().unwrap())
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
     sqlx::query(
         "insert into approval_bands (workspace_id, id, currency, skill_id, requires, matches, low)          values ($1, $2, 'GBP', $3, 'charge', 'POST /charges', 3000)",
     )
@@ -1128,6 +1134,11 @@ async fn act_policies_and_bands_become_rules_without_widening() {
     let token = assignment["gateway_token"].as_str().unwrap();
     let gateway = Gateway::new(&h);
     let charge = |amount| gateway.charge(c.acme, &assignment, token, &assignment["gates"], amount);
+    assert_eq!(
+        charge(500).await.0,
+        StatusCode::FORBIDDEN,
+        "£5 asked before and asks now"
+    );
     assert_eq!(
         charge(2500).await.0,
         StatusCode::OK,

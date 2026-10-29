@@ -95,7 +95,10 @@ fn narrowed(p: &Policy, d: &Declared, under: Option<i64>) -> Policy {
         // risk goes; on anything else the bound stays, since it is what
         // decided the operation was reached at all.
         q.max_risk = None;
-        q.conditions.retain(|t| t.field != banding.field);
+        // Only the upper bounds on the amount are what `under` replaces; a
+        // lower bound or any other test on it still narrows what goes through.
+        q.conditions
+            .retain(|t| !(t.field == banding.field && matches!(t.op, Op::Lt | Op::Le)));
         q.conditions.push(Test {
             field: banding.field.clone(),
             op: Op::Lt,
