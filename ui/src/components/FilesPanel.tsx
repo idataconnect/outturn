@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Building2, Check, ChevronDown, Clock, Download, FileText, MessagesSquare, Trash2, Upload } from 'lucide-react'
 
-import { FULL, getStorage } from '../lib/storage'
+import { FULL, bytesLabel, getStorage } from '../lib/storage'
 import { ApiError } from '../lib/api'
 import {
   deleteFile,
@@ -50,12 +50,6 @@ const SCOPES: {
     read: 'storage:workspace:read',
   },
 ]
-
-function size(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
 
 /**
  * The files a conversation can reach, and a way to add one.
@@ -347,7 +341,7 @@ export default function FilesPanel({
                 {f.path}
               </span>
               <span className="block text-xs text-surface-500 dark:text-surface-400">
-                {size(f.size)}
+                {bytesLabel(f.size)}
               </span>
             </button>
             <a

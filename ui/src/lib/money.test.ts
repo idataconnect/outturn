@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { moneyOf, riskOf, show, toMinor } from './money'
+import { currencySign, moneyOf, riskOf, show, toMinor } from './money'
 
 describe('money', () => {
   it('is typed in whole units and kept in minor ones, on the digits', () => {
@@ -60,5 +60,13 @@ describe('show', () => {
 
   it('falls back to what the API wrote for a code the browser does not know', () => {
     expect(show(money(100, 'XYZW', 2), 'en-US')).toBe('XYZW 100')
+  })
+})
+
+describe('currencySign', () => {
+  it('is the sign show writes the amount with, or the code it does not know', () => {
+    expect(currencySign('GBP', 'en-US')).toBe('£')
+    expect(show({ amount: 100, currency: 'GBP', minor_units: 2, display: '' }, 'en-US').startsWith('£')).toBe(true)
+    expect(currencySign('XYZW', 'en-US')).toBe('XYZW')
   })
 })

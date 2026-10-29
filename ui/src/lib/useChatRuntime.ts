@@ -24,6 +24,7 @@ import {
   type MessagePart,
   type ToolCallRecord,
 } from './chat'
+import { bytesLabel } from './storage'
 
 /**
  * Where a user's message is in its life, for the reader.
@@ -632,7 +633,7 @@ const FILE_TOOLS = new Set([
 
 /** How much of a call has been written, as a person reads a size. */
 function writtenSoFar(bytes: number, since: number): string {
-  const size = bytes < 1024 ? `${bytes} bytes` : `${(bytes / 1024).toFixed(1)} KB`
+  const size = bytesLabel(bytes)
   const seconds = Math.max(0, Math.round((Date.now() - since) / 1000))
   return `Writing… ${size} · ${seconds}s`
 }

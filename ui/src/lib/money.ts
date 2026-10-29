@@ -49,6 +49,20 @@ export function show(
   }
 }
 
+/** The currency's sign as `show` writes it in the reader's locale -- `£`,
+ *  `US$` -- for beside a field an amount is typed into; its code where the
+ *  browser does not know it. */
+export function currencySign(currency: string, locale?: string): string {
+  try {
+    const part = new Intl.NumberFormat(locale, { style: 'currency', currency })
+      .formatToParts(0)
+      .find((p) => p.type === 'currency')
+    return part?.value ?? currency
+  } catch {
+    return currency
+  }
+}
+
 /** Every currency code the browser knows, for a field that asks for one. */
 export function currencyCodes(): string[] {
   try {
