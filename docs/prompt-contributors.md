@@ -124,9 +124,9 @@ slug, and the name it had then, which the transcript draws as a chip. The
 content stays what the person typed, which may be nothing.
 
 The model is told when the conversation is projected, not when the message is
-stored (`skill::invoked::prepare`, then the projection in `worker.rs`), so a
-retry, a later turn and a compaction all see the same thing about the same
-message. After the person's words, under the platform-note label, it says:
+stored (`skill::invoked::prepare`, then the projection in
+`worker/projection.rs`), so a retry, a later turn and a compaction all see the
+same thing about the same message. After the person's words, under the platform-note label, it says:
 
 - that the person invoked the skill, with the message above or with no
   further instructions -- in which case the note is the whole request;

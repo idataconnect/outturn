@@ -165,9 +165,9 @@ produce binaries of any size: [streaming-storage.md](streaming-storage.md).
 ## Rows in the database
 
 Objects are not the only thing that accumulates. The API's reaper tick
-(`spawn_reaper` in `crates/api/src/worker.rs`) is what sweeps tables on a
-schedule; each sweep is a function beside the rule it keeps, and the tick
-only calls it.
+(`spawn_reaper` in `crates/api/src/worker/sweeps.rs`) is what sweeps tables
+on a schedule; each sweep is a function beside the rule it keeps, and the
+tick only calls it.
 
 | Table | Kept | Swept by |
 |---|---|---|

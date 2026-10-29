@@ -308,7 +308,7 @@ to restate what the model already answered. It is found by its text rather
 than its position, since a turn resumed after an approval does not end on its
 prompt; a prompt nobody typed, such as a wake, is sent once. And it changes
 only what the model is sent, never the stored conversation -- see `repeated`
-in `crates/api/src/worker.rs`.
+in `crates/api/src/worker/projection.rs`.
 
 The cost is the prompt's tokens a second time, on every round of the turn.
 After the first round they are part of a cached prefix where the provider

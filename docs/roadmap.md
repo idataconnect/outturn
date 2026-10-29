@@ -62,11 +62,6 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### Shape of the code
 
-- `crates/api/src/worker.rs` is projection, compaction and its HTTP, six
-  unrelated sweeps and the turn lifecycle in one file, with `announce`
-  duplicating `tell` and an action store built ad hoc where the others are
-  injected. Split into `projection.rs`, `compaction.rs`, `sweeps.rs` and
-  `turn.rs`.
 - `crates/runtime/src/component.rs`: `AgentHost` has some fifty fields and one
   `Host` impl spans storage, model streaming, egress, timers and the clock.
   `stream_completion` is an SSE parser that belongs in `core` beside the
