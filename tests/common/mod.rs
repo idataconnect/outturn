@@ -356,6 +356,17 @@ impl TestDb {
     pub async fn new() -> Self {
         let url = database_url();
         let template = template(&url).await;
+        Self::copied_from(&url, template).await
+    }
+
+    /// A database with nothing in it, not even the migrations, for a test of
+    /// migrating itself.
+    pub async fn empty() -> Self {
+        Self::copied_from(&database_url(), "template0").await
+    }
+
+    async fn copied_from(url: &str, template: &str) -> Self {
+        let url = url.to_string();
 
         // Names cannot be parameterised, so this is built rather than bound.
         // Derived from a UUID and asserted to be a plain identifier before

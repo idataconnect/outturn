@@ -5380,3 +5380,38 @@ async fn the_stream_sweep_forgets_finished_turns_and_nothing_else() {
 
     finish!(db);
 }
+
+/// Two replicas starting together on a database nobody has migrated, as after
+/// a fresh install or an upgrade with new index migrations. Some of those
+/// build their index concurrently, which waits out every older snapshot;
+/// sqlx's own lock left the replica waiting for it holding one, and the pair
+/// deadlocked.
+#[tokio::test]
+async fn replicas_starting_together_migrate_once_between_them() {
+    let db = common::TestDb::empty().await;
+    let options = (*db.pool.connect_options()).clone();
+    let replica = || async {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect_with(options.clone())
+            .await
+            .expect("connect");
+        outturn::db::migrate(&pool).await
+    };
+    // Bounded only so a hang fails rather than stalls the run; nothing that
+    // works comes near it.
+    let (a, b) = tokio::time::timeout(Duration::from_secs(600), async {
+        tokio::join!(replica(), replica())
+    })
+    .await
+    .expect("the replicas never finished migrating");
+    a.expect("first replica");
+    b.expect("second replica");
+
+    let applied: i64 = sqlx::query_scalar("select count(*) from _sqlx_migrations")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(applied as usize, outturn::db::MIGRATOR.migrations.len());
+    db.cleanup().await;
+}

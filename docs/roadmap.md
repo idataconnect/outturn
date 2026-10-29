@@ -19,7 +19,7 @@ Everything below it is the longer view. An item leaves this list when it is
 committed and verified, and new work goes in where it belongs, not at the end.
 
 1. **What the review of 2026-10-20 left** (*From the review*, below): the
-   ten fixes, the retention sweeps, the indexes, name uniqueness, the prompt
+   ten fixes, the retention sweeps, the indexes and the migration lock, name uniqueness, the prompt
    and sandbox boundaries and the gateway's findings are in; the rest goes in
    the order given there.
 2. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
@@ -42,17 +42,6 @@ and timer firings made once-only with session delete taking its work along.
 
 What follows is the remainder: each is the exact change, with where, so it
 can be picked up without rereading the review. Ordered by what it protects.
-
-### Indexes and constraints
-
-- Index migrations on `events`, `agent_messages` or `jobs` carry
-  `-- no-transaction` and `create index concurrently`, one statement to a
-  file (0061, 0063, 0065); 0024, 0026 and 0031 took SHARE locks under every
-  streaming turn. A concurrent build waits out every older snapshot,
-  including that of a replica blocked on sqlx's migration lock, so two API
-  replicas starting together can deadlock it; it then leaves an invalid
-  index and fails again on the next start until the index is dropped. Worth
-  a migration step run once, before the replicas, rather than in each.
 
 ### Prompt and sandbox boundaries
 
