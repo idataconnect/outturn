@@ -1,5 +1,5 @@
 import { allPages, api } from './api'
-import { show, type Money, type Risk } from './money'
+import { show, type Money } from './money'
 
 /** One test a policy applies to a field the gate binds. See docs/auto-approval.md. */
 export type Op = 'eq' | 'ne' | 'in' | 'not_in' | 'lt' | 'le' | 'gt' | 'ge'
@@ -89,23 +89,6 @@ export const listPolicies = () => allPages<Policy>('/v1/approval-policies')
 export const createPolicy = (body: WritePolicy) =>
   api<Policy>('/v1/approval-policies', { method: 'POST', body: JSON.stringify(body) })
 
-/** The one line: a kind, the figure its requests in one currency are low
- *  under and a daily total -- both in the currency's standard minor units --
- *  for an agent, until a date. */
-export type WriteOneLine = {
-  requires: string
-  currency: string
-  low: number
-  daily_total: number
-  agent_id: string | null
-  mode: 'trial' | 'on'
-  expires_at: string
-}
-
-/** Sets the bands and creates the policy in one write: both, or neither. */
-export const createOneLine = (body: WriteOneLine) =>
-  api<Policy>('/v1/approval-policies/one-line', { method: 'POST', body: JSON.stringify(body) })
-
 export const updatePolicy = (id: string, body: WritePolicy) =>
   api<Policy>(`/v1/approval-policies/${id}`, { method: 'PUT', body: JSON.stringify(body) })
 
@@ -126,17 +109,6 @@ export const answeredCount = (requires: string) =>
 
 /** How many yeses to one act before the prompt offers a policy for it. */
 export const OFFER_AFTER = 3
-
-/**
- * The link from an approval to a policy for the same act, its fields filled
- * in. The page reads these back: `requires`, `selector`, and a `field` for
- * each bound field, so the conditions start as rows naming them.
- */
-export function policyLink(requires: string, fields: string[] = []): string {
-  const query = new URLSearchParams({ requires, selector: 'act' })
-  for (const field of fields) query.append('field', field)
-  return `/settings/auto-approval/new?${query.toString()}`
-}
 
 /** A bound on an act or an operation's risk, as the end of its line. */
 const upTo = (risk: string | null) =>
@@ -186,76 +158,6 @@ export function parseValue(op: Op, raw: string): unknown {
   return one(raw)
 }
 
-/** Each level's upper bound, as money: below `low` is low, below `medium`
- *  medium. */
-export type BandsView = { low: Money | null; medium: Money | null }
-/** From each, that level whatever a band says. */
-export type FloorView = { medium: Money | null; high: Money | null }
-
-/** A row a workspace set, for a currency or for one operation. */
-export type BandRow = {
-  id: string
-  currency: string
-  skill_id: string | null
-  requires: string | null
-  matches: string | null
-  low: number | null
-  medium: number | null
-  updated_by_name: string | null
-  updated_at: string
-}
-
-/** One money operation the workspace's agents reach. */
-export type BandOperation = {
-  skill_id: string
-  skill_name: string | null
-  requires: string
-  matches: string
-  field: string
-  currency: string
-  minor_units: number
-  /** What an amount above every band, or one nobody can read, works out to. */
-  risk: Risk
-  defaults: BandsView
-  floor: FloorView
-  effective: BandsView
-  source: 'operation' | 'currency' | 'operator'
-  band_id: string | null
-  held_at_floor: boolean
-}
-
-export type BandCurrency = {
-  currency: string
-  minor_units: number
-  band: BandRow | null
-  effective: BandsView | null
-}
-
-export type BandsPage = {
-  operations: BandOperation[]
-  currencies: BandCurrency[]
-  unused: BandRow[]
-  may_write: boolean
-}
-
-/** A write: a currency, or one operation named as a policy names it, and the
- *  bounds in minor units. */
-export type WriteBands = {
-  currency?: string
-  skill_id?: string
-  requires?: string
-  matches?: string
-  low?: number | null
-  medium?: number | null
-}
-
-export const listBands = () => api<BandsPage>('/v1/approval-bands')
-
-export const putBands = (body: WriteBands) =>
-  api<BandRow>('/v1/approval-bands', { method: 'PUT', body: JSON.stringify(body) })
-
-export const revertBands = (id: string) => api<void>(`/v1/approval-bands/${id}`, { method: 'DELETE' })
-
 export type RoleRef = { role_id: string; name: string; members: string[] }
 export type Routes = { high: RoleRef[]; answerers: RoleRef[]; may_write: boolean }
 
@@ -282,18 +184,6 @@ export const approvedAmounts = (requires: string, days = 30) =>
   api<Amounts>(`/v1/approvals/amounts?requires=${encodeURIComponent(requires)}&days=${days}`)
 
 /**
- * The link to the one-line policy on the Auto-approval page, its kind and,
- * where known, currency and amount filled in -- the amount as its figure, in
- * whole units.
- */
-export function oneLineLink(requires: string, currency?: string, low?: Money): string {
-  const query = new URLSearchParams({ line: requires })
-  if (currency) query.set('currency', currency)
-  if (low) query.set('low', low.figure)
-  return `/settings/auto-approval?${query.toString()}`
-}
-
-/**
  * Requests of one kind, counted: `12 charges`. A kind of more than one word
  * reads `12 approvals of “send email”`, rather than a guess at its plural.
  */
@@ -308,22 +198,6 @@ export function kindOf(requires: string): string {
   const word = requires.replace(/_/g, ' ')
   if (/\s/.test(word)) return `Requests for “${word}”`
   return `${word.charAt(0).toUpperCase()}${word.slice(1)}s`
-}
-
-/** The skills whose money operations need `requires`, in one currency or
- *  any: what a policy or a band for that kind reaches, named so the page says
- *  where an operation and its currency come from. */
-export function skillsOf(page: BandsPage | null | undefined, requires: string, currency?: string): string[] {
-  const ops = (page?.operations ?? []).filter((o) => o.requires === requires && (!currency || o.currency === currency))
-  return [...new Set(ops.map((o) => o.skill_name ?? 'an unnamed skill'))]
-}
-
-/** The decimals of each currency the workspace's money operations are in. */
-export function decimalsOf(page: BandsPage | null | undefined):Record<string, number> {
-  const out: Record<string, number> = {}
-  for (const c of page?.currencies ?? []) out[c.currency] = c.minor_units
-  for (const o of page?.operations ?? []) out[o.currency] ??= o.minor_units
-  return out
 }
 
 /** A policy's daily totals, in the reader's locale. */

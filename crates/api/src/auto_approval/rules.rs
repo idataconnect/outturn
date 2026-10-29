@@ -21,7 +21,7 @@ use uuid::Uuid;
 use outturn_core::egress::amount::{self, Banding};
 use outturn_core::egress::policy::{Op, Risk, Test};
 
-use super::bands::Money;
+use super::money::Money;
 use super::{Chosen, Declared, Policy};
 use crate::router::{ApiError, ApiState, authenticate};
 
@@ -153,7 +153,7 @@ pub fn most(banding: &Banding, ceiling: Risk) -> Option<i64> {
 /// its test on the amount field -- `≤ 4999` is under 5000 -- and where the
 /// risk the amount works out to passes its bound, which is how a policy
 /// "up to low risk" limits an amount without naming one.
-fn under(policy: &Policy, banding: &Banding, ceiling: Option<Risk>) -> Option<i64> {
+pub(super) fn under(policy: &Policy, banding: &Banding, ceiling: Option<Risk>) -> Option<i64> {
     let by_risk = most(banding, super::bound(policy, ceiling));
     let by_test = policy
         .conditions
@@ -256,7 +256,10 @@ type Reached = (Declared, String, Vec<AgentRef>);
 
 /// Every gated operation any of the workspace's agents can reach, once each,
 /// with its skill's name and the agents that reach it.
-async fn reachable(state: &ApiState, workspace_id: Uuid) -> Result<Vec<Reached>, sqlx::Error> {
+pub(super) async fn reachable(
+    state: &ApiState,
+    workspace_id: Uuid,
+) -> Result<Vec<Reached>, sqlx::Error> {
     use crate::skill::SkillStore as _;
     let agents: Vec<(Uuid, String)> =
         sqlx::query_as("select id, name from agents where workspace_id = $1 order by name, id")

@@ -5,7 +5,8 @@ import { describe, expect, it, vi } from 'vitest'
 
 import AutoApprovalEditor from './AutoApprovalEditor'
 import { api } from '../lib/api'
-import { parseValue, type BandsPage } from '../lib/autoApproval'
+import { type RulesPage } from '../lib/approvalRules'
+import { parseValue } from '../lib/autoApproval'
 import { SessionContext, type SessionState } from '../lib/session'
 
 const gbp = (amount: number) => ({
@@ -16,28 +17,25 @@ const gbp = (amount: number) => ({
   figure: amount % 100 ? (amount / 100).toFixed(2) : String(amount / 100),
 })
 
-/** One money operation, at the skill's defaults. */
-const bandsPage: BandsPage = {
+/** One money operation, as the rules page lists it. */
+const rulesPage: RulesPage = {
   operations: [
     {
       skill_id: 'sk1',
       skill_name: 'Bookings',
       requires: 'charge',
       matches: 'POST /charges',
-      field: 'amount_pence',
-      currency: 'GBP',
-      minor_units: 2,
-      risk: 'high',
-      defaults: { low: gbp(5000), medium: gbp(20000) },
-      floor: { medium: null, high: gbp(500000) },
-      effective: { low: gbp(5000), medium: gbp(20000) },
-      source: 'operator',
-      band_id: null,
-      held_at_floor: false,
+      name: 'Charge',
+      agents: [],
+      amount: { field: 'amount_pence', currency: 'GBP', minor_units: 2, standard_minor_units: 2 },
+      fixed: { never: false, beyond_deployment: false, most: gbp(500000) },
+      rules: [],
+      asked: 0,
+      approved: 0,
+      declined: 0,
     },
   ],
-  currencies: [{ currency: 'GBP', minor_units: 2, band: null, effective: null }],
-  unused: [],
+  days: 30,
   may_write: true,
 }
 
@@ -47,9 +45,9 @@ const policy = {
   agent_id: null,
   agent_name: null,
   effect: 'include',
-  selector: 'act',
+  selector: 'risk',
   max_risk: 'low',
-  requires: 'charge',
+  requires: null,
   skill_id: null,
   skill_name: null,
   matches: null,
@@ -99,7 +97,7 @@ describe('AutoApprovalEditor', () => {
     render(
       <SessionContext.Provider value={admin}>
         <MemoryRouter
-          initialEntries={['/settings/auto-approval/new?requires=charge&selector=act&field=booking_id&field=amount_pence']}
+          initialEntries={['/settings/auto-approval/new?requires=charge&selector=operation&field=booking_id&field=amount_pence']}
         >
           <Routes>
             <Route path="/settings/auto-approval/new" element={<AutoApprovalEditor />} />
@@ -117,7 +115,7 @@ describe('AutoApprovalEditor', () => {
     const calls: { path: string; body?: unknown }[] = []
     vi.mocked(api).mockImplementation(async (path: string, init?: RequestInit) => {
       calls.push({ path, body: init?.body ? JSON.parse(String(init.body)) : undefined })
-      if (path === '/v1/approval-bands') return bandsPage as never
+      if (path === '/v1/approval-rules') return rulesPage as never
       if (path.endsWith('/evidence')) return null as never
       return policy as never
     })
@@ -155,7 +153,7 @@ describe('AutoApprovalEditor', () => {
 
   it('says why the record would still have asked', async () => {
     vi.mocked(api).mockImplementation(async (path: string) => {
-      if (path === '/v1/approval-bands') return bandsPage as never
+      if (path === '/v1/approval-rules') return rulesPage as never
       if (path.endsWith('/evidence'))
         return {
           auto_approved: 0,

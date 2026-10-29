@@ -15,7 +15,8 @@
 //! after a broad policy was accepted -- resolves to a person being asked.
 
 pub mod api;
-pub mod bands;
+pub mod convert;
+pub mod money;
 pub mod routes;
 pub mod rules;
 pub mod waiting;
@@ -451,19 +452,15 @@ pub async fn declared_for(
         .collect())
 }
 
-/// What a turn's skills declare, with the bands each money operation runs
-/// under in this workspace: `declared_for`, then `bands::apply`.
+/// What a turn's skills declare. The bands each money operation runs under
+/// are the operator's, as declared: a workspace says how much goes through
+/// without a person in each rule, not by moving where an amount falls.
 pub async fn declared_in(
     pool: &sqlx::PgPool,
-    workspace_id: Uuid,
+    _workspace_id: Uuid,
     skills: &[super::skill::ResolvedSkill],
 ) -> Result<Vec<Declared>, sqlx::Error> {
-    let mut declared = declared_for(pool, skills).await?;
-    if declared.iter().any(|d| d.amount.is_some()) {
-        let rows = bands::of(pool, workspace_id).await?;
-        bands::apply(&mut declared, &rows);
-    }
-    Ok(declared)
+    declared_for(pool, skills).await
 }
 
 /// The policy columns the page and the resolution read, as a macro so each

@@ -6,8 +6,8 @@ use super::*;
 
 fn charge_policy() -> String {
     serde_json::json!({
-        "selector": "act",
-        "requires": "charge",
+        "selector": "risk",
+        "max_risk": "low",
         "conditions": [{"field": "amount_pence", "op": "le", "value": 5000}],
         "per_turn": 2,
         "per_day": 20,
@@ -22,16 +22,6 @@ async fn put(h: &Harness, uri: &str, token: &str, body: &str) -> (StatusCode, St
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
-        .expect("request");
-    h.send(req).await
-}
-
-async fn del(h: &Harness, uri: &str, token: &str) -> (StatusCode, String) {
-    let req = Request::builder()
-        .method("DELETE")
-        .uri(uri)
-        .header("authorization", format!("Bearer {token}"))
-        .body(Body::empty())
         .expect("request");
     h.send(req).await
 }
@@ -136,7 +126,7 @@ async fn a_policy_needs_both_authorities_and_caps() {
     let admin = h
         .login_as("alice@example.com", None, Some((ws, "admin")))
         .await;
-    let uncapped = serde_json::json!({"selector": "act", "requires": "charge"}).to_string();
+    let uncapped = serde_json::json!({"selector": "risk", "max_risk": "low"}).to_string();
     let (status, _) = h
         .post("/v1/approval-policies", Some(&admin), &uncapped)
         .await;
@@ -719,10 +709,7 @@ async fn the_queue_says_when_operations_wait_on_a_broad_policy() {
         .expect("in the admin's queue")
         .clone();
     assert!(
-        item["payload"]["summary"]
-            .as_str()
-            .unwrap()
-            .contains("\"charge\""),
+        item["payload"]["summary"].as_str().unwrap().contains("low"),
         "{item}"
     );
 
@@ -794,8 +781,7 @@ fn money_charge_file() -> String {
 /// takes it.
 fn low_charges_policy() -> String {
     serde_json::json!({
-        "selector": "act",
-        "requires": "charge",
+        "selector": "risk",
         "max_risk": "low",
         "daily_totals": {"GBP": 15000},
         "per_turn": 10,
@@ -838,72 +824,6 @@ async fn a_charge_is_as_risky_as_its_amount() {
             .unwrap();
     assert_eq!(recorded, (12000, Some("GBP".to_string())));
 
-    // The page says so in money.
-    let (status, body) = h.get("/v1/approval-bands", Some(&c.admin)).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let page: Value = serde_json::from_str(&body).unwrap();
-    let op = &page["operations"][0];
-    assert_eq!(op["matches"], "POST /charges");
-    assert_eq!(op["source"], "operator");
-    assert_eq!(op["effective"]["low"]["display"], "£50.00");
-    assert_eq!(op["floor"]["high"]["display"], "£5,000.00");
-    assert_eq!(page["may_write"], true);
-
-    // A workspace for which £80 is small; never past the floor.
-    let (status, body) = put(
-        &h,
-        "/v1/approval-bands",
-        &c.admin,
-        r#"{"currency":"GBP","low":1000000}"#,
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "past the floor: {body}");
-    let (status, body) = put(
-        &h,
-        "/v1/approval-bands",
-        &c.admin,
-        &serde_json::json!({
-            "skill_id": c.skill, "requires": "charge", "matches": "POST /charges",
-            "low": 10000,
-        })
-        .to_string(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let band: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(band["currency"], "GBP");
-
-    // The running turn keeps what it committed to; the next one carries the
-    // workspace's band. The day's total still counts what went before.
-    assert_eq!(charge(100).await.0, StatusCode::OK);
-    let (status, _) = charge(6000).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "still medium in this turn");
-    let (_, _, next) = a_turn(&h, &c).await;
-    let next_token = next["gateway_token"].as_str().unwrap();
-    let (status, body) = gateway
-        .charge(c.acme, &next, next_token, &next["gates"], 2800)
-        .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let (status, body) = gateway
-        .charge(c.acme, &next, next_token, &next["gates"], 6000)
-        .await;
-    assert_eq!(
-        status,
-        StatusCode::FORBIDDEN,
-        "low now, but over the day's total: {body}"
-    );
-
-    // Deleting the row goes back to the operator's.
-    let (status, _) = del(
-        &h,
-        &format!("/v1/approval-bands/{}", band["id"].as_str().unwrap()),
-        &c.admin,
-    )
-    .await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-    let (_, body) = h.get("/v1/approval-bands", Some(&c.admin)).await;
-    let page: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(page["operations"][0]["source"], "operator");
     finish!(h);
 }
 
@@ -924,15 +844,15 @@ fn guesthouse_charge_file() -> String {
     )
 }
 
-/// What the one-line form sets: a band on the operation, then a policy on for
-/// one agent's low-risk charges with a day's total in pounds. Every request of
+/// A rule on the charge for one agent -- under £100, with a day's total in
+/// pounds -- over a broad policy for low risk. Every request of
 /// the turn after -- the ungated look at the rooms as much as the charge --
 /// reaches the gateway with the gates as the runtime carries them: the bytes
 /// the API wrote, relayed untouched.
 #[tokio::test]
-async fn a_turn_under_the_one_line_policy_reaches_its_gates() {
+async fn a_turn_under_a_rule_reaches_its_gates() {
     let h = harness_or_skip!();
-    let (c, assignment) = a_turn_under_the_one_line_policy(&h).await;
+    let (c, assignment) = a_turn_under_a_rule(&h).await;
     let token = assignment["gateway_token"].as_str().unwrap();
     // Read as the runtime reads an assignment: the request from the same
     // bytes, and its gates parsed for the runtime's own questions.
@@ -963,43 +883,33 @@ async fn a_turn_under_the_one_line_policy_reaches_its_gates() {
         )
     };
     let (status, body) = charge(8000).await;
-    assert_eq!(status, StatusCode::OK, "£80 is low here: {body}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "£80 is under the rule's £100: {body}"
+    );
     let (status, body) = charge(15000).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "£150 is medium: {body}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "£150 is not: {body}");
     finish!(h);
 }
 
-/// The one-line form's policy on, and a turn under it taken as a runtime takes
-/// one.
-async fn a_turn_under_the_one_line_policy(h: &Harness) -> (Covered, Value) {
+/// A rule set on the charge for the agent, and a turn under it taken as a
+/// runtime takes one.
+async fn a_turn_under_a_rule(h: &Harness) -> (Covered, Value) {
     let c = a_policy_on(h, &guesthouse_charge_file(), &low_charges_policy()).await;
     let (status, body) = put(
         h,
-        "/v1/approval-bands",
+        "/v1/approval-rules",
         &c.admin,
         &serde_json::json!({
-            "skill_id": c.skill, "requires": "charge", "matches": "POST /charges",
-            "low": 10000, "medium": 20000,
+            "operations": [{"skill_id": c.skill, "requires": "charge", "matches": "POST /charges"}],
+            "agent_id": c.agent, "automatic": true, "under": 10000, "daily_total": 50000,
+            "mode": "on",
         })
         .to_string(),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let mut one_line: Value = serde_json::from_str(&low_charges_policy()).unwrap();
-    one_line["mode"] = "on".into();
-    one_line["effect"] = "include".into();
-    one_line["agent_id"] = c.agent.to_string().into();
-    one_line["conditions"] = serde_json::json!([]);
-    one_line["daily_totals"] = serde_json::json!({"GBP": 50000});
-    let (status, body) = put(
-        h,
-        &format!("/v1/approval-policies/{}", c.policy),
-        &c.admin,
-        &one_line.to_string(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-
     let (_, _, assignment) = a_turn(h, &c).await;
     (c, assignment)
 }
@@ -1014,7 +924,7 @@ async fn a_turn_under_the_one_line_policy(h: &Harness) -> (Covered, Value) {
 #[tokio::test]
 async fn an_older_runtime_relays_gates_it_cannot_read() {
     let h = harness_or_skip!();
-    let (c, mut assignment) = a_turn_under_the_one_line_policy(&h).await;
+    let (c, mut assignment) = a_turn_under_a_rule(&h).await;
     let token = assignment["gateway_token"].as_str().unwrap().to_string();
     assignment["gates"]["policies"][0]["added_later"] = serde_json::json!({"kept": true});
     let wrote = assignment.to_string();
@@ -1087,6 +997,16 @@ async fn an_older_runtime_relays_gates_it_cannot_read() {
 async fn the_record_says_what_risk_stopped() {
     let h = harness_or_skip!();
     let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
+    // The history is of one operation, which is what it can replay.
+    sqlx::query(
+        "update approval_policies set selector = 'operation', requires = 'charge', \
+                skill_id = $2, matches = 'POST /charges' where id = $1",
+    )
+    .bind(c.policy.parse::<Uuid>().unwrap())
+    .bind(c.skill.parse::<Uuid>().unwrap())
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
     for pence in [29000, 4000] {
         sqlx::query(
             "insert into action_items (workspace_id, id, kind, state, payload) \
@@ -1121,122 +1041,103 @@ async fn the_record_says_what_risk_stopped() {
     finish!(h);
 }
 
-/// Bands are set as policies are: by a person holding both authorities, from
-/// their own session, in their own workspace.
+/// Rules are set as policies are: by a person holding both authorities, from
+/// their own session, on operations their own workspace's agents reach.
 #[tokio::test]
-async fn bands_are_set_by_whoever_may_set_a_policy() {
+async fn rules_are_set_by_whoever_may_set_a_policy() {
     let h = harness_or_skip!();
     let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
+    let rule = serde_json::json!({
+        "operations": [{"skill_id": c.skill, "requires": "charge", "matches": "POST /charges"}],
+        "automatic": true, "under": 1000,
+    })
+    .to_string();
     let viewer = h
         .login_as("vic@example.com", None, Some((c.acme, "viewer")))
         .await;
-    let (status, _) = h.get("/v1/approval-bands", Some(&viewer)).await;
+    let (status, _) = h.get("/v1/approval-rules", Some(&viewer)).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    let (status, _) = put(
-        &h,
-        "/v1/approval-bands",
-        &viewer,
-        r#"{"currency":"GBP","low":10}"#,
-    )
-    .await;
+    let (status, _) = put(&h, "/v1/approval-rules", &viewer, &rule).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     let other = h.make_workspace("Other", "other").await;
     let bob = h
         .login_as("bob@example.com", None, Some((other, "admin")))
         .await;
-    let (status, body) = put(
-        &h,
-        "/v1/approval-bands",
-        &c.admin,
-        r#"{"currency":"GBP","low":10}"#,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let id = serde_json::from_str::<Value>(&body).unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let (status, _) = del(&h, &format!("/v1/approval-bands/{id}"), &bob).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, body) = h.get("/v1/approval-bands", Some(&bob)).await;
+    let (status, body) = put(&h, "/v1/approval-rules", &bob, &rule).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "no agent of theirs reaches it: {body}"
+    );
+    let (status, body) = h.get("/v1/approval-rules", Some(&bob)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let page: Value = serde_json::from_str(&body).unwrap();
     assert!(page["operations"].as_array().unwrap().is_empty());
     finish!(h);
 }
 
-/// The one line is its bands and its policy together, or neither: a band the
-/// floor refuses leaves no policy, and a policy refused leaves no band.
+/// A policy over every charge and a workspace band become a rule on the
+/// charge that lets through what they did and no more: the band said low
+/// below £30, under the operator's £50, so the rule says under £30.
 #[tokio::test]
-async fn the_one_line_writes_its_bands_and_policy_or_nothing() {
+async fn act_policies_and_bands_become_rules_without_widening() {
     let h = harness_or_skip!();
     let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
-    let written = |h: &Harness| {
-        let pool = h.db.pool.clone();
-        let acme = c.acme;
-        async move {
-            let bands: i64 =
-                sqlx::query_scalar("select count(*) from approval_bands where workspace_id = $1")
-                    .bind(acme)
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
-            let policies: i64 = sqlx::query_scalar(
-                "select count(*) from approval_policies where workspace_id = $1",
-            )
-            .bind(acme)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-            (bands, policies)
-        }
-    };
-    let line = |low: i64, daily: i64, agent: Option<Uuid>| {
-        serde_json::json!({
-            "requires": "charge", "currency": "GBP", "low": low, "daily_total": daily,
-            "agent_id": agent,
-        })
-        .to_string()
-    };
-    assert_eq!(written(&h).await, (0, 1));
-
-    for (body, why) in [
-        // Past the floor, which says high from £5,000.
-        (line(900_000, 25_000, None), "floor"),
-        // A band that could stand, under a policy that cannot.
-        (line(4000, -5, None), "total"),
-        (line(4000, 25_000, Some(Uuid::now_v7())), "agent"),
-    ] {
-        let (status, text) = h
-            .post("/v1/approval-policies/one-line", Some(&c.admin), &body)
-            .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}: {text}");
-        assert_eq!(written(&h).await, (0, 1), "{why}: nothing written");
-    }
-
-    let (status, body) = h
-        .post(
-            "/v1/approval-policies/one-line",
-            Some(&c.admin),
-            &line(4000, 25_000, Some(c.agent)),
-        )
-        .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    let policy: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(policy["max_risk"], "low");
-    assert_eq!(policy["daily_totals"]["GBP"], 25_000);
-    assert_eq!(policy["daily_totals_money"]["GBP"]["display"], "£250.00");
-    assert_eq!(policy["agent_id"], c.agent.to_string());
-    assert_eq!(written(&h).await, (1, 2));
-    let (low, medium): (Option<i64>, Option<i64>) = sqlx::query_as(
-        "select low, medium from approval_bands where workspace_id = $1 and skill_id is not null",
+    // As a workspace had them before rules: the policy over the act, and its
+    // own band on the charge.
+    sqlx::query("update approval_policies set selector = 'act', requires = 'charge' where id = $1")
+        .bind(c.policy.parse::<Uuid>().unwrap())
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into approval_bands (workspace_id, id, currency, skill_id, requires, matches, low)          values ($1, $2, 'GBP', $3, 'charge', 'POST /charges', 3000)",
     )
     .bind(c.acme)
+    .bind(Uuid::now_v7())
+    .bind(c.skill.parse::<Uuid>().unwrap())
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+
+    outturn::api::auto_approval::convert::run(&h.state).await;
+    // Again, which finds nothing left to do.
+    outturn::api::auto_approval::convert::run(&h.state).await;
+
+    let (status, body) = h.get("/v1/approval-rules", Some(&c.admin)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let page: Value = serde_json::from_str(&body).unwrap();
+    let rules = page["operations"][0]["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 1, "{body}");
+    assert_eq!(rules[0]["selector"], "operation");
+    assert_eq!(rules[0]["under"]["amount"], 3000, "the band's £30, not £50");
+    assert_eq!(rules[0]["daily_total"]["amount"], 15000, "its total kept");
+    assert_eq!(rules[0]["state"], "on");
+    let (acts, bands): (i64, i64) = sqlx::query_as(
+        "select (select count(*) from approval_policies \
+                 where selector = 'act' and revoked_at is null), \
+                (select count(*) from approval_bands)",
+    )
     .fetch_one(&h.db.pool)
     .await
     .unwrap();
-    assert_eq!((low, medium), (Some(4000), Some(20000)), "medium kept");
+    assert_eq!((acts, bands), (0, 0));
+
+    let (_, _, assignment) = a_turn(&h, &c).await;
+    let token = assignment["gateway_token"].as_str().unwrap();
+    let gateway = Gateway::new(&h);
+    let charge = |amount| gateway.charge(c.acme, &assignment, token, &assignment["gates"], amount);
+    assert_eq!(
+        charge(2500).await.0,
+        StatusCode::OK,
+        "£25 went before and goes now"
+    );
+    assert_eq!(
+        charge(4000).await.0,
+        StatusCode::FORBIDDEN,
+        "£40 asked before and asks now"
+    );
     finish!(h);
 }
 
@@ -1473,18 +1374,18 @@ async fn a_risk_that_cannot_be_worked_out_never_asks_more_people() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    // The workspace's bands unreadable: £60, medium when they can be read, is
-    // asked of the manager alone, and the question claims no risk it could not
-    // work out.
-    sqlx::query("alter table approval_bands rename to approval_bands_away")
+    // The declarations unreadable once the turn has them: £60, medium when
+    // they can be read, is asked of the manager alone, and the question claims
+    // no risk it could not work out.
+    let (job, lease, _) = a_turn(&h, &c).await;
+    sqlx::query("alter table skill_version_gates rename column free to free_away")
         .execute(&h.db.pool)
         .await
         .unwrap();
-    let (job, lease, _) = a_turn(&h, &c).await;
     let (payload, targets) = refuse_charge(&h, job, lease, 6000).await;
     assert_eq!(targets, vec![manager]);
     assert!(payload.get("risk").is_none(), "{payload}");
-    sqlx::query("alter table approval_bands_away rename to approval_bands")
+    sqlx::query("alter table skill_version_gates rename column free_away to free")
         .execute(&h.db.pool)
         .await
         .unwrap();
@@ -1534,8 +1435,8 @@ fn delete_invoice_file() -> String {
 /// A policy for deleting one invoice, named by the id in its path.
 fn delete_one_invoice_policy() -> String {
     serde_json::json!({
-        "selector": "act",
-        "requires": "delete",
+        "selector": "risk",
+        "max_risk": "low",
         "conditions": [{"field": "id", "op": "in", "value": ["inv_9"]}],
         "per_turn": 2,
         "per_day": 20,
@@ -1832,4 +1733,39 @@ async fn a_rule_is_previewed_before_it_is_set() {
     assert_eq!(preview["would"], 0);
     let (status, _) = h.get(&format!("{q}&under=900000"), Some(&c.admin)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// An act policy another rule had already overridden is not brought back by
+/// the conversion: the agent stays under the rule that was deciding for it.
+#[tokio::test]
+async fn an_overridden_act_policy_converts_to_nothing() {
+    let h = harness_or_skip!();
+    let c = a_policy_on(&h, &money_charge_file(), &low_charges_policy()).await;
+    sqlx::query("update approval_policies set selector = 'act', requires = 'charge' where id = $1")
+        .bind(c.policy.parse::<Uuid>().unwrap())
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    let (status, body) = put(
+        &h,
+        "/v1/approval-rules",
+        &c.admin,
+        &serde_json::json!({
+            "operations": [{"skill_id": c.skill, "requires": "charge", "matches": "POST /charges"}],
+            "automatic": true, "under": 1000, "mode": "trial",
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    outturn::api::auto_approval::convert::run(&h.state).await;
+
+    let (_, body) = h.get("/v1/approval-rules", Some(&c.admin)).await;
+    let page: Value = serde_json::from_str(&body).unwrap();
+    let rules = page["operations"][0]["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 1, "{body}");
+    assert_eq!(rules[0]["state"], "trial");
+    assert_eq!(rules[0]["under"]["amount"], 1000);
+    finish!(h);
 }

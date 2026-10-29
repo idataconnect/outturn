@@ -201,6 +201,10 @@ async fn main() {
         health.shutdown_signal(),
     ));
 
+    // Before any turn is prepared, so the first commits the rules a workspace's
+    // policies and bands became rather than what they were.
+    outturn_api::auto_approval::convert::run(&state).await;
+
     // Turns are prepared and recorded here, and run by whichever runtime asks
     // for one. Nothing is pushed: a runtime with room comes and takes work, so
     // this tier never has to guess which pod could have taken it.

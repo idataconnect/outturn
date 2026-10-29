@@ -10,18 +10,16 @@ import {
   policyEvidence,
   revokePolicy,
   covers,
-  decimalsOf,
-  listBands,
   parseValue,
   stateLabel,
   updatePolicy,
-  type BandsPage,
   type Condition,
   type Evidence,
   type Op,
   type Policy,
   type WritePolicy,
 } from '../lib/autoApproval'
+import { listRules, type RulesPage } from '../lib/approvalRules'
 import { iconButtonDanger } from '../lib/buttons'
 import { toMinor } from '../lib/money'
 import { paths } from '../lib/paths'
@@ -84,16 +82,17 @@ export default function AutoApprovalEditor() {
   const [busy, setBusy] = useState(false)
 
   const [effect, setEffect] = useState<'include' | 'exclude'>('include')
-  const [selector, setSelector] = useState<'risk' | 'act' | 'operation'>(() => {
-    const s = params.get('selector')
-    return s === 'risk' || s === 'operation' ? s : 'act'
-  })
-  // Required for a risk selector; for an act or an operation, empty is every
-  // risk the operator's ceiling lets through.
-  const [maxRisk, setMaxRisk] = useState(
-    () => params.get('max_risk') ?? (params.get('selector') === 'risk' ? 'low' : ''),
+  // A new one is a broad rule; an operation's own is set in its panel, and
+  // one over every operation needing an act is only ever an old one, shown.
+  const [selector, setSelector] = useState<'risk' | 'act' | 'operation'>(() =>
+    params.get('selector') === 'operation' ? 'operation' : 'risk',
   )
-  const [bands, setBands] = useState<BandsPage | null>(null)
+  // Required for a risk selector; for an operation, empty is every risk the
+  // operator's ceiling lets through.
+  const [maxRisk, setMaxRisk] = useState(
+    () => params.get('max_risk') ?? (params.get('selector') === 'operation' ? '' : 'low'),
+  )
+  const [rules, setRules] = useState<RulesPage | null>(null)
   const [totals, setTotals] = useState<Total[]>([])
   const [requires, setRequires] = useState(params.get('requires') ?? '')
   const [skillId, setSkillId] = useState(params.get('skill_id') ?? '')
@@ -117,10 +116,14 @@ export default function AutoApprovalEditor() {
   useEffect(() => {
     void allPages<Named>('/v1/agents').then(setAgents).catch(() => setAgents([]))
     void allPages<Named>('/v1/skills').then(setSkills).catch(() => setSkills([]))
-    if (!id) void listBands().then(setBands).catch(() => setBands(null))
+    if (!id) void listRules().then(setRules).catch(() => setRules(null))
   }, [id])
 
-  const decimals = decimalsOf(bands)
+  // Each currency the workspace's money operations count in, with its
+  // standard decimals, which a daily total is typed in.
+  const decimals: Record<string, number> = Object.fromEntries(
+    (rules?.operations ?? []).flatMap((o) => (o.amount ? [[o.amount.currency, o.amount.standard_minor_units]] : [])),
+  )
 
   useEffect(() => {
     if (!id) return
@@ -128,13 +131,13 @@ export default function AutoApprovalEditor() {
     void (async () => {
       try {
         // Together, because a daily total is typed back in whole units, which
-        // needs its currency's decimals from the bands to be read again.
+        // needs its currency's decimals to be read again.
         const [p, page] = await Promise.all([
           api<Policy>(`/v1/approval-policies/${id}`),
-          listBands().catch(() => null),
+          listRules().catch(() => null),
         ])
         if (stale) return
-        setBands(page)
+        setRules(page)
         setExisting(p)
         setEffect(p.effect)
         setSelector(p.selector)
@@ -172,15 +175,15 @@ export default function AutoApprovalEditor() {
   // A test on a field an operation declares its amount is written in that
   // field's own units, so what those are is said beside it.
   function asMoney(row: Row): string | null {
-    const op = bands?.operations.find(
+    const op = rules?.operations.find(
       (o) =>
-        o.field === row.field.trim() &&
+        o.amount?.field === row.field.trim() &&
         (selector === 'risk' || o.requires === requires) &&
         (selector !== 'operation' || (o.skill_id === skillId && o.matches === matches.trim())),
     )
-    if (!op) return null
-    const part = ['', 'tenths', 'hundredths', 'thousandths', 'ten-thousandths'][op.minor_units]
-    return part ? `in ${part} of ${op.currency}` : `in whole ${op.currency}`
+    if (!op?.amount) return null
+    const part = ['', 'tenths', 'hundredths', 'thousandths', 'ten-thousandths'][op.amount.minor_units]
+    return part ? `in ${part} of ${op.amount.currency}` : `in whole ${op.amount.currency}`
   }
 
   async function save(e: React.FormEvent) {
@@ -333,9 +336,13 @@ export default function AutoApprovalEditor() {
               value={selector}
               onChange={(e) => setSelector(e.target.value as 'risk' | 'act' | 'operation')}
             >
-              <option value="act">Every operation asking for one kind of approval</option>
-              <option value="operation">One operation in one skill</option>
               <option value="risk">Every operation up to a risk</option>
+              {(selector === 'operation' || existing?.selector === 'operation') && (
+                <option value="operation">One operation in one skill</option>
+              )}
+              {existing?.selector === 'act' && (
+                <option value="act">Every operation asking for one kind of approval</option>
+              )}
             </select>
           </div>
 
@@ -353,7 +360,7 @@ export default function AutoApprovalEditor() {
             </select>
             <span className={hint}>
               Where an operation moves money, a request's risk is worked out from its amount and the
-              workspace's bands.
+              bands its skill declares.
             </span>
           </label>
           {selector !== 'risk' && (
@@ -580,7 +587,7 @@ export default function AutoApprovalEditor() {
             </button>
             {existing && (
               <>
-                {(existing.selector === 'risk' || existing.selector === 'act') && existing.state === 'on' && (
+                {existing.selector === 'risk' && existing.state === 'on' && (
                   <button type="button" disabled={busy} className={button} onClick={() => act(acceptPolicy)}>
                     Accept operations published since
                   </button>

@@ -514,11 +514,15 @@ waved through, which is the one outcome this whole design must not permit.
   replaced when the operations change, resolved when they are accepted and
   cancelled when the policy stops standing. Migration 0059 keeps it to one open
   item per policy. The inbox links to the policy's page.
-- **The page** is Settings → Auto-approval, `/settings/auto-approval`; a new
-  policy at `/settings/auto-approval/new` is prefilled from `requires`,
-  `selector`, `max_risk`, `skill_id`, `matches`, `agent_id` and one `field` per
-  bound field. The approval prompt links there once the workspace has approved
-  the same `requires` three times, for somebody who could set one.
+- **The page** is Settings → Approvals, `/settings/approvals`, and how rules
+  are authored and shown is [approval-rules.md](approval-rules.md). Broad
+  policies -- by risk -- are edited at `/settings/auto-approval/new` and
+  `/settings/auto-approval/{id}`, which also shows any older policy a link
+  names. The approval prompt links to the rule for its act once the workspace
+  has approved the same `requires` three times, for somebody who could set one.
+- **No act selector.** A policy over every operation needing one `requires`,
+  across skills, is refused when written; those that stood were converted
+  into a rule per operation they reached (`api::auto_approval::convert`).
 
 ### As built: risk from the amount
 
@@ -529,17 +533,12 @@ waved through, which is the one outcome this whole design must not permit.
   zero, only for levels below `risk`, rising, and none above the floor of a
   higher level; floors rising. Stored as JSON in `skill_version_gates.amount`
   (migration 0066) and copied with the gates.
-- **Workspace bands.** `approval_bands` (migration 0067): a row per currency,
-  or per operation named as a policy names one (`skill_id`, `requires`,
-  `matches`). The operation's row wins over its currency's, either over the
-  operator's defaults; a row replaces the bands whole, and deleting it goes
-  back to what stood beneath. Checked when written against the floor -- of the
-  operation, or of every money operation an agent reaches in that currency --
-  and the floor wins again when a request is assessed, so a currency row
-  written before a skill's floor rose is *held at the floor*, and the page says
-  so. Read and written as policies are (`approvals:delegate` with
-  `approvals:answer`, from a browser session). Applied by
-  `api::auto_approval::declared_in`, which every resolution now goes through.
+- **Bands are the operator's.** A workspace once moved them per currency or
+  per operation (`approval_bands`, migration 0067); it now says how much goes
+  through without a person in each rule's amount limit instead, and the rows
+  it had were folded into those limits and removed by
+  `api::auto_approval::convert`, which never widens. The table stays, empty,
+  until a later migration drops it.
 - **In the token.** A `PolicyGrant` for a money operation carries the bands it
   runs under (`banding`), `max_risk` -- the tighter of the policy's bound and
   the operator's ceiling -- and `currency_per_day`. All three are left out when
@@ -558,8 +557,7 @@ waved through, which is the one outcome this whole design must not permit.
 - **Daily totals.** `approval_policies.daily_totals`, `{"GBP": 15000}` in minor
   units, on any selector. A policy with totals covers money operations only in
   a currency it totals; one moving no money is covered as before.
-- **One unit per currency.** What is kept for a whole currency -- its row of
-  bands, a policy's daily totals, a day's `currency_amount`, the offer's
+- **One unit per currency.** What is kept for a whole currency --   bands, a policy's daily totals, a day's `currency_amount`, the offer's
   figures -- is in the currency's standard minor units by ISO 4217
   (`egress::amount::standard_minor_units`: a short table, two for anything
   not in it), and an operation's own row is in its amount field's units
@@ -568,61 +566,36 @@ waved through, which is the one outcome this whole design must not permit.
   day's total rounded up (`to_standard`), so a conversion that loses
   precision always lands on more risk and a larger day.
 - **Routing.** `api::gated` works out the risk of the refused request from the
-  workspace's bands (the API's reading rather than the token's: it lets nothing
+  operator's bands (the API's reading rather than the token's: it lets nothing
   out, only chooses who is asked) and, for high, asks the roles in
   `approval_routes` (migration 0068) that still hold `approvals:answer`; none
   named, or none left, and every approver is asked as before. The item's
   payload gains `risk`, and `money` (`amount`, `currency`, `minor_units`,
   `display`, `field`) where the amount could be trusted.
-- **The API.** `GET/PUT /v1/approval-bands` (`DELETE .../{id}`): every money
-  operation an agent reaches, with its defaults, floor, effective bands, their
-  source and whether the floor holds, each as money (`display`: `£50.00`), the
-  currencies with their rows, and rows naming operations nobody reaches.
-  `GET /v1/approval-routes`, `PUT /v1/approval-routes/high` (`role_ids`).
-  `GET /v1/approvals/amounts?requires=&days=` -- for `approvals:answer`, this
-  workspace's resolved questions of that act carrying an amount, per currency:
-  count, largest, total, and `suggested_low`, the first round amount above the
-  largest. Policies take `max_risk` on an act or operation selector and
-  `daily_totals`, so the one line is a band (`PUT /v1/approval-bands`) and a
-  policy (`selector: act`, `max_risk: low`, `daily_totals`, the agent, an
-  expiry).
+- **The API.** `GET /v1/approval-routes`, `PUT /v1/approval-routes/high`
+  (`role_ids`). `GET /v1/approvals/amounts?requires=&days=` -- for
+  `approvals:answer`, this workspace's resolved questions of that act carrying
+  an amount, per currency: count, largest, total, and `suggested_low`, the
+  first round amount above the largest. Rules are
+  [approval-rules.md](approval-rules.md)'s `/v1/approval-rules`.
 - **The pages.** A queue item's `risk` and `money` are read by `lib/money`
   (`riskOf`, `moneyOf`); the approval prompt and the queue rows show a
-  `RiskBadge` and the amount's `display`, the prompt beside the bound number
-  it came from, which stays. Amounts are typed in whole units and sent in
-  minor ones (`toMinor`, on the digits, refusing what a number cannot hold
-  exactly). The page writes no money of its own: every amount it shows is
-  the API's `display`, a policy's totals arrive as `daily_totals_money`, the
-  offer's figure as `all_under`, and a form starts from a `Money`'s
-  `figure` (`50`, `12.50`). Settings →
-  Auto-approval has, in order: the one line (`OneLinePolicy`), the policies,
-  the bands per currency and per operation (`ApprovalBands`), and who is
-  asked about high risk (`HighRiskRoute`). The editor takes `max_risk` on any
-  selector and daily totals per currency, and says a test on a declared
-  amount field as money.
-- **The one line** is one write, `POST /v1/approval-policies/one-line`
-  (`requires`, `currency`, `low` and `daily_total` in the currency's standard
-  units, `agent_id`, `mode`, `expires_at`): the low band of each operation of
-  the kind in that currency whose low is not that already -- per operation,
-  never the currency's row, which would move every other operation in it --
-  in the operation's own units, rounded down, keeping a medium bound still
-  above it; and the policy. Everything is checked first and written in one
-  transaction, so a band the floor refuses leaves no policy and a policy
-  refused leaves no band. It is prefilled from
-  `/settings/auto-approval?line=&currency=&low=`. Its counts are one a turn
-  and twenty a day, which the full editor changes.
+  `RiskBadge` and the amount, the prompt beside the bound number it came from,
+  which stays. Amounts are typed in whole units and sent in minor ones
+  (`toMinor`, on the digits, refusing what a number cannot hold exactly), and
+  shown in the reader's locale (`show`, from the amount, currency and decimals
+  the API sends); the API's `display` is what the model is told.
 - **The offer** reads `/v1/approvals/amounts` first, in the request's
   currency or else the one most approved: "12 charges approved in the last
   30 days, all under £40.00." -- `all_under`, the largest plus one, rounded
-  up at its leading digit -- linking to the one line at `suggested_low`. Both
-  are worked out by the API, in the currency's standard units. An act with no amounts falls back to the count and the
-  full editor, as before. Neither is asked for on a follow-up.
+  up at its leading digit -- linking to the rule for the act with
+  `suggested_low` filled in. An act with no amounts falls back to the count.
+  Neither is asked for on a follow-up.
 
 #### Deviations
 
-- `max_risk` is now allowed on an act or operation selector (migration 0067
-  relaxes the check), which the design did not say; it is what "charges under
-  £50" needs without sweeping in every other low operation.
+- `max_risk` is allowed on an operation selector (migration 0067 relaxes the
+  check), which the design did not say.
 - Low that no policy covers asks every approver, as medium does: there is
   nobody else for it to go to.
 - The offer counts only questions raised since they carried `money`.
@@ -637,7 +610,5 @@ waved through, which is the one outcome this whole design must not permit.
   wait, and a broad policy covers them in trial until accepted, though nothing
   about them changed.
 - **The admin agent proposing a policy**, which waits for the admin agent.
-- **Bands mid-turn.** A band changed while a turn runs reaches it from the
-  next turn, as a policy edit does.
 - **A policy suspending itself**, and **operator gates that follow the
   credential**, still unsettled above.

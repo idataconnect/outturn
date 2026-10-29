@@ -294,6 +294,7 @@ are near before changing it.
 - Running turns: [triggers.md](docs/triggers.md),
   [inhibitors.md](docs/inhibitors.md), [approvals.md](docs/approvals.md),
   [auto-approval.md](docs/auto-approval.md),
+  [approval-rules.md](docs/approval-rules.md),
   [action-queue.md](docs/action-queue.md),
   [idempotency.md](docs/idempotency.md),
   [prompt-contributors.md](docs/prompt-contributors.md),

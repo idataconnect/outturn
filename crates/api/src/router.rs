@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get, post},
+    routing::{get, post},
 };
 use serde::Serialize;
 use uuid::Uuid;
@@ -2004,10 +2004,6 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             get(super::auto_approval::api::list).post(super::auto_approval::api::create),
         )
         .route(
-            "/v1/approval-policies/one-line",
-            post(super::auto_approval::api::one_line),
-        )
-        .route(
             "/v1/approval-policies/{id}",
             get(super::auto_approval::api::get).put(super::auto_approval::api::update),
         )
@@ -2034,14 +2030,6 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         .route(
             "/v1/approval-rules/preview",
             get(super::auto_approval::rules::preview),
-        )
-        .route(
-            "/v1/approval-bands",
-            get(super::auto_approval::bands::list).put(super::auto_approval::bands::put),
-        )
-        .route(
-            "/v1/approval-bands/{id}",
-            delete(super::auto_approval::bands::delete),
         )
         .route(
             "/v1/approval-routes",

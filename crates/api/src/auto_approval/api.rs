@@ -73,7 +73,7 @@ pub struct PolicyView {
     pub policy: Policy,
     pub state: &'static str,
     /// Each daily total as money, so the page writes none itself.
-    pub daily_totals_money: BTreeMap<String, super::bands::Money>,
+    pub daily_totals_money: BTreeMap<String, super::money::Money>,
 }
 
 fn view(policy: Policy) -> PolicyView {
@@ -81,7 +81,7 @@ fn view(policy: Policy) -> PolicyView {
     let daily_totals_money = policy
         .daily_totals
         .iter()
-        .map(|(c, v)| (c.clone(), super::bands::Money::standard(*v, c)))
+        .map(|(c, v)| (c.clone(), super::money::Money::standard(*v, c)))
         .collect();
     PolicyView {
         policy,
@@ -189,9 +189,12 @@ pub(super) fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, A
                 .ok_or_else(|| invalid("a risk selector needs max_risk: low, medium or high"))?;
             ("risk", Some(risk.as_str().to_string()), None, None, None)
         }
+        // Every operation needing one act, across skills, is the rule nobody
+        // could read: each operation has its own now (docs/approval-rules.md).
         "act" => {
-            let requires = requires.ok_or_else(|| invalid("an act selector needs requires"))?;
-            ("act", bound, Some(requires), None, None)
+            return Err(invalid(
+                "a rule is set on an operation, or broadly by risk; see /v1/approval-rules",
+            ));
         }
         "operation" => {
             let requires =
@@ -214,7 +217,7 @@ pub(super) fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, A
                 Some(matches),
             )
         }
-        _ => return Err(invalid("selector is risk, act or operation")),
+        _ => return Err(invalid("selector is risk or operation")),
     };
 
     policy::check_tests(&input.conditions).map_err(invalid)?;
@@ -502,97 +505,6 @@ pub async fn create(
         set_by = %claims.subject,
         mode = checked.mode,
         "an auto-approval policy was set"
-    );
-    super::waiting::reconcile(&state, claims.workspace_id).await;
-    let policy = found(&state, claims.workspace_id, id).await?;
-    Ok((StatusCode::CREATED, Json(view(policy))))
-}
-
-/// The one line, as the page sends it: a kind of act, a figure under which its
-/// requests in one currency are low, and a daily total -- both in the
-/// currency's standard minor units -- for an agent, until a date.
-#[derive(Debug, Deserialize)]
-pub struct WriteOneLine {
-    pub requires: String,
-    pub currency: String,
-    pub low: i64,
-    pub daily_total: i64,
-    #[serde(default)]
-    pub agent_id: Option<Uuid>,
-    #[serde(default = "trial")]
-    pub mode: String,
-    #[serde(default)]
-    pub expires_at: Option<DateTime<Utc>>,
-}
-
-/// The counts a one-line policy carries. The daily total bounds the money;
-/// these only have to be above zero, and the full editor changes them.
-const ONE_LINE_PER_TURN: i32 = 1;
-const ONE_LINE_PER_DAY: i32 = 20;
-
-/// `POST /v1/approval-policies/one-line`: the low band of every operation of
-/// that kind in that currency, where it is not that already, and a policy for
-/// the kind up to low with that daily total -- in one transaction, everything
-/// checked before anything is written, so a band the floor refuses leaves no
-/// policy and a policy refused leaves no band.
-///
-/// Per operation, never the currency's row, which would move every other
-/// operation in the currency too. Each keeps its medium bound where that is
-/// still above the new low one.
-pub async fn one_line(
-    State(state): State<Arc<ApiState>>,
-    headers: axum::http::HeaderMap,
-    Json(input): Json<WriteOneLine>,
-) -> Result<(StatusCode, Json<PolicyView>), ApiError> {
-    let claims = authenticate(&state, &headers)?;
-    may_write(&state, &claims).await?;
-    let ops = super::bands::operations(&state, claims.workspace_id)
-        .await
-        .map_err(internal)?;
-    let rows = super::bands::of(&state.pool, claims.workspace_id)
-        .await
-        .map_err(internal)?;
-    let writes = super::bands::one_line(&ops, &rows, &input.requires, &input.currency, input.low)?;
-    let checked = check(
-        WritePolicy {
-            agent_id: input.agent_id,
-            effect: include(),
-            selector: "act".into(),
-            max_risk: Some(Risk::Low.as_str().to_string()),
-            requires: Some(input.requires.clone()),
-            skill_id: None,
-            matches: None,
-            conditions: Vec::new(),
-            per_turn: Some(ONE_LINE_PER_TURN),
-            per_day: Some(ONE_LINE_PER_DAY),
-            sum_field: None,
-            sum_per_day: None,
-            daily_totals: BTreeMap::from([(input.currency.clone(), input.daily_total)]),
-            mode: input.mode,
-            note: None,
-            expires_at: input.expires_at,
-        },
-        Utc::now(),
-    )?;
-    check_references(&state, claims.workspace_id, &checked).await?;
-
-    let id = Uuid::now_v7();
-    let mut tx = state.pool.begin().await.map_err(internal)?;
-    for write in &writes {
-        super::bands::write(&mut tx, claims.workspace_id, claims.subject, write)
-            .await
-            .map_err(internal)?;
-    }
-    insert(&mut *tx, claims.workspace_id, id, claims.subject, &checked).await?;
-    tx.commit().await.map_err(internal)?;
-
-    tracing::info!(
-        workspace_id = %claims.workspace_id,
-        policy_id = %id,
-        bands_set = writes.len(),
-        set_by = %claims.subject,
-        mode = checked.mode,
-        "a one-line auto-approval policy was set"
     );
     super::waiting::reconcile(&state, claims.workspace_id).await;
     let policy = found(&state, claims.workspace_id, id).await?;
@@ -1001,19 +913,15 @@ pub async fn evidence(
                     state: r.get("state"),
                 })
                 .collect();
-            // The bands each money operation runs under now, as a turn prepared
-            // now would commit them, so the replay works out risk as the gateway
-            // would.
-            let mut money = super::bands::operations(&state, claims.workspace_id)
+            // The money operations reached now, as a turn prepared now would
+            // commit them, so the replay works out risk as the gateway would.
+            let money: Vec<super::Declared> = super::rules::reachable(&state, claims.workspace_id)
                 .await
                 .map_err(internal)?
                 .into_iter()
-                .map(|(d, _)| d)
-                .collect::<Vec<_>>();
-            let rows = super::bands::of(&state.pool, claims.workspace_id)
-                .await
-                .map_err(internal)?;
-            super::bands::apply(&mut money, &rows);
+                .map(|(d, _, _)| d)
+                .filter(|d| d.amount.is_some())
+                .collect();
             let ceiling = super::ceiling(&state.pool, claims.workspace_id).await;
             let mut past = replay(&policy, requires, &asked, &money, ceiling);
             // A policy that would have approved something a person declined says
@@ -1098,15 +1006,15 @@ pub struct ApprovedIn {
     pub minor_units: u8,
     /// How many a person said yes to.
     pub approved: i64,
-    pub max: super::bands::Money,
-    pub total: super::bands::Money,
+    pub max: super::money::Money,
+    pub total: super::money::Money,
     /// The figure an offer prefills: the first round amount above the largest
     /// approved -- £50 after approvals all under £40.
-    pub suggested_low: super::bands::Money,
+    pub suggested_low: super::money::Money,
     /// The round figure every approved amount was under, which the offer says:
     /// the largest plus one, rounded up at its leading digit -- £40 after a
     /// largest of £39.99.
-    pub all_under: super::bands::Money,
+    pub all_under: super::money::Money,
 }
 
 #[derive(Debug, Serialize)]
@@ -1198,7 +1106,7 @@ pub async fn amounts(
         .into_iter()
         .map(|(currency, (approved, max, total))| {
             let minor = outturn_core::egress::amount::standard_minor_units(&currency);
-            let m = |v| super::bands::Money::of(v, &currency, minor);
+            let m = |v| super::money::Money::of(v, &currency, minor);
             ApprovedIn {
                 approved,
                 max: m(max),
@@ -1248,18 +1156,16 @@ mod tests {
     #[test]
     fn a_policy_needs_its_caps() {
         let now = Utc::now();
-        assert!(check(write(json!({"selector": "act", "requires": "charge"})), now).is_err());
+        assert!(check(write(json!({"selector": "risk", "max_risk": "low"})), now).is_err());
         assert!(
             check(
-                write(
-                    json!({"selector": "act", "requires": "charge", "per_turn": 0, "per_day": 5})
-                ),
+                write(json!({"selector": "risk", "max_risk": "low", "per_turn": 0, "per_day": 5})),
                 now
             )
             .is_err()
         );
         let ok = check(
-            write(json!({"selector": "act", "requires": "charge", "per_turn": 1, "per_day": 5})),
+            write(json!({"selector": "risk", "max_risk": "low", "per_turn": 1, "per_day": 5})),
             now,
         )
         .unwrap();
@@ -1270,7 +1176,7 @@ mod tests {
     fn a_policy_without_an_expiry_runs_out_in_ninety_days() {
         let now = Utc::now();
         let ok = check(
-            write(json!({"selector": "act", "requires": "charge", "per_turn": 1, "per_day": 5})),
+            write(json!({"selector": "risk", "max_risk": "low", "per_turn": 1, "per_day": 5})),
             now,
         )
         .unwrap();
@@ -1279,10 +1185,8 @@ mod tests {
         let too_far = now + chrono::Duration::days(MAX_LIFETIME_DAYS + 1);
         assert!(
             check(
-                write(
-                    json!({"selector": "act", "requires": "charge", "per_turn": 1,
-                             "per_day": 5, "expires_at": too_far})
-                ),
+                write(json!({"selector": "risk", "max_risk": "low", "per_turn": 1,
+                             "per_day": 5, "expires_at": too_far})),
                 now
             )
             .is_err()
@@ -1290,10 +1194,8 @@ mod tests {
         let past = now - chrono::Duration::seconds(1);
         assert!(
             check(
-                write(
-                    json!({"selector": "act", "requires": "charge", "per_turn": 1,
-                             "per_day": 5, "expires_at": past})
-                ),
+                write(json!({"selector": "risk", "max_risk": "low", "per_turn": 1,
+                             "per_day": 5, "expires_at": past})),
                 now
             )
             .is_err()
@@ -1325,12 +1227,19 @@ mod tests {
     }
 
     #[test]
+    fn a_rule_over_every_operation_needing_an_act_is_refused() {
+        let now = Utc::now();
+        let act = json!({"selector": "act", "requires": "charge", "per_turn": 1, "per_day": 5});
+        assert!(check(write(act), now).is_err());
+    }
+
+    #[test]
     fn an_exclusion_carries_no_tests() {
         let now = Utc::now();
         assert!(
             check(
                 write(
-                    json!({"selector": "act", "requires": "refund", "effect": "exclude",
+                    json!({"selector": "risk", "max_risk": "low", "effect": "exclude",
                              "conditions": [{"field": "a", "op": "eq", "value": 1}]})
                 ),
                 now
@@ -1338,7 +1247,7 @@ mod tests {
             .is_err()
         );
         let ok = check(
-            write(json!({"selector": "act", "requires": "refund", "effect": "exclude"})),
+            write(json!({"selector": "risk", "max_risk": "low", "effect": "exclude"})),
             now,
         )
         .unwrap();
@@ -1346,26 +1255,24 @@ mod tests {
     }
 
     #[test]
-    fn the_one_line_policy_is_an_act_up_to_a_risk_with_a_daily_total() {
+    fn a_daily_total_is_in_a_currency_and_never_on_an_exclusion() {
         let now = Utc::now();
         let ok = check(
-            write(
-                json!({"selector": "act", "requires": "charge", "max_risk": "low",
-                         "daily_totals": {"GBP": 50000}, "per_turn": 5, "per_day": 50}),
-            ),
+            write(json!({"selector": "risk", "max_risk": "low",
+                         "daily_totals": {"GBP": 50000}, "per_turn": 5, "per_day": 50})),
             now,
         )
         .unwrap();
         assert_eq!(ok.max_risk.as_deref(), Some("low"));
         assert_eq!(ok.daily_totals.get("GBP"), Some(&50000));
         for bad in [
-            json!({"selector": "act", "requires": "charge", "max_risk": "tiny",
+            json!({"selector": "risk", "max_risk": "tiny",
                    "per_turn": 1, "per_day": 1}),
-            json!({"selector": "act", "requires": "charge", "daily_totals": {"pounds": 5},
+            json!({"selector": "risk", "max_risk": "low", "daily_totals": {"pounds": 5},
                    "per_turn": 1, "per_day": 1}),
-            json!({"selector": "act", "requires": "charge", "daily_totals": {"GBP": -5},
+            json!({"selector": "risk", "max_risk": "low", "daily_totals": {"GBP": -5},
                    "per_turn": 1, "per_day": 1}),
-            json!({"selector": "act", "requires": "refund", "effect": "exclude",
+            json!({"selector": "risk", "max_risk": "low", "effect": "exclude",
                    "daily_totals": {"GBP": 5}}),
         ] {
             assert!(check(write(bad.clone()), now).is_err(), "{bad}");
@@ -1378,7 +1285,7 @@ mod tests {
         assert!(
             check(
                 write(
-                    json!({"selector": "act", "requires": "spam", "per_turn": 1, "per_day": 1,
+                    json!({"selector": "risk", "max_risk": "low", "per_turn": 1, "per_day": 1,
                              "conditions": [{"field": "folder", "op": "ne", "value": "inbox"}]})
                 ),
                 now

@@ -1,10 +1,8 @@
 # Approval rules
 
-Designed, not built. A replacement for how auto-approval is *authored and
-shown*; what is enforced, and where, stays as [auto-approval.md](auto-approval.md)
-describes it. Where the two disagree about the page, the settings or the
-API, this one wins once built, and auto-approval.md's *As built* is rewritten
-to match.
+Built; *As built*, at the end, says where and how, and where it differs from
+what follows. How auto-approval is *authored and shown*; what is enforced,
+and where, stays as [auto-approval.md](auto-approval.md) describes it.
 
 ## What is wrong now
 
@@ -156,3 +154,51 @@ the narrower reading wins.
 - **Who is asked.** Routing high risk to named roles stays as it is for now.
   It could become part of the rule -- *above £200, ask a manager* -- which
   would be the last thing still keyed on risk.
+
+## As built
+
+- **Reading.** `GET /v1/approval-rules` (`api::auto_approval::rules::list`):
+  every gated operation an agent in the workspace reaches, once, with its
+  skill, a name taken from the file declaring it, the agents, its amount field
+  and currency, what is fixed (`never`, `beyond_deployment`, and `most`: where
+  the deployment's cap or the skill's high floor stops an amount), the rules in
+  force -- `choose`'s answer for each agent, grouped by policy -- and its
+  questions in the last thirty days. A rule's `under` is the tighter of its
+  amount test and where its risk bound ends, so an older policy "up to low"
+  reads as an amount too.
+- **Writing.** `PUT /v1/approval-rules` takes one rule for one or several
+  operations, for one agent or all: automatic with `under` and `daily_total`
+  in the currency's standard units, counts, mode and expiry; or not, which
+  revokes the operations' own rules and, where a broader one still speaks for
+  them, adds an exclusion. Stored as an operation policy with an amount test
+  and a daily total, which the gateway already enforced, so it did not change.
+  Everything is checked before a transaction writes any of it. A rule for one
+  agent lifts an exclusion for every agent by replacing it with exclusions for
+  the others.
+- **Preview.** `GET /v1/approval-rules/preview?skill_id&requires&matches&under&daily_total`
+  replays the rule against the last thirty days of its operation's questions
+  with `api::replay`.
+- **The page** is Settings → Approvals (`pages/Approvals.tsx`), the panel
+  `components/ApprovalRulePanel.tsx`, beside the table from 1280px and over it
+  below. A skill's page lists its gated operations with the same chips and
+  panel (`SkillApprovals`). The approval prompt's offer links to
+  `/settings/approvals?requires=&under=`, which opens the operation's panel
+  where one operation needs that act and narrows the table where several do.
+- **Conversion.** `api::auto_approval::convert::run`, at API startup under an
+  advisory lock, in one transaction: each act policy standing becomes a rule
+  on each operation it reached, held to the amount it let through under the
+  bands as they were; a risk or operation policy whose workspace band was
+  narrower than the operator's gets an operation rule holding it there; the
+  act policies are revoked and the bands deleted. Run again it finds nothing.
+
+### Deviations
+
+- `/v1/approval-policies` stays, for broad rules and for showing any policy a
+  link names, rather than moving under `/v1/approval-rules/broad`.
+- Several operations are one `PUT` with a list, not a separate bulk endpoint.
+- No inbox item for a changed workspace: the conversion keeps every amount
+  where it was, and the only narrowing is that a rule covers no operation
+  published later, which an act policy did only in trial.
+- `approval_bands` is left empty rather than dropped, so the conversion can
+  read it on a deployment that upgrades past this release; a later migration
+  drops it.

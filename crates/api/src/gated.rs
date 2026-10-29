@@ -499,7 +499,7 @@ struct Assessed {
     /// The amount field, where the operation declares one.
     field: Option<String>,
     /// The amount as money, where the request carried one to trust.
-    money: Option<super::auto_approval::bands::Money>,
+    money: Option<super::auto_approval::money::Money>,
 }
 
 /// What a refused request's risk works out to: the gate's base risk, or for a
@@ -535,7 +535,7 @@ async fn assess(
         risk,
         field: Some(amount.amount.field.clone()),
         money: value.map(|v| {
-            super::auto_approval::bands::Money::of(
+            super::auto_approval::money::Money::of(
                 v,
                 &amount.amount.currency,
                 amount.amount.minor_units,
