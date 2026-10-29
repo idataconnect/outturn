@@ -124,6 +124,8 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
     retry,
     clearHeld,
     dismissError,
+    loadEarlier,
+    loadingEarlier,
   } = useChatRuntime(
     active,
     (title) => {
@@ -726,6 +728,8 @@ export default function Chat({ draft = false }: { draft?: boolean }) {
                   sessionId={active}
                   onStoredChange={onStoredChange}
                   takeAttachments={takeAttachments}
+                  onLoadEarlier={loadEarlier}
+                  loadingEarlier={loadingEarlier}
                 />
               </AssistantRuntimeProvider>
               )}

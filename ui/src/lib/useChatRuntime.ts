@@ -696,6 +696,21 @@ export function useChatRuntime(
     showing.current = sessionId
   })
   const [messages, setMessages] = useState<Message[]>([])
+  /** Pages read before the newest one, oldest first, and whether the server
+   *  holds more before them. Kept apart from `messages` because every snapshot
+   *  replaces that wholesale, and a reload must not drop what the person
+   *  scrolled back for. Recorded with the session they belong to, so switching
+   *  conversation needs no reset. */
+  const [earlier, setEarlier] = useState<{
+    session: string
+    messages: Message[]
+    hasMore: boolean
+  } | null>(null)
+  /** Whether the newest page left anything out, from its last snapshot. */
+  const [newestHasMore, setNewestHasMore] = useState<{ session: string; hasMore: boolean } | null>(
+    null,
+  )
+  const [loadingEarlier, setLoadingEarlier] = useState(false)
   /** Set by this tab the moment it sends, so the composer answers the click
    *  that caused it rather than waiting for a poll to confirm what we just
    *  did. Not the whole answer: see `isRunning` below. */
@@ -813,6 +828,7 @@ export function useChatRuntime(
         history.messages.map((m) => [m.id, m.delta_next]),
       )
       setMessages(history.messages)
+      setNewestHasMore({ session: sessionId, hasMore: !!history.has_more })
       // The snapshot carries the durable state; anything remembered from
       // events belongs to the stream it came from.
       setRetrying(new Set())
@@ -1453,9 +1469,43 @@ export function useChatRuntime(
     [submit],
   )
 
+  // A snapshot can grow back over an earlier page as the newest page moves,
+  // so what it already holds is dropped from the earlier one rather than shown
+  // twice.
+  const older = useMemo(() => {
+    if (!sessionId || earlier?.session !== sessionId) return []
+    const current = new Set(messages.map((m) => m.id))
+    return earlier.messages.filter((m) => !current.has(m.id))
+  }, [earlier, messages, sessionId])
+  const hasEarlier =
+    !!sessionId &&
+    (earlier?.session === sessionId
+      ? earlier.hasMore
+      : newestHasMore?.session === sessionId && newestHasMore.hasMore)
+
+  const loadEarlier = useCallback(async () => {
+    const first = older[0] ?? messages[0]
+    if (!sessionId || !first || loadingEarlier) return
+    setLoadingEarlier(true)
+    try {
+      const page = await loadHistory(sessionId, first.id)
+      if (showing.current !== sessionId) return
+      setEarlier({
+        session: sessionId,
+        messages: [...page.messages, ...older],
+        hasMore: !!page.has_more,
+      })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoadingEarlier(false)
+    }
+  }, [older, messages, sessionId, loadingEarlier])
+
+  const shown = useMemo(() => [...older, ...messages], [older, messages])
   const annotated = useMemo(
-    () => splitAtSteers(annotate(messages, retrying, failures)),
-    [messages, retrying, failures],
+    () => splitAtSteers(annotate(shown, retrying, failures)),
+    [shown, retrying, failures],
   )
 
   /**
@@ -1562,6 +1612,8 @@ export function useChatRuntime(
       retry,
       clearHeld,
       dismissError,
+      loadEarlier: hasEarlier ? loadEarlier : undefined,
+      loadingEarlier,
     }),
     [
       runtime,
@@ -1574,6 +1626,9 @@ export function useChatRuntime(
       retry,
       clearHeld,
       dismissError,
+      hasEarlier,
+      loadEarlier,
+      loadingEarlier,
     ],
   )
 }

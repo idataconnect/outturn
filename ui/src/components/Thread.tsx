@@ -670,6 +670,8 @@ export default function Thread({
   skills = [],
   onRetry,
   newSessionHref,
+  onLoadEarlier,
+  loadingEarlier,
 }: {
   disabled?: boolean
   /** There is a session, but this reader may not say anything in it. Told
@@ -691,6 +693,9 @@ export default function Thread({
    *  composer has attached. Held by the page because the runtime is created
    *  there, while the attachments live here with the composer that made them. */
   takeAttachments?: React.MutableRefObject<(() => string) | null>
+  /** Loads the page before the oldest message shown; absent when there is none. */
+  onLoadEarlier?: () => void
+  loadingEarlier?: boolean
   /** What the `/` menu offers: the skills this session's agent is bound to.
    *  Passed in rather than fetched here, because which agent it is belongs to
    *  the page that knows which session is open. */
@@ -966,6 +971,19 @@ export default function Thread({
               {disabled ? 'Start a session to begin chatting.' : 'Send a message to begin.'}
             </p>
           </ThreadPrimitive.Empty>
+
+          {onLoadEarlier && (
+            <div className="flex justify-center">
+              <button
+                type="button"
+                onClick={onLoadEarlier}
+                disabled={loadingEarlier}
+                className="text-sm text-surface-600 dark:text-surface-400 hover:text-surface-900 dark:hover:text-surface-100 underline underline-offset-2 disabled:opacity-50"
+              >
+                {loadingEarlier ? 'Loading…' : 'Earlier messages'}
+              </button>
+            </div>
+          )}
 
           <ThreadPrimitive.Messages
             components={{

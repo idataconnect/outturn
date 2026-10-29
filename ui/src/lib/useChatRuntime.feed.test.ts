@@ -100,3 +100,41 @@ describe('thinking heard twice', () => {
     expect(drawn[0].metadata.parts).toEqual([expect.objectContaining({ type: 'reasoning', text: 'hm' })])
   })
 })
+
+describe('earlier messages', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  const msg = (id: string) => ({
+    id,
+    role: 'user',
+    content: id,
+    metadata: {},
+    delta_next: 0,
+    created_at: '2026-10-29T00:00:00Z',
+  })
+
+  it('are offered only while the server holds more, and drawn before the newest page', async () => {
+    vi.mocked(loadHistory)
+      .mockResolvedValueOnce({ messages: [msg('m3'), msg('m4')], cursor: 'c1', has_more: true } as never)
+      .mockResolvedValueOnce({ messages: [msg('m1'), msg('m2')], cursor: 'c0', has_more: false } as never)
+    const { result } = renderHook(() => useChatRuntime('s1'))
+    await act(async () => {})
+    expect(result.current.loadEarlier).toBeDefined()
+
+    await act(async () => {
+      await result.current.loadEarlier!()
+    })
+    expect(loadHistory).toHaveBeenLastCalledWith('s1', 'm3')
+    expect(drawn.map((m) => (m as unknown as { id: string }).id)).toEqual(['m1', 'm2', 'm3', 'm4'])
+    expect(result.current.loadEarlier).toBeUndefined()
+  })
+
+  it('are not offered when the newest page is the whole conversation', async () => {
+    vi.mocked(loadHistory).mockResolvedValue({ messages: [msg('m1')], cursor: 'c1' } as never)
+    const { result } = renderHook(() => useChatRuntime('s1'))
+    await act(async () => {})
+    expect(result.current.loadEarlier).toBeUndefined()
+  })
+})

@@ -224,6 +224,8 @@ export type History = {
   } | null
   /** Whether the agent is asleep, for the same reason. */
   asleep?: Asleep | null
+  /** Whether messages older than the first one here were left out. */
+  has_more?: boolean
 }
 
 export type ChatEvent =
@@ -402,8 +404,13 @@ export const UNNAMED_SESSION = 'New Session'
 export const sessionName = (session: { title: string } | undefined) =>
   session?.title || UNNAMED_SESSION
 
-export const loadHistory = (sessionId: string) =>
-  api<History>(`/v1/agent-sessions/${sessionId}/messages`)
+/** The newest page of a transcript, or with `before`, the page older than
+ *  that message. */
+export const loadHistory = (sessionId: string, before?: string) =>
+  api<History>(
+    `/v1/agent-sessions/${sessionId}/messages` +
+      (before ? `?before=${encodeURIComponent(before)}` : ''),
+  )
 
 /**
  * The sender's IANA timezone, as the browser understands it.
