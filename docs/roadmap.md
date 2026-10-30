@@ -63,7 +63,8 @@ can be picked up without rereading the review. Ordered by what it protects.
 ### Shape of the code
 
 - The runtime's host calls that hold memory for the guest without charging
-  admission, found when `component.rs` was split by capability: reads of up
+  admission, found when the agent host was split by capability into
+  `crates/runtime/src/component/`: reads of up
   to 4 MiB (`read_object`, `read_bytes`, a reader's reads), `describe_image`
   and its base64 copy, `chat`'s request and buffered reply, `fetch`'s
   response, `list_objects`'s listing, and a writer chunk's host copy. Each
@@ -86,13 +87,8 @@ can be picked up without rereading the review. Ordered by what it protects.
   is two majors behind (48 against 50), which is its own migration.
 - A release's first-party digests are copied into the infrastructure
   repository by hand; see the "Not yet" in deployment.md.
-- `tests/api.rs` is thirteen thousand lines in one module. Split by resource,
-  keeping `tests/common`.
-- Tests that do not exist and should: a lease expiring during preparation; a
-  crash between a turn's commit and its completion; a stale lease presented
-  to `/work/gated` and `/work/wait`; the browser reconnecting after a fetch
-  error, replaying a batch, switching sessions mid-stream and failing to load
-  history.
+- The Models page's test call spends tokens in the platform workspace and is
+  not written to the usage ledger (`api::models`, the test call).
 
 ## Tier 1 — independent
 
@@ -152,11 +148,9 @@ writes into this shape.
 
 [caching.md](caching.md).
 
-Anthropic caches only what a request marks, and nothing is marked, so every
-turn on it is uncached input. Four breakpoints, each a cascade setting: the
-instructions, the compacted history and the last completed turn on by default,
-the current tool loop off. Compaction has to cut in batches for any of it to
-hold, so that belongs in the same change.
+Partly built: the gateway marks the system prompt and the newest message for
+Anthropic. Not built: breakpoints as cascade settings, and compaction cutting
+in batches so the history stays cached.
 
 ### Platform-level egress list — an escape hatch, not a priority
 
@@ -248,10 +242,9 @@ while a `fetch` is in flight, where the retry re-runs the tool with nothing
 recording that the first attempt sent. Real, and not designable away by picking
 a better boundary.
 
-Low pressure today: the tools that exist are `fetch_url` and object storage,
-and a repeated `write_object` replaces rather than duplicates. It becomes
-urgent when a workspace is POSTing to its own API, which is when integrations
-do.
+Pressing now that skill operations are tools: an operation that POSTs without
+declaring its identity is retried after a lost lease with nothing recording
+that the first attempt sent.
 
 ### Triggers
 
@@ -340,12 +333,12 @@ from becoming a turn parked for ever.
 ### Auto-approval
 
 [auto-approval.md](auto-approval.md). Built; what is left is listed under
-*What is not built* there -- chiefly the admin agent proposing a policy, the
-action queue saying a broad policy has operations waiting to be accepted, and a
-token trade-in dropping a revoked policy rather than relying on the record.
+*What is not built* there -- chiefly re-committing an edited policy mid-turn,
+and the admin agent proposing a policy.
 
-A workspace deciding that some gated requests no longer need a person: policies
-by risk, act or operation, conditions on the gate's bound fields, a trial mode
+A workspace deciding that some gated requests no longer need a person: one rule
+per operation, or a broad one by risk, set at Settings → Approvals
+([approval-rules.md](approval-rules.md)), conditions on the gate's bound fields, a trial mode
 that only annotates the queue, evidence from the approval history, and a record
 the gateway writes before the request goes out. Rests on approvals, which are
 built. The decision first is the operator's half -- `risk`, `auto` and `numbers`
@@ -494,7 +487,7 @@ nothing here renders -- so the model received markdown-directive syntax raw,
 said it was not a syntax it responded to, and then invented a fact rather than
 stopping. Replacing it with a sentence then wrote the slug, which reaches the
 model nowhere at all: `crates/api/src/skill/mod.rs` composes each skill into the
-prompt as a `## {name}` heading and `ResolvedSkill` has no slug field. Both
+prompt as a `## {name}` heading and `ResolvedSkill` had no slug field then. Both
 were found by a person trying it, not by a test.
 
 Since 2026-10-21 picking a skill invokes it rather than writing anything: the
@@ -639,22 +632,9 @@ the server is the origin, so there is nothing local to disagree with it.
 
 **Replaying what the model was thinking.** Showing it is built: reasoning is
 stored as a part of the reply (`Part::Reasoning`) and drawn in the transcript.
-What is left is the provider half. Anthropic's thinking blocks are still
-dropped at `crates/gateway/src/llm/translate.rs` with their signatures, so a turn
-continuing into tool use cannot return them, and nothing gates display: every
-workspace sees reasoning where the model gave it. What a provider will accept
-back is one question and what a person may see is another; only the second is
-answered.
-
-The real constraint is narrower: Anthropic wants a thinking block returned
-with its signature when a turn continues into tool use, so the block and its
-signature have to be kept together and replayed where the API expects them,
-and dropped where a provider has no equivalent. That is the ordinary shape of
-multi-provider mapping rather than a reason not to store them.
-
-Two pieces remain: keep the block and signature, and replay or drop them per
-provider at the gateway; and a workspace setting that gates display. The
-second matters because thinking is less filtered than output and a model
+Keeping it is built too: signed thinking blocks are kept beside the reply and
+given back per provider ([thinking.md](thinking.md)). What is left is a
+workspace setting that gates display. It matters because thinking is less filtered than output and a model
 sometimes reasons about things it does not say -- which is a reason for a
 workspace to choose it deliberately, not a reason nobody may have it.
 
