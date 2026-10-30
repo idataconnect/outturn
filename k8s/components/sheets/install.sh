@@ -1,19 +1,23 @@
 #!/bin/sh
 # Installs the Google Sheets skill into the workspace, over the API.
 #
-# The same script as k8s/components/hollowbrook/install.sh with a different
-# slug, host and skill directory -- copied rather than shared, which is the
-# honest shape for something meant to be taken and adapted. Two copies will
-# drift; a library a customer has to understand before writing their own is
-# worse.
-#
-# What it demonstrates that weather does not: a credential the gateway holds.
-# The host is allowed here; the key is not, because it is the workspace's own
-# service account and is connected afterwards on the skill's Connections --
+# The same script as k8s/components/hollowbrook/install.sh, without the agent
+# it makes: which agent should edit which spreadsheet is the workspace's to
+# say. What it demonstrates that Hollowbrook does not is a credential the
+# gateway holds. The host is allowed here; the key is not, because it is the
+# workspace's own service account, connected afterwards on the skill's page --
 # see docs/service-accounts.md.
 #
-# Idempotent: a slug that already exists is left alone, so a restarted Job or a
-# redeployed component does not write a second copy.
+# This is the shape a customer's own integration takes. Nothing here is
+# privileged and nothing is patched into outturn: it signs in, calls the
+# endpoints the platform already publishes, and could be a script on somebody's
+# laptop instead of a Job. An integration that needed a Rust module in the
+# platform would need a fork, and a fork fights every upgrade -- which is the
+# argument ui/src/themes/README.md already makes about skinning, and it holds
+# here for the same reason.
+#
+# Idempotent: a skill that already exists gets a new version only if its files
+# changed, so a restarted Job or a redeployed component writes no second copy.
 set -eu
 
 api="${OUTTURN_API:-http://outturn-api:8080}"
@@ -21,6 +25,19 @@ slug=sheets
 host="${SHEETS_HOST:-sheets.googleapis.com}"
 
 say() { echo "install-sheets: $*" >&2; }
+
+# A request whose body is wanted, failing with what the API said rather than
+# with curl's exit code. `-f` alone hides the reason, which is how a refused
+# host once read as "could not create the skill" and nothing more.
+call() {
+  resp=$(curl -s -w '\n%{http_code}' "$@") || { say "could not reach $api"; return 1; }
+  code=$(printf '%s' "$resp" | tail -n 1)
+  body=$(printf '%s' "$resp" | sed '$d')
+  case "$code" in
+    2*) printf '%s' "$body" ;;
+    *) say "$code from the API: $body"; return 1 ;;
+  esac
+}
 
 # The API has to be up. Not a race worth losing to: a Job that starts with the
 # deployment will usually get here first.
@@ -60,49 +77,45 @@ token=$(curl -sf -D - -o /dev/null "$api/v1/login" \
 [ -n "$token" ] || { say "could not sign in"; exit 1; }
 auth="authorization: Bearer $token"
 
-# Already there: update it rather than stopping.
-#
+# The manifest is the skill body and the rest are its files, published
+# together as one version -- see docs/skill-bundles.md. A body is composed into
+# the prompt on every round of every turn, so an API written into one in full
+# is paid for continuously; the agent reads an operation's file, as
+# skill/sheets/<operation>.md, only when it needs it. Published with the
+# version rather than uploaded beside it, because that is where an operation's
+# approval is read from: the writes are gated by their files' frontmatter.
+dir="${SKILL_DIR:-/skill}"
+manifest=$(cat "$dir/index.md")
+files=$(for f in "$dir"/*.md; do
+  name=$(basename "$f")
+  [ "$name" = index.md ] && continue
+  jq -n --arg path "$name" --rawfile content "$f" '{path: $path, content: $content}'
+done | jq -s .)
+
+existing=$(curl -sf "$api/v1/skills?limit=200" -H "$auth" \
+  | jq -r ".items[] | select(.slug == \"$slug\") | .id" | head -1)
+
+# Already there: publish what this component now says, rather than stopping.
 # Stopping was the first version of this, and it meant an edited skill never
-# reached a cluster that had the old one -- the Job ran, said "already
-# installed", and left the workspace with prose nobody had written for months.
-# Whoever edits a skill and redeploys means for the edit to arrive.
-#
-# Prose changes by appending a version, never by overwriting one, so the
-# history of what an agent was told stays readable. The files are written over
-# in place, which is right for reference material: there is one current answer
-# to how an operation is called.
-existing=$(curl -sf "$api/v1/skills" -H "$auth" \
-  | jq -r ".[] | select(.slug == \"$slug\") | .id" | head -1)
-
-# The manifest is the skill body, and the detail is a file per operation --
-# see docs/openapi-wizard.md. A body is composed into the prompt on every
-# round of every turn, so an API written into one in full is paid for
-# continuously; the agent reads an operation's file only when it needs it.
-manifest=$(cat /skill/index.md)
-
+# reached a cluster that had the old one. The API appends a version only when
+# something differs, so a redeploy grows no history.
 if [ -n "$existing" ]; then
   id="$existing"
-  # A version is only worth appending when the prose actually differs.
-  # Otherwise every redeploy grows the history by one identical entry, and the
-  # history stops being worth reading.
-  current=$(curl -sf "$api/v1/skills/$id/versions" -H "$auth" | jq -r '.[0].body // ""')
-  if [ "$current" = "$manifest" ]; then
-    say "already installed, and unchanged"
-  else
-    curl -sf "$api/v1/skills/$id/versions" -H "$auth" \
-      -H 'content-type: application/json' \
-      -d "$(jq -n --arg body "$manifest" \
-            '{body: $body, note: "installed by the component"}')" >/dev/null \
-      || { say "could not update the skill"; exit 1; }
-    say "updated skill $id"
-  fi
-else
-  created=$(curl -sf "$api/v1/skills" -H "$auth" \
+  published=$(call "$api/v1/skills/$id/versions" -H "$auth" \
     -H 'content-type: application/json' \
-    -d "$(jq -n --arg slug "$slug" --arg body "$manifest" --arg host "$host" \
+    -d "$(jq -n --arg body "$manifest" --arg host "$host" --argjson files "$files" \
+          '{body: $body, hosts: [$host], files: $files, note: "installed by the component"}')") \
+    || { say "could not update the skill"; exit 1; }
+  # The same version number as before means nothing changed: the API appends
+  # only when something differs.
+  say "skill $id is at v$(echo "$published" | jq -r .ordinal)"
+else
+  created=$(call "$api/v1/skills" -H "$auth" \
+    -H 'content-type: application/json' \
+    -d "$(jq -n --arg slug "$slug" --arg body "$manifest" --arg host "$host" --argjson files "$files" \
           '{slug: $slug, name: "Google Sheets",
             description: "Reading and writing cells in spreadsheets shared with a service account.",
-            body: $body, hosts: [$host]}')") \
+            body: $body, hosts: [$host], files: $files}')") \
     || { say "could not create the skill"; exit 1; }
 
   id=$(echo "$created" | jq -r .id)
@@ -113,30 +126,8 @@ fi
 # Declaring a host opens nothing. This is the second act: the workspace
 # allowing its agents to ask for it, which is an egress rule tagged with the
 # skill that wanted it.
-curl -sf -X POST "$api/v1/skills/$id/hosts/approve" -H "$auth" >/dev/null \
+call -X POST "$api/v1/skills/$id/hosts/approve" -H "$auth" >/dev/null \
   || { say "could not approve $host"; exit 1; }
 say "approved $host"
-
-# The detail files. Workspace scope, which is read-only to an agent -- the
-# right default for reference material it consults and must never rewrite.
-#
-# Reached through a session because that is where the files endpoint lives,
-# though the key a workspace-scoped path resolves to names no session. A
-# throwaway one, named for what it is.
-agent=$(curl -sf "$api/v1/agents" -H "$auth" | jq -r '.[0].id // empty')
-[ -n "$agent" ] || { say "no agent to open a session with"; exit 1; }
-session=$(curl -sf "$api/v1/agent-sessions" -H "$auth" \
-  -H 'content-type: application/json' \
-  -d "$(jq -n --arg a "$agent" '{agent_id: $a, title: "installing the Google Sheets skill"}')" \
-  | jq -r .id)
-[ -n "$session" ] && [ "$session" != "null" ] || { say "could not open a session"; exit 1; }
-
-for file in /skill/*.md; do
-  name=$(basename "$file")
-  curl -sf -X PUT "$api/v1/agent-sessions/$session/files/workspace/api/sheets/$name" \
-    -H "$auth" -H 'content-type: text/markdown' --data-binary "@$file" >/dev/null \
-    || { say "could not upload $name"; exit 1; }
-done
-say "uploaded $(ls /skill/*.md | wc -l | tr -d ' ') files"
 
 say "done"
