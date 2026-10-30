@@ -82,8 +82,8 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 - No `cargo audit` or `cargo deny` step; two generations of the RustCrypto
   crates are linked at once. Add the step and align the pins.
-- Images for production should be pinned by digest; everything first-party
-  and third-party floats today, which is fine locally and nowhere else.
+- A release's first-party digests are copied into the infrastructure
+  repository by hand; see the "Not yet" in deployment.md.
 - `tests/api.rs` is thirteen thousand lines in one module. Split by resource,
   keeping `tests/common`.
 - Tests that do not exist and should: a lease expiring during preparation; a

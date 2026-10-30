@@ -26,6 +26,7 @@ resources:
 #   images:
 #     - name: ghcr.io/idataconnect/outturn-api
 #       newTag: <full commit SHA, or a release version>
+#       digest: sha256:<what that tag was pushed as>
 #
 # and the same for -gateway, -runtime and -ui. A fork publishing its own sets
 # newName as well.
