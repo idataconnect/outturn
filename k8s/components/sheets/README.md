@@ -27,10 +27,8 @@ The agent then reaches that spreadsheet and no other, through the Sheets API
 alone. Edits show in the spreadsheet's version history under the service
 account's address.
 
-## Not yet gated
+## Approval
 
-The writes ask the agent to confirm with the person first, in prose. They
-carry no approval rule, because an approval binds top-level scalar fields and
-what matters in a Sheets write is the nested `values` array: a gate binding
-only the spreadsheet and range would let a second, different row through on
-the first one's yes. See docs/approvals.md, *binds*.
+Appending and updating need somebody's yes. The approval binds the
+spreadsheet, the range and the cells, so it covers exactly the write that was
+shown: a yes to one row is not a yes to the next.

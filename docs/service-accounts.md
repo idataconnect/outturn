@@ -4,7 +4,7 @@ How an agent comes to edit a file a workspace keeps in Google -- a
 spreadsheet, a document, a shared drive -- without anybody's personal grant
 and without the deployment registering anything with Google.
 
-Built but for the gated writes; *As built*, at the end, says where. It rests on [sealed-credentials.md](sealed-credentials.md)
+Built; *As built*, at the end, says where. It rests on [sealed-credentials.md](sealed-credentials.md)
 and [client-credentials.md](client-credentials.md), both built, and is the
 first integration of the kind [integrations.md](integrations.md) calls tier 2
 that needs no consent flow.
@@ -179,16 +179,13 @@ reading a range (`values.get`), appending rows (`values.append`) and updating
 cells (`values.update`), with `valueInputOption=USER_ENTERED` so a formula is a
 formula and a date is a date; and declares `sheets.googleapis.com`.
 
-The writes want approval frontmatter, so the agent reading figures off a photo
-cannot put them in the sheet until a person has seen them -- enforced by the
-gateway, rather than resting on the agent remembering to ask. That needs one
-thing approvals do not do yet. A grant binds top-level scalar fields
-([approvals.md](approvals.md), *binds*), and what
-makes a Sheets write the one somebody saw is its `values`, an array of arrays.
-A gate binding only the spreadsheet and range would let a second, different
-row through on the first one's yes, which is the hole `binds` exists to close.
-Until a grant can bind a nested value, the writes ask in prose and carry no
-gate.
+The writes carry approval frontmatter, so the agent reading figures off a
+photo cannot put them in the sheet until a person has seen them -- enforced by
+the gateway, rather than resting on the agent remembering to ask. Each binds the
+spreadsheet and range from the path and the `values` from the body, whole
+([approvals.md](approvals.md), *binds*), so a yes to one row is not a yes to the
+next. The water-bill case's "confirm with me first" is then an approval rather
+than a sentence in a prompt, and the quarter's row is one approval in the queue.
 
 The spreadsheet's id belongs to the agent, not the skill: in its instructions,
 or a note in its `agent/` scope. The Sheets scope cannot list files, which is
@@ -290,9 +287,9 @@ up at step 1, that is a finding about this design, not about them.
   (`ui/src/lib/credentials.ts`), with a scope field beside it, and a connected
   service account shows the address it signs in as.
 - `k8s/components/sheets`: the skill and the job installing it, with the
-  setup in its README.
+  setup in its README. Its writes are gated on their cells, which needed a
+  bound field to hold a structure (`egress::grant::structured`).
 
-Not built: approval gates on the writes, for the reason under *The skill*;
-and a skill declaring the scope it needs, so that a credential bound to less
-shows as unmet the way a missing host does. Today the scope is typed when the
-key is connected.
+Not built: a skill declaring the scope it needs, so that a credential bound to
+less shows as unmet the way a missing host does. Today the scope is typed when
+the key is connected.

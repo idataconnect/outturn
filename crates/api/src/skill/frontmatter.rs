@@ -1334,6 +1334,29 @@ mod tests {
         assert_eq!(rule.binds, vec!["amount_pence".to_string()]);
     }
 
+    /// The Sheets component's writes are gated on the cells they carry, which
+    /// is the declaration this file has to keep reading.
+    #[test]
+    fn the_sheets_writes_are_gated_on_their_cells() {
+        for (file, method) in [
+            (
+                include_str!("../../../../k8s/components/sheets/skill/append_values.md"),
+                "POST",
+            ),
+            (
+                include_str!("../../../../k8s/components/sheets/skill/update_values.md"),
+                "PUT",
+            ),
+        ] {
+            let rule = parse(file).unwrap().approval.expect("gated");
+            assert_eq!(
+                rule.matches,
+                format!("{method} /v4/spreadsheets/{{spreadsheet}}/values/{{range}}")
+            );
+            assert_eq!(rule.binds, ["spreadsheet", "range", "values"]);
+        }
+    }
+
     #[test]
     fn approval_as_a_scalar_is_refused() {
         // Otherwise it reads as a top-level key we do not know and is skipped,

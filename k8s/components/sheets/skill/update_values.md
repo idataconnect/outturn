@@ -1,11 +1,19 @@
+---
+approval:
+  requires: write
+  matches: PUT /v4/spreadsheets/{spreadsheet}/values/{range}
+  binds: [spreadsheet, range, values]
+---
+
 # update_values
 
 Overwrite the cells in one range. For correcting a value that is already
 there; to add a row, use `append_values`.
 
-**Show the person what will change — the old values and the new — and wait
-for their yes.** What is overwritten is gone except in the spreadsheet's own
-version history.
+**Somebody approves this before it happens, and sees the cells you send.**
+Read the range first and say in the conversation what it holds now, since the
+approval shows only the new values. Then call it once, as for
+`append_values`: the platform holds the turn and sends it on a yes.
 
 ## The call
 

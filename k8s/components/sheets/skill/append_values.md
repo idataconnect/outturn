@@ -1,11 +1,20 @@
+---
+approval:
+  requires: write
+  matches: POST /v4/spreadsheets/{spreadsheet}/values/{range}
+  binds: [spreadsheet, range, values]
+---
+
 # append_values
 
 Add rows after the last row of the table a range is in. The usual way to
 record something new without touching what is there.
 
-**Show the person the exact rows first and wait for their yes.** A write lands
-in a document other people are reading, and it is not this conversation's to
-undo.
+**Somebody approves this before it happens, and sees the rows you send.** Do
+not ask in the conversation and do not wait there: call it once. The platform
+holds the turn, shows whoever may answer the spreadsheet, the range and every
+cell, and once they say yes it sends the call itself and you are given what
+came back. Do not send it again. Say what you are adding, then stop.
 
 ## The call
 
