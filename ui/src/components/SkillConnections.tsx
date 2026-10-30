@@ -7,6 +7,7 @@ import {
   disconnect,
   listCredentials,
   listRules,
+  readServiceAccount,
   replaceKey,
   testCredential,
   type Credential,
@@ -174,6 +175,11 @@ export function Connection({
   // a form offering `authorization`.
   const [header, setHeader] = useState(rule.header ?? rule.suggested_header ?? 'authorization')
   const [secret, setSecret] = useState('')
+  // A service account's key file pasted as the value is read as one: its key
+  // is sealed, and who it signs in as and the scope are bound beside it.
+  const serviceAccount = readServiceAccount(secret)
+  const [scope, setScope] = useState(credential?.binding.scope ?? '')
+  const signsInAs = credential?.binding.kind === 'service_account' ? credential.binding.account : undefined
   const [path, setPath] = useState(testPath ?? '')
   const [busy, setBusy] = useState(false)
   const [tested, setTested] = useState<Tested | null>(null)
@@ -193,12 +199,13 @@ export function Connection({
 
   const save = () =>
     run(async () => {
-      const value = secret
+      const value = serviceAccount ? { serviceAccount, scope: scope.trim() } : secret
+      const sentHeader = serviceAccount ? 'authorization' : header
       setSecret('')
       if (rule.credential) {
-        await replaceKey(rule.credential, workspaceId, rule.host, header, value)
+        await replaceKey(rule.credential, workspaceId, rule.host, sentHeader, value)
       } else {
-        await connect(rule, workspaceId, name, header, value)
+        await connect(rule, workspaceId, name, sentHeader, value)
       }
       setEditing(false)
       setTested(null)
@@ -229,7 +236,15 @@ export function Connection({
         {connected ? (
           <span className="ml-auto flex flex-wrap items-center gap-1 text-xs text-green-700 dark:text-green-400">
             <KeyRound size={12} aria-hidden />
-            Connected, in <span className="font-mono">{rule.header}</span>
+            {signsInAs ? (
+              <>
+                Connected as <span className="break-all font-mono">{signsInAs}</span>
+              </>
+            ) : (
+              <>
+                Connected, in <span className="font-mono">{rule.header}</span>
+              </>
+            )}
             {credential &&
               credential.generation > 1 &&
               ` (key replaced ${credential.generation - 1}×)`}
@@ -247,6 +262,7 @@ export function Connection({
             void save()
           }}
         >
+          {!serviceAccount && (
           <label className="block text-xs text-surface-700 dark:text-surface-300">
             Header
             <input
@@ -255,6 +271,7 @@ export function Connection({
               className="mt-1 w-full rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 px-2 py-1 font-mono text-xs"
             />
           </label>
+          )}
           <label className="block text-xs text-surface-700 dark:text-surface-300">
             Value
             <input
@@ -265,6 +282,13 @@ export function Connection({
               placeholder={header === 'authorization' ? 'Bearer …' : ''}
               className="mt-1 w-full rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 px-2 py-1 font-mono text-xs"
             />
+            {serviceAccount ? (
+              <span className="mt-1 block text-surface-500 dark:text-surface-400">
+                A service account key for{' '}
+                <span className="break-all font-mono">{serviceAccount.account}</span>. Agents
+                reach the files shared with that address.
+              </span>
+            ) : (
             <span className="mt-1 block text-surface-500 dark:text-surface-400">
               The whole header value, exactly as the API wants it.
               {header === 'authorization' && (
@@ -273,13 +297,32 @@ export function Connection({
                   For most APIs that is <span className="font-mono">Bearer</span> followed by the
                   key.
                 </>
-              )}
+              )}{' '}
+              A service account's key file is accepted as it is.
             </span>
+            )}
           </label>
+          {serviceAccount && (
+            <label className="block text-xs text-surface-700 dark:text-surface-300">
+              Scope
+              <input
+                value={scope}
+                onChange={(e) => setScope(e.target.value)}
+                placeholder="https://www.googleapis.com/auth/spreadsheets"
+                className="mt-1 w-full rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 px-2 py-1 font-mono text-xs"
+              />
+              <span className="mt-1 block text-surface-500 dark:text-surface-400">
+                What tokens from this key may do. Fixed with the key; a different scope means
+                connecting it again.
+              </span>
+            </label>
+          )}
           <div className="flex gap-2">
             <button
               type="submit"
-              disabled={busy || secret === '' || header === ''}
+              disabled={
+                busy || secret === '' || (serviceAccount ? scope.trim() === '' : header === '')
+              }
               className="rounded-md bg-brand-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
             >
               {connected ? 'Replace key' : 'Connect'}

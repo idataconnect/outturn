@@ -36,6 +36,18 @@ export type Binding =
       header: string
     }
   | {
+      /** A service account's private key: exchanged by the gateway for a
+       *  token as `account`, for `scope` alone, and never sent itself. */
+      credential: string
+      kind: 'service_account'
+      workspaces: string[]
+      hosts: string[]
+      header: 'authorization'
+      token_url: string
+      account: string
+      scope: string
+    }
+  | {
       /** A provider account's key: no header, since the account's protocol
        *  decides where it goes, and never attachable to an agent's request. */
       credential: string

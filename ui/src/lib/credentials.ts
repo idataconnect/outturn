@@ -17,7 +17,15 @@ export type EgressRule = {
 export type Credential = {
   id: string
   name: string
-  binding: { hosts?: string[]; header?: string; workspaces?: string[] }
+  binding: {
+    kind?: string
+    hosts?: string[]
+    header?: string
+    workspaces?: string[]
+    /** For a service account: who it signs in as, and for what. */
+    account?: string
+    scope?: string
+  }
   key_id: string
   generation: number
   created_at: string
@@ -58,23 +66,61 @@ export function uuidv7(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
+/** A service account's key file, as Google issues it, split into what is
+ *  secret and what is bound. See docs/service-accounts.md. */
+export type ServiceAccountKey = { account: string; tokenUrl: string; privateKey: string }
+
+/** Reads a pasted value as a service account key file, or null if it is not
+ *  one -- in which case it is an ordinary header value. */
+export function readServiceAccount(text: string): ServiceAccountKey | null {
+  let file: unknown
+  try {
+    file = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (typeof file !== 'object' || file === null) return null
+  const f = file as Record<string, unknown>
+  if (
+    f.type !== 'service_account' ||
+    typeof f.client_email !== 'string' ||
+    typeof f.private_key !== 'string' ||
+    typeof f.token_uri !== 'string'
+  ) {
+    return null
+  }
+  return { account: f.client_email, tokenUrl: f.token_uri, privateKey: f.private_key }
+}
+
+/** What is being connected: a header value, or a service account's key and
+ *  the scope it is exchanged for. */
+export type Secret = string | { serviceAccount: ServiceAccountKey; scope: string }
+
 /** Seals `secret` in this browser for one host and header, for `workspace`. */
 async function sealFor(
   id: string,
   workspace: string,
   host: string,
   header: string,
-  secret: string,
+  secret: Secret,
 ): Promise<{ binding: string; sealed: string; key_id: string }> {
   const key = await api<{ public_key: string; key_id: string }>('/v1/credentials/seal-key')
-  const binding = bindingBytes({
-    credential: id,
-    kind: 'static',
-    workspaces: [workspace],
-    hosts: [host],
-    header,
-  })
-  const sealed = await seal(key.public_key, binding, secret)
+  const binding = bindingBytes(
+    typeof secret === 'string'
+      ? { credential: id, kind: 'static', workspaces: [workspace], hosts: [host], header }
+      : {
+          credential: id,
+          kind: 'service_account',
+          workspaces: [workspace],
+          hosts: [host],
+          header: 'authorization',
+          token_url: secret.serviceAccount.tokenUrl,
+          account: secret.serviceAccount.account,
+          scope: secret.scope,
+        },
+  )
+  const plaintext = typeof secret === 'string' ? secret : secret.serviceAccount.privateKey
+  const sealed = await seal(key.public_key, binding, plaintext)
   return { binding: toBase64(binding), sealed: toBase64(sealed), key_id: key.key_id }
 }
 
@@ -87,7 +133,7 @@ export async function connect(
   workspace: string,
   name: string,
   header: string,
-  secret: string,
+  secret: Secret,
 ): Promise<EgressRule> {
   const id = uuidv7()
   const sealed = await sealFor(id, workspace, rule.host, header, secret)
@@ -107,7 +153,7 @@ export async function replaceKey(
   workspace: string,
   host: string,
   header: string,
-  secret: string,
+  secret: Secret,
 ): Promise<Credential> {
   const sealed = await sealFor(credential, workspace, host, header, secret)
   return api<Credential>(`/v1/credentials/${credential}`, {
