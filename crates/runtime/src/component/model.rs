@@ -238,6 +238,12 @@ impl AgentHost {
             }) as ProgressSink
         });
 
+        // The request, as a value and as the bytes sent, held for the call;
+        // the reply is charged as it arrives, by `stream_completion`.
+        let _request = self.charge(
+            (body.to_string().len() as u64).saturating_mul(2),
+            "call the model",
+        )?;
         let token = self.current_token().await;
         let (completion, arrivals, served) = stream_completion(
             &self.http,
@@ -249,6 +255,7 @@ impl AgentHost {
             progress.as_ref(),
             self.reasoning.as_ref(),
             self.writing.as_ref(),
+            self.admission.as_deref(),
         )
         .await
         .map_err(|e| {
@@ -322,6 +329,12 @@ impl AgentHost {
         use outturn_core::vision;
 
         let (storage, resolved) = self.object_at(&path)?;
+        // The image, its base64 in the request, and the request as sent: about
+        // three and a third times the image, held until the answer is back.
+        let _charge = self.charge(
+            (vision::MAX_IMAGE_BYTES as u64).saturating_mul(10) / 3,
+            "look at an image",
+        )?;
 
         let bytes = storage
             .read(&resolved, 0, vision::MAX_IMAGE_BYTES as u32)
@@ -374,6 +387,7 @@ impl AgentHost {
             None,
             None,
             None,
+            self.admission.as_deref(),
         )
         .await
         // Said plainly rather than dressed up: a deployment with no vision

@@ -59,13 +59,11 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 ### Shape of the code
 
-- The runtime's host calls that hold memory for the guest without charging
-  admission, found when the agent host was split by capability into
-  `crates/runtime/src/component/`: reads of up
-  to 4 MiB (`read_object`, `read_bytes`, a reader's reads), `describe_image`
-  and its base64 copy, `chat`'s request and buffered reply, `fetch`'s
-  response, `list_objects`'s listing, and a writer chunk's host copy. Each
-  wants a `charge` sized to what it holds, as `write_object` has.
+- What an agent's `fetch` gets back is unbounded: the gateway relays the
+  whole response, and the runtime holds it before the guest sees any of it.
+  Wants a cap at the gateway, said to the model when it cuts, and then a
+  charge on the runtime's side sized to it. A listing (`list_objects`) is
+  unbounded and uncharged too, for the same reason.
 - The model stream is parsed in the runtime's `component/stream.rs` rather
   than in core: it reads newline-delimited JSON the gateway already unwrapped
   into the interface's own types. Moving it means first making it an event
