@@ -286,7 +286,7 @@ async fn vet_and_send(
                 StatusCode::BAD_REQUEST,
                 format!(
                     "this request is missing `{field}`, which the approval for \"{}\" \
-                     is keyed on. Send it as a top-level string or number and try again.",
+                     is keyed on. Send it as a top-level field and try again.",
                     gate.requires,
                 ),
             ));

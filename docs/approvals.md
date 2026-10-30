@@ -180,10 +180,26 @@ refused at publish -- the same treatment `matches` gets, and for the same reason
 a rule half-applied is an operation the file says is gated and the platform does
 not gate.
 
-Only top-level fields, and only scalars. A path into a nested object is a small
-expression language, and the thing a security decision is keyed on is not where
-to grow one. An operation whose significant values are nested wants flattening in
-the API it documents rather than a query syntax here.
+Only top-level fields. A path into a nested object is a small expression
+language, and the thing a security decision is keyed on is not where to grow
+one.
+
+A top-level field may hold an array or an object, and is then bound **whole**.
+Scalars only was the rule until the first API whose distinctive value is a
+structure: a spreadsheet write is its rows, `{"values": [["2026 Q3", "1611"]]}`,
+and a gate that could bind only the spreadsheet and the range would let a
+second, different row through on the first one's yes -- the hole `binds` exists
+to close. Flattening was the advice, and it is advice for an API one writes, not
+one somebody else publishes. So the value is digested as its compact JSON with
+its keys sorted (`egress::grant::structured`), under a kind tag of its own:
+spacing and key order are not a different value, anything else is, and a
+structure never matches a grant taken out on a scalar or on a string spelling
+the same JSON. The prompt shows rows of plain cells as a table and anything else
+as JSON, so what is approved is what is seen.
+
+What stays scalar is what a policy compares: a field in `numbers`, an `amount`
+and an `identified_by` are read as one value, and a structure there fails the
+test and is asked about.
 
 A field a request does not carry is part of the digest as absent, distinctly from
 carrying the empty string. Otherwise omitting a field would be a way to collide

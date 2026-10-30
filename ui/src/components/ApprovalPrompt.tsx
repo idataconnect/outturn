@@ -54,6 +54,18 @@ function shown(value: unknown): string {
   return JSON.stringify(value)
 }
 
+/** Rows of plain cells -- a spreadsheet write's `values` -- or null for any
+ *  other shape, which is shown as JSON. A table, because a row is checked
+ *  cell by cell and a line of JSON makes that the approver's job. */
+function rows(value: unknown): (string | number | boolean | null)[][] | null {
+  if (!Array.isArray(value) || value.length === 0) return null
+  const plain = (c: unknown) =>
+    c === null || ['string', 'number', 'boolean'].includes(typeof c)
+  return value.every((r) => Array.isArray(r) && r.every(plain))
+    ? (value as (string | number | boolean | null)[][])
+    : null
+}
+
 /**
  * What the prompt is asking. A follow-up's request was already approved, so it
  * says what became of it: a yes there sends it again, and for one whose outcome
@@ -209,7 +221,26 @@ export default function ApprovalPrompt({
                         : 'text-surface-900 dark:text-surface-100'
                     }`}
                   >
-                    {shown(value)}
+                    {rows(value) ? (
+                      <table className="border-collapse">
+                        <tbody>
+                          {rows(value)!.map((row, i) => (
+                            <tr key={i}>
+                              {row.map((cell, j) => (
+                                <td
+                                  key={j}
+                                  className="border border-surface-300 dark:border-surface-700 px-1.5 py-0.5"
+                                >
+                                  {cell === null ? '' : String(cell)}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      shown(value)
+                    )}
                     {approval.money?.field === field && (
                       <span className="font-sans text-surface-600 dark:text-surface-400">
                         {' '}

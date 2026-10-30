@@ -145,6 +145,21 @@ describe('what an approval is for', () => {
     expect(screen.getByText('78000')).toBeTruthy()
   })
 
+  it('shows rows being written cell by cell, and anything else as JSON', () => {
+    show({
+      item_id: 'item-1',
+      requires: 'write',
+      reason: 'a spreadsheet write',
+      binds: [
+        { field: 'values', value: [['2026 Q3', '1611', '=B3-B2']] },
+        { field: 'options', value: { insert: 'rows' } },
+      ],
+    })
+    expect(screen.getByRole('cell', { name: '1611' })).toBeTruthy()
+    expect(screen.getByRole('cell', { name: '=B3-B2' })).toBeTruthy()
+    expect(screen.getByText('{"insert":"rows"}')).toBeTruthy()
+  })
+
   it('says a field the request should carry is missing', () => {
     show({
       item_id: 'item-1',

@@ -589,8 +589,9 @@ fn same_call(
 }
 
 /// A bound value as what it says: a number and a string spelling one are the
-/// same number, and so for a flag. `None` for what binds nothing -- absent,
-/// null, or not a scalar -- which matches nothing.
+/// same number, and so for a flag. An array or an object is itself, whole, as
+/// `grant::digest` binds it. `None` for what binds nothing -- absent or null --
+/// which matches nothing.
 fn canonical(value: Option<&serde_json::Value>) -> Option<String> {
     let number = |n: &serde_json::Number| match n.as_f64() {
         // Whole numbers by their integer spelling, so 29000 and 29000.0 agree.
@@ -609,7 +610,11 @@ fn canonical(value: Option<&serde_json::Value>) -> Option<String> {
                 _ => Some(format!("s{s}")),
             }
         }
-        _ => None,
+        serde_json::Value::Null => None,
+        structured => Some(format!(
+            "j{}",
+            outturn_core::egress::grant::structured(structured)
+        )),
     }
 }
 
