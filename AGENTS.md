@@ -285,7 +285,8 @@ are near before changing it.
   [integrations.md](docs/integrations.md),
   [sealed-credentials.md](docs/sealed-credentials.md),
   [credential-bindings.md](docs/credential-bindings.md),
-  [client-credentials.md](docs/client-credentials.md).
+  [client-credentials.md](docs/client-credentials.md),
+  [service-accounts.md](docs/service-accounts.md).
 - Skills: [skill-packages.md](docs/skill-packages.md),
   [openapi-wizard.md](docs/openapi-wizard.md),
   [skill-operations.md](docs/skill-operations.md),

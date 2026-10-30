@@ -38,6 +38,10 @@ committed and verified, and new work goes in where it belongs, not at the end.
 5. **A first real call to Amazon Bedrock**, by whoever first has an AWS
    account: everything in [bedrock.md](bedrock.md) is tried against
    stand-ins only, and the two-doors recipe says so until then.
+6. **Service accounts** ([service-accounts.md](service-accounts.md)): a
+   workspace's own Google service account key, sealed, exchanged by the
+   gateway for a token whose scope the binding fixes, and a Sheets skill whose
+   writes need approving. Dogfooded on a spreadsheet of water bills.
 
 ## From the review
 
@@ -206,6 +210,17 @@ bindings were built for: nobody who can write the database can change where a
 secret goes. Built for static header credentials, with a page to connect,
 test, replace and revoke them; client-credentials pairs still name variables.
 The environment path stays until no rule uses it.
+
+### Service accounts
+
+[service-accounts.md](service-accounts.md).
+
+A workspace's own service account key as a sealed credential of its own kind,
+bound to its account, token URL and scope, and exchanged by the gateway under
+RFC 7523. Reaches what people shared with the account, through the APIs the
+scope names, with nothing registered with Google by the deployment. Needs
+sealed credentials, which are built; the exchange reuses the client-credentials
+transport and cache. Unbuilt.
 
 ### Derived skills
 

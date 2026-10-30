@@ -140,6 +140,13 @@ both -- DocuSign supports authorization code as well as JWT bearer -- the
 per-workspace grant is the one taken, and the operational cost of refresh
 tokens is the price of the boundary holding.
 
+The grant itself is not what is refused. A service account the workspace
+created in its own project, with a key only that workspace holds, signs the
+same kind of assertion and reaches only what was shared with it: one
+credential per workspace, kept.
+[service-accounts.md](service-accounts.md) is that case, and the way a
+workspace reaches its own files in Google without a consent flow.
+
 The exception is a genuine platform integration: something the platform itself
 uses, never on a tenant's behalf and never reachable from a workspace's agent.
 There a single credential spans nothing, because there is nothing to span. The
