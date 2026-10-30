@@ -235,7 +235,7 @@ describe('a history that cannot be loaded', () => {
   // them only when the new history arrives, so until then -- and for as long
   // as it keeps failing -- the last conversation is drawn under the new one.
   // Skipped for that bug; unskip with the fix.
-  it.skip('does not go on drawing the conversation that was open before', async () => {
+  it('does not go on drawing the conversation that was open before', async () => {
     vi.mocked(loadHistory).mockImplementation(async (session: string) => {
       if (session === 's1') return { messages: [prompt, reply], cursor: 'c1' } as never
       throw new NetworkError('Could not reach the API.')
