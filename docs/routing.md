@@ -114,8 +114,11 @@ can.
 The editor infers the kind so the obvious cases need no labeling. Built so
 far: the chain editor marks a link to a different family, and the gateway
 records a change of model against the reply it answered, shown under it as
-"Agent model changed" ([models.md](models.md#requests)); a workspace opting in
-waits on a workspace having chains of its own.
+"Agent model changed" ([models.md](models.md#requests)). The same model
+through another door, by the catalog's canonical id, is not recorded as a
+change, and a chain whose links are all one model is marked same model; the
+Bedrock recipe is one. A workspace opting in waits on a workspace having
+chains of its own.
 
 ## The surcharge fallback
 

@@ -1,6 +1,6 @@
 # Compaction
 
-Built: `api::chat::summarize`, `worker::summarized` and `worker::store_summary`,
+Built: `api::chat::summarize`, `worker::compaction::summarized` and `worker::compaction::store_summary`,
 under the `context_budget` setting, with the trim below it as the floor. The
 budget is per model and taken for the chain, the smallest of its models';
 unset, it is 400,000 bytes or two bytes a token of the model's window where
@@ -166,7 +166,7 @@ a turn -- a summary written while a turn is still adding to the conversation
 would summarize something already out of date. It is queued at realtime
 priority, since somebody pressed it and is watching.
 
-The job (`worker::compact`) summarizes what the ordinary rule would summarize,
+The job (`worker::compaction::compact`) summarizes what the ordinary rule would summarize,
 whatever the budget, and composes the system prompt again from the agent and
 its skills as they stand, with the summary written against that new prompt. A
 conversation too short to summarize skips the summary as it always would, and

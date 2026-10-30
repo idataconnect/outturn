@@ -161,10 +161,10 @@ to be safe against its own holder.
 There are two ways the gateway reaches a host, and only one of them is vetted.
 
 An agent's request goes through `resolve_and_vet` and is refused if the address
-is private. A model call does not: `Route::base_url` is used as given, so
-`http://outturn-mockllm:8083` and an ollama at `172.18.0.1:11434` are reached
-without anything asking whether they should be. That is how local development
-works today.
+is private. A model call is vetted too, in `route_turned_away`
+(`crates/gateway/src/router.rs`): a host on the operator's list is reached, and
+a literal private address that is not on it is refused. A name is not resolved
+there; see *Not yet*.
 
 So the same list answers both. A host an operator has named is reachable,
 whether an agent asked for it or a route pointed at it; anything private that is
@@ -238,8 +238,8 @@ every integration begins with a certificate.
   address is judged on the route path: resolving there was built and reverted,
   because a name that does not resolve costs the resolver's full timeout --
   four seconds, measured -- and it runs per route per request, so one stale
-  route would stall every turn in the deployment. Narrow today, since routes
-  have no write API and are written by whoever runs the deployment. The thing
+  route would stall every turn in the deployment. Narrow today, since only
+  the operator writes routes, through the Models page; no workspace can. The thing
   to do when routes become workspace-writable is give the gateway its siblings'
   names, not look them up.
 - Where the list lives. Configuration on the gateway is the smallest thing that

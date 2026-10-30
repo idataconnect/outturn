@@ -288,8 +288,8 @@ and is shown as set up automatically.
   routing does not yet support workspace-held keys or record fallback kind. The
   columns exist so the bill does not have to be re-derived when it does; see
   [routing.md](routing.md).
-- Nothing spends on the platform workspace's behalf yet. The row exists for when
-  something does.
+- The Models page's test call spends a few tokens in the platform workspace
+  and is not yet written to the ledger.
 - Retention. The ledger grows with every call and is never pruned. A billing
   obligation decides how long rows must be kept, and that is a policy the
   operator sets, not a default the platform should guess.

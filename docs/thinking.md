@@ -1,22 +1,25 @@
 # Thinking
 
-How a model's reasoning is asked for, shown, kept and given back. Designed;
-nothing here is built. Anthropic is the provider it is mostly about, because it
+How a model's reasoning is asked for, shown, kept and given back. Built,
+apart from forced tool choice and the Gemini 2.5 budget; see *Order of work*.
+Anthropic is the provider it is mostly about, because it
 is the one whose reasoning has to make a round trip: the others either stream
 it as text to show or keep it to themselves.
 
-## What goes wrong today
+## What went wrong
 
-An Anthropic route asks for nothing about thinking, and gets it anyway. The
+An Anthropic route asked for nothing about thinking, and got it anyway. The
 current Claude models think adaptively when a request does not mention
-thinking, so every turn on Sonnet 5.5 has been reasoning, at the provider's
-default effort, inside a `max_tokens` of 4096 that the translation fills in
-because the field is required. Three things follow:
+thinking, so every turn on Sonnet 5.5 was reasoning, at the provider's
+default effort, inside a `max_tokens` of 4096 that the translation filled in
+because the field is required. Three things followed, all since fixed;
+`max_tokens` now comes from the model's output limit, with 4096 only for a
+model the catalog does not describe:
 
-- **The reasoning is invisible.** It streams as `thinking` blocks, which
-  `translate.rs` notes and drops. On these models their text would be empty
+- **The reasoning was invisible.** It streamed as `thinking` blocks, which
+  `translate.rs` noted and dropped. On these models their text would be empty
   in any case: what is returned is a summary, and only when asked for.
-- **A hard turn can be cut off before it answers.** `max_tokens` caps
+- **A hard turn could be cut off before it answered.** `max_tokens` caps
   everything the model writes, thinking included, and the model is not told
   where the cap is. It stops mid-thought with `stop_reason: "max_tokens"`.
 - **Its reasoning did not survive the tool loop.** Each round replayed the
@@ -94,7 +97,8 @@ resemble the last one than the first.
 
 `thinking_delta` becomes `reasoning` on the OpenAI-shaped chunk, where the
 runtime already looks for qwen's, so the reasoning panel needs nothing new.
-`redacted_thinking` shows as a placeholder rather than as nothing, since a
+`redacted_thinking` is meant to show as a placeholder rather than as nothing
+-- not built -- since a
 turn that thought and says so is more honest than one that seems not to have.
 
 ## Keeping
@@ -150,10 +154,11 @@ the edit is invalid. So:
 
 1. **Ask properly.** Built, apart from forced tool choice, which nothing sends
    yet: `display`, effort from `reasoning_effort`, `max_tokens` at the
-   model's limit, and sampling dropped where refused, from the model's name
-   until the catalog exists (`ClaudeTraits` in `translate.rs`).
+   model's limit, and sampling dropped where refused, from the model's
+   catalog facts and family defaults.
 2. **Show it.** Built: `thinking_delta` streams as `reasoning`. Redacted
-   thinking is still dropped rather than shown as a placeholder.
+   thinking is kept and given back with the reply, whole; it is not shown,
+   not even as a placeholder.
 3. **Stream one real tool-using turn.** Done: a summarized block streams as
    many small `thinking_delta` chunks, a few words each, followed by one
    `signature_delta`, and the notes between tool calls arrive as small

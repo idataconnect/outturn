@@ -236,11 +236,13 @@ the boundary.
 A model can vanish without warning -- retired, renamed, or redirected to its
 successor. The platform's answer is the chain, and four rules make it hold:
 
-1. **A refused model is a failure of that link, not of the request.** Today a
-   4xx stops the walk, on the reasoning that a request the provider refused
-   will be refused by the next one too (`is_client_error`, `router.rs`). That
-   holds for a malformed request and fails for a model that no longer exists,
-   which answers 404 or 400 and ended the turn. The gateway tells them apart --
+1. **A refused model is a failure of that link, not of the request.** A 4xx
+   stops the walk, on the reasoning that a request the provider refused will
+   be refused by the next one too (`is_client_error`,
+   `crates/gateway/src/llm/provider/mod.rs`) -- unless the error says the
+   model is gone (`is_model_gone`). That holds for a malformed request and
+   failed for a model that no longer exists, which answers 404 or 400 and
+   ended the turn. The gateway tells them apart --
    "model not found", "deprecated", "no longer available" in the provider's own
    error is the link's fault, and the walk continues -- and a model refused
    this way trips its link's breaker for a day, so later turns go straight to
