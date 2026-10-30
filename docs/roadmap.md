@@ -22,10 +22,7 @@ committed and verified, and new work goes in where it belongs, not at the end.
    ten fixes, the retention sweeps, the indexes and the migration lock, name uniqueness, the prompt
    and sandbox boundaries with the storage quota, and the gateway's findings are in; the rest goes in
    the order given there.
-2. **Every document checked against the code.** An audit found docs that
-   no longer match what is built. Each file in `docs/`, the README and
-   AGENTS.md read against the source, and corrected or cut where it is wrong.
-3. **Text an operator can change, in any language.** Designed before built.
+2. **Text an operator can change, in any language.** Designed before built.
    Every user-facing block of text -- UI strings, refusals, the platform
    preamble, notices such as being over a storage quota -- named by key
    with a shipped default, overridable per deployment, and translated per
@@ -33,9 +30,9 @@ committed and verified, and new work goes in where it belongs, not at the end.
    without a build; dropping a new block into code is one call with a key
    and a default. When a block's source text changes, its translations are
    marked stale and an agent drafts new ones for a person to accept.
-4. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
+3. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
-5. **A first real call to Amazon Bedrock**, by whoever first has an AWS
+4. **A first real call to Amazon Bedrock**, by whoever first has an AWS
    account: everything in [bedrock.md](bedrock.md) is tried against
    stand-ins only, and the two-doors recipe says so until then.
 
