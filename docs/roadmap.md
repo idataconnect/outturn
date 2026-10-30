@@ -291,7 +291,7 @@ Stopping is built and suspension is not, in the precise sense that matters:
 **nothing can take a suspended hold.** Both endpoints hardcode
 `Strength::Stopped` (`crates/api/src/router.rs`), so `Strength::Suspended` appears
 only in the enum, its parser, the verdict mapping and unit tests. The
-`Verdict::Suspended` arm in `worker::inhibited` is reachable only by a row
+`Verdict::Suspended` arm in `worker::turn::inhibited` is reachable only by a row
 written straight to the database.
 
 What that arm does when reached is refuse the turn without latching: no

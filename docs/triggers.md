@@ -41,7 +41,7 @@ happening". A schedule somebody created at 3am on a Sunday is still theirs at
 **The sender** is who is waiting for the reply, and for a triggered turn there
 is nobody: `user_id` stays null. That is what the usage ledger already expects,
 and it is what keeps a triggered turn from clearing a stopped session's latch
--- `worker::inhibited` requires "a prompt carrying a real `user_id`", precisely
+-- `worker::turn::inhibited` requires "a prompt carrying a real `user_id`", precisely
 so an agent cannot restart itself.
 
 Conflating them would break one or the other. Putting the owner in `user_id`

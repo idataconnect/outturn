@@ -374,7 +374,7 @@ every other part of the loop looking correct.
 So the guest is never asked to make it. The refused request is held whole,
 and once somebody says yes the platform sends it, from the next turn's runtime,
 before the guest runs -- with the claim, the key and the settle every declared
-write gets -- and `worker::answered` puts the answer where the refusal was. See
+write gets -- and `worker::projection::answered` puts the answer where the refusal was. See
 [approvals.md](approvals.md), *The approval carries the call*. Only the held
 request is sent after approval: a call the guest makes again is refused and
 asked about again, because the grant that let the held one out travels in a
@@ -391,7 +391,7 @@ it reports leaves it `attempted` too, rather than looking unsent to the turn's
 retry -- which would otherwise send an undeclared `fetch_url` twice.
 
 An approval raised before requests were held still takes the old path:
-`worker::answered` retracts the sentence on the resuming turn, replacing it with
+`worker::projection::answered` retracts the sentence on the resuming turn, replacing it with
 "It has since been approved, so make this call now." **That retraction is only
 safe because the gate refuses before dispatch.** The call provably never went
 out, so telling the agent to make it is telling it to do something once, not

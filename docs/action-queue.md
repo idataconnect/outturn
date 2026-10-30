@@ -36,7 +36,7 @@ here changes that. This document is the queue.
 > released when somebody answers it. It is not a tool result.
 
 So a pending human-in-the-loop request is an `inhibitors` row. It is what gates
-the work, `worker::inhibited` already consults it at every checkpoint, and
+the work, `worker::turn::inhibited` already consults it at every checkpoint, and
 `release` is already how it stops being pending.
 
 The queue does not restate that. Storing a `pending`/`resolved` column beside a

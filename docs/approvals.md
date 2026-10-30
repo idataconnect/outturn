@@ -422,7 +422,7 @@ prompt stops offering it.
 - [idempotency.md](idempotency.md), *What approvals already assume*: still
   true that the gate refuses before dispatch, and now also that only the held
   request is sent after approval. The retraction it warns about goes away.
-- `worker::answered` stops rewriting "do not retry" into "make this call
+- `worker::projection::answered` stops rewriting "do not retry" into "make this call
   now"; it substitutes the response.
 - The guest needs nothing new. It sees a tool result, as for any call.
 
@@ -452,7 +452,7 @@ the design above, and why:
   refusal; the digest keeps telling the two apart, since a grant is keyed on
   it, and finding a refusal grants nothing. Each held request answers one
   refusal. The runtime puts the answer in the conversation it was handed, and
-  `worker::answered` puts the same sentence (`egress::held::result_text`) there
+  `worker::projection::answered` puts the same sentence (`egress::held::result_text`) there
   on every later turn. Where no refusal is found -- trimmed away, or not
   recognized -- both say it in a note naming the request
   (`egress::held::unmatched_note`): the runtime before the turn's prompt, and
