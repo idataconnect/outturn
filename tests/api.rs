@@ -120,9 +120,9 @@ async fn harness_with(
     // One seed, two minters: the app's, and one the test uses to issue the
     // platform's own credentials the way the platform does.
     let seed = {
-        use rand::RngCore;
+        use rand::Rng;
         let mut seed = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut seed);
+        rand::rng().fill_bytes(&mut seed);
         seed
     };
     let minter = TokenMinter::new(&seed).expect("minter");
@@ -450,7 +450,7 @@ fn operator(email: &str, slug: &str) -> outturn::api::seed::Operator {
 }
 
 fn sign(secret: &str, body: &str, at: i64) -> (String, String) {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
     let ts = at.to_string();
     let mut mac = <Hmac<Sha256>>::new_from_slice(secret.as_bytes()).expect("key");

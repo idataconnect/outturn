@@ -61,9 +61,9 @@ fn decorate(trigger: Trigger) -> WithUrl {
 /// secret is -- so the secret must be long enough that it never becomes the
 /// weak half of a scheme that exists to be strong.
 fn unguessable(bytes: usize) -> String {
-    use rand::RngCore;
+    use rand::Rng;
     let mut raw = vec![0u8; bytes];
-    rand::thread_rng().fill_bytes(&mut raw);
+    rand::rng().fill_bytes(&mut raw);
     raw.iter().map(|b| format!("{b:02x}")).collect()
 }
 

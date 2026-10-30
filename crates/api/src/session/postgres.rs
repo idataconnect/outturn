@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rand::RngCore;
+use rand::Rng;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
@@ -25,7 +25,7 @@ fn internal(e: sqlx::Error) -> SessionError {
 /// 256 bits of randomness, urlsafe-base64 encoded.
 fn generate_token() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 

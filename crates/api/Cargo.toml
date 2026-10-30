@@ -4,6 +4,7 @@ description = "The outturn HTTP API, auth, transcripts, and the job queue worker
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [lib]
 # See the root manifest: rustdoc cannot resolve the component bindings, and

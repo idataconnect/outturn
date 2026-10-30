@@ -4,6 +4,7 @@ description = "What every outturn tier shares: storage, the queue, tokens, egres
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [lib]
 # See the root manifest: rustdoc cannot resolve the component bindings, and
