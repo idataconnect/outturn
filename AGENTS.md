@@ -76,6 +76,8 @@ the constant it replaces. Which model answers is not among them: a model in
 the environment is one nobody chose, answering every turn of a deployment
 that forgot to choose. Models are configured on Platform → Models, which
 offers a recipe to an operator signing in to a deployment that has none.
+`OUTTURN_DEFAULT_MODEL`, which once chose one, is no longer read; the API logs
+a warning when it is set.
 
 | Variable | Tier | Bounds |
 |---|---|---|
@@ -84,7 +86,8 @@ offers a recipe to an operator signing in to a deployment that has none.
 | `OUTTURN_API_URL` | runtime | Where a runtime asks for work |
 | `OUTTURN_PDF_RENDERER_URL` | runtime | The PDF renderer, where `--with pdf-renderer` deployed one. Unset, agents are told PDFs are not available |
 | `OUTTURN_GATEWAY_URL` | api, runtime | Where the gateway is. Unset, the API names no sessions, fetches no catalog and makes no test call |
-| `OUTTURN_INTERNAL_HOSTS` | gateway | Hosts inside the network a provider account or egress rule may still reach -- an in-cluster model, say. A credential may also travel to them over plain http, unencrypted; see [egress.md](docs/egress.md) |
+| `OUTTURN_CREDENTIAL_BINDINGS` | api, gateway | Which workspaces and hosts each `OUTTURN_EGRESS_` variable may serve. Unset, nothing is bound; see [credential-bindings.md](docs/credential-bindings.md) |
+| `OUTTURN_INTERNAL_HOSTS` | api, gateway | Hosts inside the network a provider account or egress rule may still reach -- an in-cluster model, say. A credential may also travel to them over plain http, unencrypted; see [egress.md](docs/egress.md) |
 | `OUTTURN_SESSION_FILE_TTL_DAYS` | api | Days a session may sit idle before its scratch files are swept from object storage. Default 30 |
 | `OUTTURN_CORS_ORIGINS` | api | Comma-separated origins allowed to call with credentials. Default `http://localhost:3000`, the Vite dev server |
 | `OUTTURN_BRAND_NAME` | api, ui | What the product calls itself: in the platform preamble of every system prompt, and in the UI, whose container writes it into `/config.json`. Default `outturn`; under `npm run dev` it is `VITE_BRAND_NAME` |
@@ -92,13 +95,16 @@ offers a recipe to an operator signing in to a deployment that has none.
 | `OUTTURN_BRAND_TAGLINE` | ui | A line under the name on the login page. Unset, none |
 | `OUTTURN_THEME` | ui | A shipped theme by name (`hollowbrook`), or a same-origin `/brand/<file>.css`. Unset, the theme the build compiled in |
 | `OUTTURN_DOCS_URL` | ui | Where the help buttons beside settings link to: an http(s) URL, or `off`. Unset, the published documentation; under `npm run dev` it is `VITE_DOCS_URL` |
-| `OUTTURN_API_UPSTREAM` | ui | Where the UI container carries `/v1`, as `host:port`. Default `outturn-api:8080`
+| `OUTTURN_API_UPSTREAM` | ui | Where the UI container carries `/v1`, as `host:port`. Default `outturn-api:8080` |
 | `OUTTURN_HEIC_URL` | api | The HEIC converter, where `--with heic` deployed one. Unset, a HEIC photo is refused at upload; see [heic.md](docs/heic.md) |
 | `OUTTURN_TIKA_URL` | api, runtime | Tika, where `--with tika` deployed one. Unset, documents are not extracted; see [document-extraction.md](docs/document-extraction.md) |
 | `OUTTURN_CATALOG_URL` | api | Where the model catalog is checked weekly, through the gateway. Default `https://models.dev/api.json`; a mirror works |
 | `OUTTURN_CATALOG_FETCH` | api | `off` stops fetching the catalog; the deployment keeps what it shipped with and what it is given |
 | `OUTTURN_CATALOG_FILE` | api | A model catalog to load at startup, as the site's JSON or reduced, gzipped or not -- a mounted ConfigMap, say. Unset, the deployment starts from the catalog its release shipped; see [models.md](docs/models.md) |
 | `OUTTURN_AGENT_MODULE` | runtime | Path of the agent component. Default `/usr/local/share/outturn/agent_default.wasm`, the one in the image |
+| `OUTTURN_DEV_SEED` | api | Development only. Set, and the users table empty, the API creates a system admin at startup |
+| `OUTTURN_DEV_ADMIN_EMAIL` | api | Development only. That admin's address. Default `admin@outturn.local` |
+| `OUTTURN_DEV_ADMIN_PASSWORD` | api | Development only. That admin's password; required when seeding. `scripts/dev-secrets.sh --print` shows it |
 
 Three are required rather than tunable, and each tier gets only the one it
 needs:
@@ -280,7 +286,7 @@ are near before changing it.
 - Models and spend: [routing.md](docs/routing.md), [models.md](docs/models.md),
   [bedrock.md](docs/bedrock.md),
   [usage.md](docs/usage.md), [caching.md](docs/caching.md),
-  [thinking.md](docs/thinking.md).
+  [thinking.md](docs/thinking.md), [model-catalog.md](docs/model-catalog.md).
 - Reaching the outside: [egress.md](docs/egress.md),
   [integrations.md](docs/integrations.md),
   [sealed-credentials.md](docs/sealed-credentials.md),
@@ -301,6 +307,7 @@ are near before changing it.
   [personalities.md](docs/personalities.md),
   [admin-agent.md](docs/admin-agent.md).
 - Running a release: [deployment.md](docs/deployment.md).
+- A guided first run: [take-it-for-a-spin.md](docs/take-it-for-a-spin.md).
 - Sending mail (designed, not built): [mail.md](docs/mail.md).
 - Storage and search: [storage.md](docs/storage.md),
   [storage-quota.md](docs/storage-quota.md),

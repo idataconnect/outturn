@@ -196,10 +196,12 @@ anything else means the next diff will be full of noise that hides the change.
 
 ## Tests
 
-`cargo test` runs only what needs nothing external. That includes the agent
-component tests, which run against a scripted in-process gateway rather than a
-live model -- fast, deterministic, and able to arrange failures a real provider
-makes awkward, such as a 503 or a stream truncated mid-generation.
+`cargo test` runs only what is fast and needs nothing external. The agent
+component tests need nothing external either -- they run against a scripted
+in-process gateway rather than a live model, deterministic and able to arrange
+failures a real provider makes awkward, such as a 503 or a stream truncated
+mid-generation -- but they sit behind `--features slow-tests`, which
+`integration-tests` implies, because each case instantiates a sandbox.
 
 The suites that need running services are gated behind a feature flag, so a
 bare checkout builds and runs the fast tests without silently skipping the
@@ -207,11 +209,12 @@ rest. They are separated by what they require rather than by how they are
 written:
 
 ```
-# Postgres and a gateway, with skaffold dev providing the port-forwards.
+# Postgres, a gateway and MinIO, with skaffold dev providing the port-forwards.
 # Note the *_test database: these create and drop schemas, and refuse to run
 # against a database whose name does not contain "test".
 TEST_DATABASE_URL=postgres://outturn:outturn-dev@localhost:15432/outturn_test \
 GATEWAY_URL=http://localhost:18081 \
+TEST_S3_URL=http://localhost:19000 \
   cargo test --features integration-tests
 ```
 
