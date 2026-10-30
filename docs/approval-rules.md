@@ -44,7 +44,8 @@ operation, and an approval in the queue. There is nothing else to learn.
 - **Workspace bands.** The amount a rule lets through is part of the rule.
   A band was a way to say "£50 is small" once for many operations; the table's
   bulk edit says it for many operations without a second concept.
-  `approval_bands` is migrated into the rules it was feeding and dropped.
+  `approval_bands` is migrated into the rules it was feeding, and left empty
+  until a later migration drops it.
 - **Act selectors.** A rule over every operation whose approval word is
   `charge`, across skills, is the thing nobody can read. Existing ones are
   expanded into one rule per operation they cover today, keeping their caps,
@@ -121,11 +122,10 @@ Saving writes one rule. Nothing about bands, risks or selectors is on it.
 
 `GET /v1/approval-rules` returns every gated operation reachable in the
 workspace, each with its rules in force, what the skill fixes, and the
-counts the table shows. `PUT /v1/approval-rules/{skill}/{operation}` writes
-one operation's rule, and `POST /v1/approval-rules/bulk` the same rule for
-several. `GET .../{skill}/{operation}/preview` answers the panel's *what it
-would have done*. `/v1/approval-policies` and `/v1/approval-bands` are
-removed; broad rules move under `/v1/approval-rules/broad`.
+counts the table shows. `PUT /v1/approval-rules` writes one rule for one or
+several operations. `GET /v1/approval-rules/preview` answers the panel's
+*what it would have done*. `/v1/approval-bands` is removed;
+`/v1/approval-policies` stays, for broad rules.
 
 Stored as policies with an operation selector, an amount condition and a
 daily total, as the gateway already reads them. The gateway does not change.

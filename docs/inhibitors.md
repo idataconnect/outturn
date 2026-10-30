@@ -15,6 +15,10 @@ what stopped it, the job completes rather than failing, and the runtime is told
 only that there is no work -- it is not the tier that decides, so it is not told
 why. The gateway decides whether a turn already running may keep going.
 
+A `suspended` hold is taken when a gated request is refused (`api::gated`);
+preparation parks the turn rather than completing it, and answering the
+approval releases the hold ([approvals.md](approvals.md)).
+
 Both latch, and both go through `decide` to say why. A stop reported by one and
 a stop reported by the other name the same holds in the same words: two holds at
 once otherwise have the gateway naming one and preparation naming both, and
@@ -104,7 +108,7 @@ which is also why such a turn is announced as resumable: telling its reader to
 send a message would have them typing into a conversation that is already coming
 back, and clearing a latch that is not there.
 
-It is a free function rather than a branch inside `worker::inhibited` because
+It is a free function rather than a branch inside `inhibited` in `worker/turn.rs` because
 that branch is unreachable from a test without a live worker -- inverted, every
 test in the crate still passed.
 
@@ -480,21 +484,22 @@ system has to carry is decided by what generates the events.
 
 Partly built ahead of that advice, and [action-queue.md](action-queue.md)
 records what it cost: the queue that shows a person what is waiting on them
-exists, with role-valued targeting and one read across workspaces, but it points
-at an event rather than at the hold and carries a lifecycle column the hold
-should own. That document settles which is the truth -- the hold -- and what has
+exists, with role-valued targeting and one read across workspaces. It was
+built pointing at an event; approval items now carry `inhibitor_id`, and the
+lifecycle column the hold should own remains. That document settles which is the truth -- the hold -- and what has
 to change when suspension arrives.
 
-**The approval *rule* waits for something to point at.** Now it has one:
+**The approval *rule* waited for something to point at.** It found one:
 [approvals.md](approvals.md) puts the declaration in the skill file that
 documents the operation, which skill-packages.md made versioned, immutable and
 editable only under the skill's own authorities. HITL's mechanism --
 suspend, hold, resume -- is independent of what triggers it and can be built
 whenever. How an integration's endpoint declares that it needs approval is not:
 designing that without a single real endpoint in front of you is how a schema
-comes out fitting nothing. The OpenAPI work comes first, with no approval
-concept in it at all, and the rule is designed afterwards against operations
-people actually want gated.
+comes out fitting nothing. The OpenAPI work came first, with no approval
+concept in it at all, and the rule was designed afterwards against operations
+people actually want gated. Built in that order; see
+[approvals.md](approvals.md) and [openapi-wizard.md](openapi-wizard.md).
 
 ## Not yet
 

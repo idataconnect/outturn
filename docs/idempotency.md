@@ -221,8 +221,8 @@ Built, as `identity` in an operation's frontmatter
 ([skill-operations.md](skill-operations.md)), with `key: field <name>` or
 `key: header <name>` where the recipient takes one.
 
-Fields of the request body, by name, whose values together are the write's
-identity. From them the host derives the key, so the model is not asked to:
+Fields of the request, by name -- a path parameter, a query parameter or a
+field of the JSON body -- whose values together are the write's identity. From them the host derives the key, so the model is not asked to:
 
 - **The recipient takes a key** (the operation also names the header or field
   it goes in): the host sends the derived key, and the recipient dedupes.
@@ -231,8 +231,8 @@ identity. From them the host derives the key, so the model is not asked to:
   answers a repeat from it. That is `cached` -- best-effort, because a write
   the recipient took and we never saw answered is still `attempted`, but it
   turns every repeat we *did* see answered into the first answer.
-- **No identity is declared**: writes are recorded under the ordinal scope,
-  which covers crash replay and nothing else.
+- **No identity is declared**: nothing is recorded, and a repeat is sent as
+  the first was.
 
 A write is a `POST`, `PATCH` or `DELETE` unless the operation says otherwise;
 reads are never recorded. The skill author knows the domain, so the identity is
@@ -250,8 +250,10 @@ no key, since the house takes none, so the host covers it.
 
 ### How the host covers it
 
-The runtime host asks the API's record (`/v1/work/invocations`, under the
-turn's lease) before a declared write goes out, keyed by workspace for a day:
+The runtime host asks the API's record (`/v1/work/invocations/claim` and
+`/settle`, under the turn's lease) before a declared write goes out, keyed by
+workspace for a day -- only where the operation names no key: a keyed write
+carries the derived key and is left to the recipient.
 
 - **Never seen**: claimed as `attempted`, and sent.
 - **Seen answered**: the first answer is given again, marked so the model
@@ -328,19 +330,16 @@ gives, so it is not a weaker position than the familiar one.
 
 ## Not yet built
 
-The record and declared identities are built, above. The rest is not. Written before the tools that need it, while the design is
+The record (`tool_invocations`, migration 0049), declared identities and
+replay from the record are built, above. What is left is not. Written before the tools that need it, while the design is
 still free: today there is `fetch` and object storage, so the pressure is low.
 
 The pieces, roughly in order:
 
-- A `tool_invocations` table holding the tristate, keyed and scoped as above.
-  Partitioned by workspace like everything else that grows per-workspace.
 - Derivation policy in the WIT, so a tool declares its level and scope.
 - `x-outturn-identity` read from a skill's specification, so a `fetch_url`
   write to a declared operation derives its key on the host -- see *Where an
   operation declares its identity*. Proposed by the OpenAPI wizard.
-- The replay path in the host's tool dispatch, which is where a retry after a
-  crash finds the record the first attempt left.
 - The read-back probe, which is what keeps escalation rare against the
   recipients this is mostly for. Later than the tristate and before any UI for
   resolving one by hand.

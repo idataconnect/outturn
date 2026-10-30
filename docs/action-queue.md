@@ -86,7 +86,7 @@ something deletes one without the other. Both are cheaper than two copies of
 The targeting and the reads, on `action_items` and `action_targets`, behind
 `ActionStore`. Raising, adding and removing targets, the per-workspace reads,
 the global read and badge, a Postgres listener with a long poll over it, and
-`GET /v1/action-items` with its `count`.
+`GET /v1/action-items`, and `GET /v1/action-items/count` for the badge.
 
 Two decisions in there are worth keeping whichever way the rest goes.
 
@@ -119,7 +119,8 @@ before this document, against `event_id` rather than `inhibitor_id`, and they
 work -- there are tests for the settle race and the expiry sweep -- but they are
 the second copy this document argues against.
 
-They stay until suspension exists, because deleting them now would leave the
+Suspension now exists; they stay until the queue reads open-ness from the hold
+alone. They stayed at first because deleting them now would leave the
 queue unable to express "waiting" at all, and be a second rewrite when the hold
 arrives. What they must not acquire meanwhile is a caller: nothing should start
 depending on `state` as the answer to "is this open".
@@ -142,17 +143,16 @@ What remains, in order:
    completing it, and releasing the hold gives it back, scoped the way the hold
    was. The serial key needed no change -- the claim excludes keys that are
    `running` -- and there is a test that fails if that ever widens to parked.
-   What still cannot happen is a suspended hold being *taken*: both endpoints
-   write `Strength::Stopped`.
-2. **`approvals:answer`**, the authority for *may this person answer approvals
+2. ~~**`approvals:answer`**~~ Built, the authority for *may this person answer approvals
    at all*. Ordinary, and held by whoever a workspace decides. What a yes is
    worth once given, and what declares that an operation needs one, is
    [approvals.md](approvals.md).
-3. **The producer.** Something that takes a suspended hold and raises a queue
+3. ~~**The producer.**~~ Built: `api::gated` takes a suspended hold.
+   Something that takes a suspended hold and raises a queue
    item naming it. Only now is it clear what that item carries.
-4. **Answering**, which releases the hold and lets the parked turn resume.
-5. **Repointing the queue** at `inhibitor_id`, and deleting the state columns
-   above.
+4. ~~**Answering**~~ Built (`POST /v1/approvals/{id}/answer`), which releases the hold and lets the parked turn resume.
+5. **Repointing the queue.** Half done: approval items carry `inhibitor_id`;
+   deleting `state` and its columns remains.
 
 The capability an approval mints, and what its extent is, stays where
 [inhibitors.md](inhibitors.md) leaves it: open, and not blocking any of the
