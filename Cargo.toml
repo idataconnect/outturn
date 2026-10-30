@@ -48,14 +48,14 @@ bytes = "1"
 # which the runtime never configures (compiled components are kept in memory,
 # crates/runtime/src/component/cache.rs). The feature brings zstd 0.13, which
 # has open advisories and which wasmtime has not moved off.
-wasmtime = { version = "48.0.8", default-features = false, features = [
+wasmtime = { version = "50.0.1", default-features = false, features = [
     "anyhow", "async", "backtrace", "gc", "gc-copying", "gc-drc", "gc-null",
     "wat", "profiling", "parallel-compilation", "cranelift", "pooling-allocator",
     "demangle", "addr2line", "coredump", "debug-builtins", "runtime",
     "component-model", "component-model-async", "threads", "stack-switching",
     "std", "debug", "compile-time-builtins", "wit-parser",
 ] }
-wasmtime-wasi = "48.0.8"
+wasmtime-wasi = "50.0.1"
 anyhow = "1"
 rpassword = "7.5.4"
 pasetors = { version = "0.7", features = ["paserk"] }

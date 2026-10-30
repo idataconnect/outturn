@@ -78,8 +78,7 @@ can be picked up without rereading the review. Ordered by what it protects.
 
 - The 0.10 generation of the RustCrypto hashes (sha2, hmac, digest) is still
   linked for wasmtime, sqlx and rust-s3, none of whose newest releases has
-  moved. `deny.toml` names each as a wrapper; drop one when it moves. Wasmtime
-  is two majors behind (48 against 50), which is its own migration.
+  moved. `deny.toml` names each as a wrapper; drop one when it moves.
 - A release's first-party digests are copied into the infrastructure
   repository by hand; see the "Not yet" in deployment.md.
 

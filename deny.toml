@@ -67,9 +67,9 @@ highlight = "all"
 # everything else uses sha2 0.11 / hmac 0.13 / digest 0.11 / rand 0.10 /
 # ed25519-dalek 3; the 0.10 generation below is linked only for:
 #
-#   - wasmtime (cranelift-codegen, wasmtime-environ),
-#     which hashes compiled code with sha2 0.10 -- still so in 50.0.1, its
-#     newest release;
+#   - wasmtime, through cranelift-codegen, which hashes compiled code with
+#     sha2 0.10 -- still so in 50.0.1, its newest release (wasmtime-environ
+#     no longer does);
 #   - sqlx (sqlx-core, sqlx-macros-core), for Postgres SCRAM auth -- still so
 #     in 0.9.0, its newest release;
 #   - rust-s3, which signs requests with hmac 0.12 and sha2 0.10 -- still so
@@ -81,7 +81,6 @@ highlight = "all"
 crate = "sha2@0.10"
 wrappers = [
     "cranelift-codegen",
-    "wasmtime-environ",
     "sqlx-core",
     "sqlx-macros-core",
     "rust-s3",
