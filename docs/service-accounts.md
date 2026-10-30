@@ -4,7 +4,7 @@ How an agent comes to edit a file a workspace keeps in Google -- a
 spreadsheet, a document, a shared drive -- without anybody's personal grant
 and without the deployment registering anything with Google.
 
-Designed, unbuilt. It rests on [sealed-credentials.md](sealed-credentials.md)
+Built but for the gated writes; *As built*, at the end, says where. It rests on [sealed-credentials.md](sealed-credentials.md)
 and [client-credentials.md](client-credentials.md), both built, and is the
 first integration of the kind [integrations.md](integrations.md) calls tier 2
 that needs no consent flow.
@@ -151,40 +151,44 @@ none fresh enough, the gateway:
    bound account, `aud` the bound token URL, `scope` the bound scope, `iat` now
    and `exp` an hour on, the longest Google accepts.
 2. Signs it with RSA PKCS#1 v1.5 over SHA-256, through `aws-lc-rs`, which the
-   gateway already compiles for TLS. The key is parsed when the seal is opened
-   and cached parsed beside it; a seal whose plaintext is not an RSA PKCS#8 key
-   is refused then, with a message, rather than on every request. `aws-lc-rs`
-   rather than a pure-Rust RSA crate because its private-key operations are
-   constant-time and it adds nothing to the build.
+   gateway already compiles for TLS. The key is parsed from its PEM at each
+   exchange, which is once a token's lifetime, and a plaintext that is not an
+   RSA PKCS#8 key is refused as configuration without anything being sent.
+   `aws-lc-rs` rather than a pure-Rust RSA crate because its private-key
+   operations are constant-time and it adds nothing to the build.
 3. Posts `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer` and the
    assertion to the token URL.
 
 Everything after the request is client-credentials.md's, unchanged: the same
 vetted transport with no redirects, the same size limit and timeout, the token
 cached in memory per replica, refreshed on demand with single-flight, evicted
-on a 401 and on revoking the credential, never written anywhere. The same table
+on a 401, never written anywhere. A revoked credential is refused before the
+cache is asked, since the gateway reads the row on each use. The same table
 of what a failed exchange tells the agent, where `invalid_grant` -- Google's
 answer to a key that was deleted in its console, or a clock badly wrong --
 reads as the configuration problem it is.
 
-The cache is keyed by the credential and its generation, so rotating a key
-starts afresh.
+The cache is keyed by the rule's leaf and the key's fingerprint, so a key
+replaced under the same id buys its own token rather than reusing the old
+one's.
 
 ## The skill
 
 A Sheets skill, generic: nothing in it names a spreadsheet. It documents
 reading a range (`values.get`), appending rows (`values.append`) and updating
 cells (`values.update`), with `valueInputOption=USER_ENTERED` so a formula is a
-formula and a date is a date; declares `sheets.googleapis.com`; and says which
-scope it needs, so a credential bound to less shows as unmet the way a missing
-host does.
+formula and a date is a date; and declares `sheets.googleapis.com`.
 
-The writes carry approval frontmatter, so the agent reading figures off a photo
+The writes want approval frontmatter, so the agent reading figures off a photo
 cannot put them in the sheet until a person has seen them -- enforced by the
-gateway, rather than resting on the agent remembering to ask. The water-bill
-case's "confirm with me first" is then an approval rule
-([approval-rules.md](approval-rules.md)) rather than a sentence in a prompt,
-and the quarter's row is one approval in the queue.
+gateway, rather than resting on the agent remembering to ask. That needs one
+thing approvals do not do yet. A grant binds top-level scalar fields
+([approvals.md](approvals.md), *binds*), and what
+makes a Sheets write the one somebody saw is its `values`, an array of arrays.
+A gate binding only the spreadsheet and range would let a second, different
+row through on the first one's yes, which is the hole `binds` exists to close.
+Until a grant can bind a nested value, the writes ask in prose and carry no
+gate.
 
 The spreadsheet's id belongs to the agent, not the skill: in its instructions,
 or a note in its `agent/` scope. The Sheets scope cannot list files, which is
@@ -271,3 +275,24 @@ up at step 1, that is a finding about this design, not about them.
    account's address shown on the connection.
 4. The Sheets skill, with approval frontmatter on its writes.
 5. The setup guide, then dogfooding on the water-bill spreadsheet.
+
+## As built
+
+- `egress::seal`: `Kind::ServiceAccount`, the binding's `account` and
+  `scope`, and `Kind::on_a_request`, which the API and gateway both use to
+  read a rule's credential as the kind its seal says.
+- `gateway::egress::client`: `Tokens::service_account`, the assertion and the
+  PEM read, sharing the cache and the exchange's transport with client pairs.
+  Unit tests check the signature against the generated key's public half.
+- `tests/api.rs`, `a_service_account_key_buys_a_token_and_is_never_sent`: the
+  API storing the seal and the gateway's real handler exchanging and attaching.
+- The page: a key file pasted as a connection's value is read as one
+  (`ui/src/lib/credentials.ts`), with a scope field beside it, and a connected
+  service account shows the address it signs in as.
+- `k8s/components/sheets`: the skill and the job installing it, with the
+  setup in its README.
+
+Not built: approval gates on the writes, for the reason under *The skill*;
+and a skill declaring the scope it needs, so that a credential bound to less
+shows as unmet the way a missing host does. Today the scope is typed when the
+key is connected.

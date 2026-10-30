@@ -97,6 +97,7 @@ nav:
           - Credential bindings: credential-bindings.md
           - Client credentials: client-credentials.md
           - Sealed credentials: sealed-credentials.md
+          - Service accounts: service-accounts.md
       - Skills:
           - Skills as packages: skill-packages.md
           - Skill bundles: skill-bundles.md
