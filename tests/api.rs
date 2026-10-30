@@ -693,3 +693,5 @@ mod usage;
 mod users;
 #[path = "api/work.rs"]
 mod work;
+#[path = "api/leases.rs"]
+mod leases;
