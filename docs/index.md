@@ -35,5 +35,7 @@ anybody else's anything.
   of these pages use.
 - **[Take it for a spin](take-it-for-a-spin.md)** -- half an hour, ending with
   an agent that takes bookings at a guesthouse you are also running.
-- **[Design](roadmap.md)** -- why each part is built the way it is, what is
-  built, and what is next. Written for whoever changes the code.
+- **[Design notes](design-notes.md)** -- why each part is built the way it
+  is, and what is built. Written for whoever changes the code, with the
+  [invariants](invariants.md) it must keep and a [glossary](glossary.md).
+- **[Roadmap](roadmap.md)** -- what is next, and what blocks what.

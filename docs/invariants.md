@@ -26,7 +26,7 @@ share. A unit test holds its rendering to the index predicates in migrations
 0023 and 0025 byte for byte, and the queue suite reads the CHECK constraint
 from `pg_constraint` and compares it to `JobState::ALL`. What still has to
 match by hand, because an applied migration cannot change: the CHECK
-constraint, the partial indexes and the `live_turn` view in the migrations,
+constraint, the partial indexes and the `live_turn` function in the migrations,
 which a new state would need a new migration for; and the browser's unions in
 `ui/src/lib/chat.ts`, which carry a comment pointing here.
 
@@ -55,8 +55,8 @@ how two replies once arrived glued together with a stray blank at the end.
 **A turn's conversation stops at its own prompt.** A message the user sent
 after the prompt is already stored when the turn is prepared; left in the
 history it reaches the model twice, once as history and again as a steer, and
-the model answers the later message in the earlier one's reply. `up_to` in the
-worker is what enforces this.
+the model answers the later message in the earlier one's reply. `up_to` in
+`crates/api/src/worker/projection.rs` is what enforces this.
 
 **The transcript read returns its own cursor.** History and the event cursor
 come from one statement so they share a snapshot: everything at or below the
@@ -138,7 +138,8 @@ while a worker waits, so nothing else would ever reclaim it.
 workspace, and an empty list is the default -- a workspace who has not thought about
 it has not consented to it. The workspace's list is checked first and the resolved
 address second, and the second check is not theirs to waive: an allowed name
-that resolves inside the cluster is still refused. Names are resolved once and
+that resolves inside the cluster is still refused, unless the operator names
+that host in `OUTTURN_INTERNAL_HOSTS`. Names are resolved once and
 the connection pinned to the answer, or the check and the request are about
 different places. Redirects are not followed, because a redirect names a host
 nobody checked. All of it happens in the gateway, which is where the request is

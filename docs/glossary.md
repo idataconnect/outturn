@@ -37,7 +37,7 @@ to the workspace's own records. [usage.md](usage.md).
 ## Authority
 
 **Authority** — one fixed, code-defined permission (`sessions:read`). The
-vocabulary is in `rbac.rs` and changes with the code.
+vocabulary is in `crates/core/src/auth/rbac.rs` and changes with the code.
 
 **Role** — a workspace-owned row bundling authorities under a name. A token
 carries role *names*; the API resolves them per request through a cache
@@ -77,16 +77,17 @@ swap and means *package*.
 than replacing it. **Fork** — a copy that stops following its origin.
 
 **Frontmatter** — YAML between `---` fences at the top of a package's file, for
-the *platform* rather than the model. Today one key: `approval`
-([approvals.md](approvals.md)). Anything the model needs to know belongs in the
+the *platform* rather than the model. Today two keys: `approval`, with `risk`
+and `auto` ([approvals.md](approvals.md)), and `operation`, whose `identity`
+names what makes two writes the same ([skill-operations.md](skill-operations.md)). Anything the model needs to know belongs in the
 body where it can see it.
 
 **Derived skill** — a skill generated from a stored specification and its
-**annotations**, regenerated rather than edited. Designed, unbuilt.
+**annotations**, regenerated rather than edited. Built.
 [openapi-wizard.md](openapi-wizard.md#a-derivation-not-an-output).
 
 **Annotation** — something a person added to one operation of a derived skill
--- a note, a preference, a hidden flag, an approval rule, an observed example --
+-- a note, a preference, a hidden flag, an approval rule, a write identity --
 keyed by `operationId` or method and path, so it survives the specification
 changing. Never read by a turn; rendered into the version a turn reads.
 
@@ -154,7 +155,8 @@ read-only tools run when a conversation starts, and system messages put in
 before a turn when a condition holds. Each has an owner, a placement,
 a priority, a budget and a reach, and is recorded per turn. Contributions are
 made once per conversation and again only at compaction, so the system prompt
-never changes between. Designed, unbuilt. [prompt-contributors.md](prompt-contributors.md).
+never changes between. Designed; composing the system prompt once per
+conversation, and an invoked skill, are built. [prompt-contributors.md](prompt-contributors.md).
 
 **Plugin** — what a catalog would offer: a versioned, installable package of
 contributors, skills and later integrations. Not *extension*, which
@@ -167,10 +169,11 @@ else. Composed last, recorded per turn for evaluation. Designed, unbuilt.
 [personalities.md](personalities.md).
 
 **Auto-approval policy** — a workspace's standing answer to a gate: for an
-agent, a selector (risk, act or operation) and conditions on the gate's bound
-fields. Decided at the gateway from the turn token, recorded there before the
-request goes out, and set only by somebody who could have answered it.
-Designed, unbuilt. [auto-approval.md](auto-approval.md).
+agent, a selector (an operation, or broadly a risk) and conditions on the gate's
+bound fields. Decided at the gateway from the turn token, recorded there before
+the request goes out, and set only by somebody who could have answered it.
+Built; set at Settings → Approvals. [auto-approval.md](auto-approval.md),
+[approval-rules.md](approval-rules.md).
 
 **Proposal** — what the admin agent writes instead of a change. Confirmed by a
 person through an endpoint the agent's token cannot reach. Designed, unbuilt.
@@ -186,8 +189,9 @@ outright.
 
 ## Reaching out
 
-**Egress rule** — a host a workspace's agents may reach, with the *name* of the
-environment variable holding its credential. Never the value.
+**Egress rule** — a host a workspace's agents may reach, with either a sealed
+credential or the *name* of the environment variable holding it. Never the
+value.
 
 **Sealed credential** — a secret encrypted in the browser to the gateway's
 public key, with its binding (workspace, hosts, header) as associated data, so
