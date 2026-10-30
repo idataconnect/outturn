@@ -1153,6 +1153,12 @@ pub async fn test_call(
         .get("x-outturn-provider")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    let paid_by = response
+        .headers()
+        .get("x-outturn-paid-by")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("operator")
+        .to_string();
     let status = response.status();
     let body = match response.text().await {
         Ok(body) => body,
@@ -1172,6 +1178,7 @@ pub async fn test_call(
             ))));
         }
     };
+    record_test_call(&state, &traffic, endpoint.as_deref(), &paid_by, &parsed).await;
     let Some(reply) = parsed["choices"][0]["message"]["content"].as_str() else {
         return Ok(Json(failed("the answer held no reply".into())));
     };
@@ -1183,6 +1190,57 @@ pub async fn test_call(
         error: None,
         elapsed_ms,
     }))
+}
+
+/// A test call is billed like any other, so it goes in the ledger: in the
+/// platform's own workspace, on nobody's agent or conversation, which is what
+/// that workspace's rows are for. Before the reply is judged, since a reply
+/// that turned out to be unusable still cost what it cost.
+async fn record_test_call(
+    state: &ApiState,
+    traffic: &str,
+    endpoint: Option<&str>,
+    paid_by: &str,
+    parsed: &serde_json::Value,
+) {
+    let usage = &parsed["usage"];
+    let count = |field: &str| usage[field].as_i64().unwrap_or(0) as i32;
+    let store = crate::usage::PostgresUsageStore::new(state.pool.clone());
+    if let Err(e) = crate::usage::UsageStore::record(
+        &store,
+        crate::usage::RecordUsage {
+            workspace_id: PLATFORM_WORKSPACE,
+            agent_id: None,
+            session_id: None,
+            user_id: None,
+            account: None,
+            reply_id: None,
+            job_id: None,
+            round: 0,
+            traffic_type: traffic.to_string(),
+            endpoint: endpoint.unwrap_or("unknown").to_string(),
+            model: parsed["model"].as_str().unwrap_or_default().to_string(),
+            credential_owner: paid_by.to_string(),
+            fallback: "none".to_string(),
+            prompt_tokens: count("prompt_tokens"),
+            completion_tokens: count("completion_tokens"),
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            usage_source: if usage.is_object() {
+                crate::usage::UsageSource::Reported
+            } else {
+                crate::usage::UsageSource::Unknown
+            },
+            provider_usage: usage.is_object().then(|| usage.clone()),
+            service_tier: None,
+        },
+    )
+    .await
+    {
+        // Loud, like every other ledger write: the bill is wrong without it.
+        tracing::error!(error = %e, "could not record a test call's usage");
+    }
 }
 
 // -- Recipes -------------------------------------------------------------------

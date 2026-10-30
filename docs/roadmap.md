@@ -82,8 +82,6 @@ can be picked up without rereading the review. Ordered by what it protects.
   is two majors behind (48 against 50), which is its own migration.
 - A release's first-party digests are copied into the infrastructure
   repository by hand; see the "Not yet" in deployment.md.
-- The Models page's test call spends tokens in the platform workspace and is
-  not written to the usage ledger (`api::models`, the test call).
 
 ## Tier 1 — independent
 
