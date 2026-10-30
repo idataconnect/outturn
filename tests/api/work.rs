@@ -492,52 +492,6 @@ async fn a_running_turn_can_refresh_its_gateway_token() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-/// Takes one turn and returns its job id, lease, and session id.
-async fn a_leased_turn(h: &Harness) -> (String, String, Uuid, String) {
-    let acme = h.make_workspace("Acme", "acme").await;
-    let admin = h
-        .login_as("admin@acme.example", None, Some((acme, "admin")))
-        .await;
-    let (_, body) = h
-        .post(
-            "/v1/agents",
-            Some(&admin),
-            r#"{"name":"A","slug":"a","policy":{"model":"test-model"}}"#,
-        )
-        .await;
-    let agent: serde_json::Value = serde_json::from_str(&body).expect("agent");
-    let (_, body) = h
-        .post(
-            "/v1/agent-sessions",
-            Some(&admin),
-            &format!(
-                r#"{{"agent_id":"{}","title":""}}"#,
-                agent["id"].as_str().expect("id")
-            ),
-        )
-        .await;
-    let session_id: Uuid = serde_json::from_str::<serde_json::Value>(&body).unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-    h.post(
-        &format!("/v1/agent-sessions/{session_id}/messages"),
-        Some(&admin),
-        r#"{"content":"hello"}"#,
-    )
-    .await;
-    let runtime = h.runtime_token(acme);
-    let (_, body) = h.post("/v1/work", Some(&runtime), "{}").await;
-    let a: serde_json::Value = serde_json::from_str(&body).expect("assignment");
-    (
-        a["job_id"].as_str().unwrap().to_string(),
-        a["lease_token"].as_str().unwrap().to_string(),
-        session_id,
-        runtime,
-    )
-}
-
 /// A turn that cannot be prepared -- here, a deployment with no model -- is
 /// reported to the conversation and does not wedge it: once a model is
 /// configured the next prompt is answered.
