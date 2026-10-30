@@ -3,9 +3,12 @@
 Which parts of a prompt a provider is asked to cache, and how compaction keeps
 the cached parts worth having.
 
-Designed, unbuilt. What exists is measurement: the usage ledger records
-`cache_read_tokens` and `cache_write_tokens` for every model call, from what
-each provider reports. Nothing asks any provider to cache anything.
+Built for Anthropic: two breakpoints, on the system prompt (which the tools
+render before) and on the last message, which moves forward every round so
+each request reads the one before it (`mark_for_cache`,
+`crates/gateway/src/llm/translate.rs`). Other providers are not asked. The
+usage ledger records `cache_read_tokens` and `cache_write_tokens` for every
+model call, from what each provider reports.
 
 Those two columns sit beside `prompt_tokens`, never inside it: the prompt
 count is the full-rate input alone, whatever a provider folds together in its
@@ -29,12 +32,18 @@ building on the specifics.
   write. A cached prefix lasts about five minutes, renewed by each hit, and is
   read by any later request that starts with exactly the same text.
 
-So for Anthropic every turn today is uncached input, and the settings below
-are what change that. Gemini and OpenAI ignore them.
-
 ## Breakpoints
 
-Placed where the prompt stops changing, one per kind. Each is a setting in the
+Two, always on: the system prompt, and the last message. Marking only
+completed turns was the earlier design, below; a long tool loop carried its
+breakpoint past the twenty blocks Anthropic looks back, so the marker follows
+the loop instead. An empty system prompt or last text block is left unmarked.
+Gemini and OpenAI are not asked.
+
+### Not built: a breakpoint per kind, each a setting
+
+The earlier design, kept for its reasoning. Placed where the prompt stops
+changing, one per kind. Each is a setting in the
 cascade ([settings.md](settings.md)), so an operator, workspace or agent can
 turn any of them off.
 

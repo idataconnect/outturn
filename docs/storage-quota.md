@@ -57,7 +57,7 @@ in the same pass.
 ## Who enforces it
 
 The API, when it hands out a turn. The work it sends gains
-`remaining_bytes`: the workspace's quota minus `stored_bytes`. The runtime
+`remaining_stored_bytes`: the workspace's quota minus `stored_bytes`. The runtime
 takes the smaller of that and `max_written_bytes` as its per-turn limit,
 counted exactly as today, and refuses the write that would cross it with a
 message the model can act on: the workspace's storage is full.
@@ -105,16 +105,16 @@ no billing.
 Who else may set it is the deployment's choice, not the catalog's. A
 deployment that sells plans wants it operator-only; one that sells storage by
 use wants each workspace's admins to set their own. So a second, operator-only
-setting, `workspace_sets_stored_bytes`, off by default, makes
-`max_stored_bytes` workspace-overridable when on. The catalog's fixed
-who-may-override (settings.md, *Who may override*) gains this one exception,
-and it should be built so another setting can use it the same way rather
-than as a special case.
+setting, `stored_bytes_set_by` -- `operator` by default, or `workspace` --
+makes `max_stored_bytes` workspace-overridable when it says `workspace`. The
+catalog's fixed who-may-override (settings.md, *Who may override*) gains this
+one exception, through `Setting::delegated_by`, which another setting can use
+the same way.
 
 `0` means no limit, as for the per-turn limits. Default: no limit, so an
 upgrade changes nothing until an operator sets one.
 
-The workspace's usage page shows stored bytes beside the quota.
+A storage tile on the dashboard shows stored bytes beside the quota.
 
 ## Over quota
 

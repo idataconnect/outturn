@@ -225,6 +225,7 @@ how far it trusts the agent: *auto-approve up to `low`*.
   one currency, starting from the operator's defaults -- moved either way, but
   never past the floor. A workspace that thinks £500 is small for its business
   may say so; one that tries to call £10,000 low is held at the floor.
+  *Superseded:* bands are the operator's; a workspace says how much goes through in each rule's amount limit ([approval-rules.md](approval-rules.md)).
 - **The policy.** A risk selector -- *up to `low`*, for an agent -- plus its
   caps and expiry, as now. The amount conditions stay for the case they suit,
   one operation with a rule of its own, but are no longer how the common case is
@@ -292,8 +293,7 @@ risk unconfirmed, since a risk decides what goes out without a person.
   beneath it.
 - Policies already written with amount conditions keep working; nothing about
   conditions changes.
-- *Settled:* bands are per workspace, not per agent; a workspace may move a
-  band either way from the operator's default, but never past the floor.
+- *Settled, then superseded:* bands were per workspace, not per agent. Bands are the operator's; a workspace says how much goes through in each rule's amount limit ([approval-rules.md](approval-rules.md)).
 
 ## Where it is decided
 

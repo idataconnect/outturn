@@ -4,8 +4,8 @@ Everything that shapes what a model is given on a turn, other than the
 conversation itself, as one kind of thing with one set of rules -- so that a
 voice, an eagerly loaded tool, the time a conversation began and a skill's chosen operations
 can each be added, owned, measured and eventually published without each
-inventing its own way in. Designed; the first piece, composing the system
-prompt once per conversation, is built.
+inventing its own way in. Designed; composing the system prompt once per
+conversation, and a skill somebody invoked, are built.
 
 ## Why one idea
 
@@ -80,7 +80,7 @@ recomputed per message, no eager run repeats per turn, and the prefix a
 provider caches is the same on every round of every turn of the conversation.
 
 Built: `session_prompts` keeps a conversation's prompt, the model it names and
-the skills it was composed from (`worker::kept_prompt`). A turn sends the kept
+the skills it was composed from (`kept_prompt` in `worker/compaction.rs`). A turn sends the kept
 one; a compaction, or a different model, composes it again. The skill versions
 each turn recorded in `turn_skills` are the kept ones, so a conversation still
 on an older version says so. Gates are the exception, read from live versions

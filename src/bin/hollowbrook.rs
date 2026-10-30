@@ -661,7 +661,7 @@ async fn announce(state: &Fixture, booking: &Booking) {
 }
 
 fn hmac_sha256(key: &[u8], message: &[u8]) -> String {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
     let mut mac = <Hmac<Sha256>>::new_from_slice(key).expect("hmac accepts any key length");
     mac.update(message);

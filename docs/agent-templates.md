@@ -70,7 +70,9 @@ it back.
 ## What a workspace may change
 
 What an operator certified and what a business does its own way are both
-real, and they are different parts of one prompt. So a template's prompt is
+real, and they are different parts of one prompt. A workspace may not rename
+an agent made from a template, nor change its instructions or policy: those
+are the template's, and the API refuses the edit. So a template's prompt is
 written in two parts, and a workspace may add a third:
 
 ```
@@ -140,8 +142,8 @@ available.
 ## Eager tools
 
 Tools are offered to a model in two ways: eagerly, with their full description
-on every round, or deferred, by name only until the model loads them. Today
-the host sends no eager list, so every tool is deferred and a model's first
+on every round, or deferred, by name only until the model loads them. Without
+a template the host sends no eager list, so every tool is deferred and a model's first
 round on most turns is spent loading the one it always uses.
 
 The operator knows which tools an agent uses on most turns, because the
@@ -169,13 +171,11 @@ deferring everything.
 A template retired stops being offered and stops being made in new
 workspaces. The agents already made from it are not deleted -- their sessions
 are the workspace's record -- but stop following, left on the last version
-they ran until a workspace removes them.
+they ran until a workspace removes them. A retired template takes no new
+versions, and may be brought back.
 
 ## Not settled
 
-- Whether a workspace may rename its agent, or only describe it. A name a
-  customer chose is friendlier; a name the operator's support can recognize is
-  easier to help with.
 - What an agent made by hand before templates existed becomes. Nothing, is the
   likely answer: it stays as it is, and templates are for agents made from now.
 - How well a given model keeps requirements and defaults apart is a question

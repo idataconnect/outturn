@@ -27,6 +27,9 @@ fn thinking_in(chunk: &serde_json::Value) -> Option<&str> {
 
 /// Consumes the gateway's stream, reporting text as it arrives and returning
 /// the whole reply once generation ends.
+/// How much of a model's reply is charged to admission at a time.
+const REPLY_CHARGE_STEP: u64 = 256 * 1024;
+
 pub(super) async fn stream_completion(
     http: &reqwest::Client,
     gateway_url: &str,
@@ -37,6 +40,7 @@ pub(super) async fn stream_completion(
     progress: Option<&ProgressSink>,
     reasoning: Option<&ReasoningSink>,
     writing: Option<&WritingSink>,
+    admission: Option<&crate::admission::Admission>,
 ) -> anyhow::Result<(Completion, Vec<(Arrival, Option<uuid::Uuid>)>, Served)> {
     use futures::StreamExt;
 
@@ -115,8 +119,24 @@ pub(super) async fn stream_completion(
     // Chunks are cut wherever the network cut them, which can be inside a
     // character; see `outturn_core::utf8`.
     let mut decoder = outturn_core::utf8::Decoder::new();
+    // The reply is held whole until the round ends, and nothing bounds how
+    // long it is, so it is charged as it arrives, a step at a time.
+    let mut held: Vec<crate::admission::Charge> = Vec::new();
+    let mut arrived: u64 = 0;
     while let Some(bytes) = stream.next().await {
-        decoder.push(&bytes?, &mut buffer)?;
+        let bytes = bytes?;
+        arrived += bytes.len() as u64;
+        if let Some(admission) = admission {
+            while (held.len() as u64) * REPLY_CHARGE_STEP < arrived {
+                held.push(admission.try_charge(REPLY_CHARGE_STEP).map_err(|refusal| {
+                    anyhow::anyhow!(
+                        "the runtime is short of memory and cannot take the rest of the \
+                         model's reply right now ({refusal}); wait a little and try again"
+                    )
+                })?);
+            }
+        }
+        decoder.push(&bytes, &mut buffer)?;
 
         // A chunk may span reads, so only whole lines are parsed.
         while let Some(index) = buffer.find('\n') {
@@ -474,6 +494,52 @@ mod stream_tests {
         url
     }
 
+    /// A reply too long for the memory a crowded pod has left is refused as
+    /// it arrives, rather than held until the pod is killed for it.
+    #[tokio::test]
+    async fn a_reply_past_what_admission_allows_is_refused_as_it_arrives() {
+        struct Tight;
+        impl crate::admission::MemoryProbe for Tight {
+            fn available_bytes(&self) -> Option<u64> {
+                Some(REPLY_CHARGE_STEP * 3)
+            }
+        }
+        let admission = crate::admission::Admission::with_assumption(
+            4,
+            REPLY_CHARGE_STEP,
+            0,
+            std::sync::Arc::new(Tight),
+        );
+        // Another turn running, which is when admission is asked at all.
+        let _first = admission.try_admit().expect("admitted");
+        let _second = admission.try_admit().expect("admitted");
+
+        let line = format!(
+            "{{\"choices\":[{{\"delta\":{{\"content\":\"{}\"}}}}]}}\n",
+            "x".repeat(REPLY_CHARGE_STEP as usize)
+        );
+        let body = line.repeat(4).into_bytes();
+        let cut = body.len() / 2;
+        let url = serve_cut(body, cut).await;
+        let failed = stream_completion(
+            &reqwest::Client::new(),
+            &url,
+            "token",
+            "test",
+            &uuid::Uuid::now_v7(),
+            serde_json::json!({}),
+            None,
+            None,
+            None,
+            Some(&admission),
+        )
+        .await;
+        let Err(failed) = failed else {
+            panic!("a reply past what admission allows was taken whole");
+        };
+        assert!(failed.to_string().contains("short of memory"), "{failed}");
+    }
+
     #[tokio::test]
     async fn a_character_split_across_reads_does_not_fail_the_round() {
         let line = "{\"choices\":[{\"delta\":{\"content\":\"caf\u{e9} \u{1F4DA} done\"}}]}\n";
@@ -489,6 +555,7 @@ mod stream_tests {
                 "test",
                 &uuid::Uuid::now_v7(),
                 serde_json::json!({}),
+                None,
                 None,
                 None,
                 None,

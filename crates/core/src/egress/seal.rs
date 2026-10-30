@@ -359,7 +359,7 @@ impl Keys {
 }
 
 fn hmac(key: &[u8], message: &[u8]) -> [u8; 32] {
-    use hmac::Mac as _;
+    use hmac::{KeyInit as _, Mac as _};
     let mut mac =
         hmac::Hmac::<Sha256>::new_from_slice(key).expect("HMAC takes a key of any length");
     mac.update(message);

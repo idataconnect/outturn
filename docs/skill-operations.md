@@ -2,7 +2,7 @@
 
 A skill's operations, offered to the model as tools, and translated by the
 guest into the `fetch_url` request the operation's own file already describes.
-Designed, not built.
+Built; *Not built*, at the end, says what is left.
 
 ## The problem
 
@@ -189,10 +189,10 @@ wizard-built skill gets tools without anyone typing a schema.
 
 Idempotency, by the argument in [idempotency.md](idempotency.md), *Why the
 host owns it*. An `operation` block is also where its identity is declared --
-`identity: [room_id, guest_name, arrival, departure]` -- and that has to reach
-the gateway the way a gate's `binds` does, through the commitment, so the key
-is derived on the host from the request it actually sees. The translation
-needs none of that to be useful, and lands first.
+`identity: [room_id, guest_name, arrival, departure]`. The runtime derives the
+key from it and the request it is about to send: into the operation's key
+header or body field, or claimed against the invocation record for a recipient
+that takes no key (`component/egress.rs`).
 
 ## Hollowbrook
 
@@ -213,6 +213,9 @@ In order:
   a call into `fetch`.~~ Built.
 - ~~The wizard writing `operation` blocks.~~ Built; see
   [openapi-wizard.md](openapi-wizard.md), *Operations as tools*.
-- Hollowbrook's files converted, and an end-to-end test against the fake
-  gateway that books a room through the tool.
-- `identity`, with [idempotency.md](idempotency.md).
+- ~~Hollowbrook's files converted.~~ Built: each carries an `operation`
+  block, and none a "The call" section.
+- ~~`identity`, with [idempotency.md](idempotency.md).~~ Built; Hollowbrook's
+  booking declares one.
+- An end-to-end test against the fake gateway that books a room through the
+  tool.

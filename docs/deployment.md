@@ -144,12 +144,16 @@ resources:
 images:
   - name: ghcr.io/idataconnect/outturn-api
     newTag: <full SHA>
+    digest: sha256:<its digest>
   - name: ghcr.io/idataconnect/outturn-gateway
     newTag: <full SHA>
+    digest: sha256:<its digest>
   - name: ghcr.io/idataconnect/outturn-runtime
     newTag: <full SHA>
+    digest: sha256:<its digest>
   - name: ghcr.io/idataconnect/outturn-ui
     newTag: <full SHA>
+    digest: sha256:<its digest>
 
 configMapGenerator:
   - name: outturn-config
@@ -170,7 +174,30 @@ patches:
 ```
 
 A release is the same with its version in place of the SHA, in `ref=v1.2.0`
-and `newTag: 1.2.0`. An upgrade is a commit to this file; a rollback is
+and `newTag: 1.2.0`. The `digest` is what is pulled; the tag stays
+for whoever reads the manifest, which comes out as `outturn-api:1.2.0@sha256:...`.
+A tag can be pushed over by anybody able to push, and a digest cannot, so the
+digest is what makes the pin a pin. The Images run that published a commit
+lists each image's digest in its summary; `docker buildx imagetools inspect
+ghcr.io/idataconnect/outturn-api:1.2.0` answers the same for one already
+published.
+
+Every image a release runs is pinned the same way, first-party or not: the
+base images in both Dockerfiles, and the Postgres client in the backup example,
+carry `name:tag@sha256:...`. Raising one is resolving its tag again and
+committing the new digest -- the newest the tag resolves to, never an older
+one. The development cluster's own Postgres, object store, mocks and optional
+components (`k8s/base`, `k8s/components`) still name tags, since they are
+rebuilt and replaced by every `scripts/dev.sh` and are not what a release runs.
+
+Not yet: the digests are copied into the infrastructure repository by hand.
+Two ways to stop that, and neither is chosen. The Images run could commit a
+`k8s/deploy` kustomization naming its own digests on a release tag, so that
+`ref=v1.2.0` alone pins everything -- which means the workflow writes to the
+repository, and a release becomes two commits. Or each release could carry its
+digests as a release asset that the infrastructure repository's own tooling
+reads. Until one is, a deployment that leaves `digest` out still works, pinned
+by tag only. An upgrade is a commit to this file; a rollback is
 reverting it -- with the caveat about the database below.
 
 The generated ConfigMap gets a hash suffix that changes with its contents, so

@@ -3,8 +3,11 @@
 How a workspace's agents come to reach anything useful, and who decided they
 could.
 
-Nothing here is built. [egress.md](egress.md) describes the mechanism this
-rests on and is mostly built; this is about who supplies the hosts and the
+Tier 1 is built: operator-allowed hosts, client credentials, credential
+bindings and sealed credentials. Vetted extensions, the setting that restricts
+workspace rules, per-agent rules and authorization-code grants are not.
+[egress.md](egress.md) describes the mechanism this rests on and is mostly
+built; this is about who supplies the hosts and the
 credentials, which that document deliberately does not answer.
 
 ## The deployment this is for
@@ -46,7 +49,9 @@ that already know how to call them.
 **This exists.** `egress_rules` carries the host and the name of the
 environment variable holding a credential; `skill_version_hosts` lets a skill
 declare the hosts it will reach; the difference between declared and allowed
-surfaces as `unmet_hosts`. A workspace cannot grant itself a host.
+surfaces as `unmet_hosts`. A workspace allows its own hosts with
+`settings:update`; a skill's declared hosts are only a request until a rule
+allows them.
 
 What sits behind the declaration is `fetch_url` and a skill. A skill says it
 will reach `api.example.com`, the rule permits it, and the agent composes the
@@ -224,8 +229,10 @@ add hosts is permitted to add *public* hosts.
 
 Today a credential cannot be aimed anywhere. The gateway reads the named
 environment variable and attaches the header
-(`crates/gateway/src/egress/mod.rs`), and both halves of that rule -- the host and the
-variable naming the secret -- are set by an operator editing manifests. The
+(`crates/gateway/src/egress/mod.rs`). A rule is written through the API by the
+workspace, and its credential is either a sealed credential bound to its host
+or an operator's `OUTTURN_EGRESS_` variable bound by
+`OUTTURN_CREDENTIAL_BINDINGS`. The
 guest never holds the value, the runtime never holds it, and a request's own
 headers are refused if they carry one.
 

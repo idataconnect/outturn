@@ -85,6 +85,7 @@ nav:
       - Models and spend:
           - Routing: routing.md
           - Models: models.md
+          - The model catalog: model-catalog.md
           - Amazon Bedrock: bedrock.md
           - Usage: usage.md
           - Prompt caching: caching.md
@@ -109,6 +110,7 @@ nav:
           - Inhibitors: inhibitors.md
           - Approvals: approvals.md
           - Auto-approval: auto-approval.md
+          - Approval rules: approval-rules.md
           - The admin agent: admin-agent.md
           - Prompt contributors: prompt-contributors.md
           - Personalities: personalities.md
@@ -116,6 +118,7 @@ nav:
           - Idempotency: idempotency.md
       - Storage and search:
           - Storage: storage.md
+          - Storage quota: storage-quota.md
           - Streaming storage: streaming-storage.md
           - Document extraction: document-extraction.md
           - PDF rendering: pdf-rendering.md

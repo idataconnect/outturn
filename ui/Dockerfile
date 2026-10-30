@@ -8,7 +8,7 @@
 # One image for every deployment. The name, mark, tagline and theme are read
 # from the environment when the container starts (server/config.json), not
 # compiled in; see src/lib/brand.ts.
-FROM node:22 AS build
+FROM node:22@sha256:18a6d90fd60542269850c80ca03b29b1d9b14d6b221ac7ee8e35b0d33ef904bd AS build
 WORKDIR /ui
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
@@ -17,7 +17,7 @@ RUN npm run build
 
 # Only for its binary, which is static. Copied onto distroless like the tiers,
 # so the image has no shell or package manager under the server.
-FROM caddy:2.11.7-alpine AS caddy
+FROM caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f AS caddy
 # The binary ships with a file capability to bind ports below 1024. This
 # server listens on 8080 and its pod drops every capability and forbids
 # escalation, so the kernel refuses to exec a binary that asks for one:
@@ -25,7 +25,7 @@ FROM caddy:2.11.7-alpine AS caddy
 # image starts under the securityContext k8s/deploy gives it.
 RUN apk add --no-cache libcap && setcap -r /usr/bin/caddy
 
-FROM gcr.io/distroless/static-debian13 AS ui
+FROM gcr.io/distroless/static-debian13@sha256:15f8637509792e05b97d83451b0b6ccfa4abd548f997e406ac1e72c87fe1fa78 AS ui
 COPY --from=caddy /usr/bin/caddy /usr/local/bin/caddy
 COPY server/Caddyfile /etc/caddy/Caddyfile
 COPY server/config.json /srv/config/config.json

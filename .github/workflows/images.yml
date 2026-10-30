@@ -97,8 +97,19 @@ jobs:
               --cache-from "type=gha,scope=$name" \
               --cache-to "type=gha,scope=$name,mode=max" \
               "${tags[@]}" \
+              --metadata-file "$RUNNER_TEMP/$name.json" \
               --push
+            # What a deployment pins: a tag can be pushed over, a digest
+            # cannot. Written to the run's summary, beside the tag it was
+            # pushed under.
+            local digest
+            digest="$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/$name.json")"
+            echo "| \`$PREFIX-$name\` | \`${VERSION:-$SHA}\` | \`$digest\` |" >>"$GITHUB_STEP_SUMMARY"
           }
+          {
+            echo "| Image | Tag | Digest |"
+            echo "|---|---|---|"
+          } >>"$GITHUB_STEP_SUMMARY"
           build api . api
           build gateway . gateway
           build runtime . runtime

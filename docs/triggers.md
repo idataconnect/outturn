@@ -41,7 +41,7 @@ happening". A schedule somebody created at 3am on a Sunday is still theirs at
 **The sender** is who is waiting for the reply, and for a triggered turn there
 is nobody: `user_id` stays null. That is what the usage ledger already expects,
 and it is what keeps a triggered turn from clearing a stopped session's latch
--- `worker::inhibited` requires "a prompt carrying a real `user_id`", precisely
+-- `worker::turn::inhibited` requires "a prompt carrying a real `user_id`", precisely
 so an agent cannot restart itself.
 
 Conflating them would break one or the other. Putting the owner in `user_id`
@@ -452,8 +452,8 @@ Then one pipeline, in this order, for every kind:
    the turn. A schedule's external id is the time it was due, which makes a
    tick that fired twice one firing.
 2. **Ceiling**: the hourly maximum and the concurrent maximum, refused before
-   the queue. Webhooks have the first today and nothing has the second (*What
-   is still to settle*); one place to enforce both is how schedules get them.
+   the queue. Both are enforced for every kind, here (*What is still to
+   settle*).
 3. **Sender policy**: whether this sender may start this agent at all. Nothing
    for a schedule; the signature or shared secret for a webhook, already
    checked by its source; an allowlist and the mail server's own verdict for
@@ -502,17 +502,19 @@ form whose common half is the same for every kind and whose other half is the
 kind's own. Built (2026-10-20): the list, and one *Triggers* section on the
 agent's page whose *New trigger* asks the kind first. Making and editing still
 go through each kind's routes and form; one form with a common half is the
-part not yet done. The old routes stay as aliases for a release. On the agent's page,
+part not yet done; making and editing go through `/v1/schedules` and
+`/v1/webhook-triggers`. On the agent's page,
 one *Triggers* section where there are now two, each row with its kind's icon,
 as now; adding one asks which kind first.
 
 ### Order of work
 
-1. The table, the migration and the pipeline, with schedules and webhooks as
-   its first two sources -- behavior unchanged, which the existing tests say.
-2. The concurrent ceiling, for both, since the pipeline is where it goes.
-3. One API and one page.
-4. Email, as a third source (below).
+1. ~~The table, the migration and the pipeline, with schedules and webhooks as
+   its first two sources.~~ Built (migration 0047).
+2. ~~The concurrent ceiling, for both.~~ Built, for every kind.
+3. One API and one page: the list and the section are built; one form with a
+   common half is not.
+4. ~~Email, as a third source (below).~~ Built.
 
 ### Triggers are not channels
 

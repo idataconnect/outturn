@@ -806,15 +806,17 @@ export function useChatRuntime(
     callTools.current = new Map()
     thinkingSince.current = new Map()
     reasoningSeen.current = new Set()
-    if (!sessionId) {
-      // Deferred rather than synchronous, so this does not cascade a render.
-      queueMicrotask(() => {
-        setMessages([])
-        setRetrying(new Set())
-        setFailures(new Map())
-      })
-      return
-    }
+    // The messages too, whatever comes next: until the new conversation's
+    // history arrives -- and for as long as it fails to -- the one before it
+    // stayed drawn under the new one's name. Deferred rather than synchronous,
+    // so this does not cascade a render; it runs before any reply to the load
+    // below can arrive.
+    queueMicrotask(() => {
+      setMessages([])
+      setRetrying(new Set())
+      setFailures(new Map())
+    })
+    if (!sessionId) return
 
     const controller = new AbortController()
     let stopped = false

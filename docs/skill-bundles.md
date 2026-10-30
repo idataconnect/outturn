@@ -123,8 +123,8 @@ Three sources, in the order they are likely to matter:
 - A bundle and bundle-version table, and the plan that installing one produces.
 - Some way for the egress rules a bundle names to be reviewed and applied with
   it, which is the integrations design from the other end.
-- Skill packages' UI, since a bundle is mostly a way of handling several of
-  them and there is no screen for one yet.
+- A screen for a bundle: its skills, and the plan installing it produces. A
+  package's files are already edited from the skill's page.
 
 ## Open questions
 

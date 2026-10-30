@@ -7,7 +7,7 @@
 //! Python signer on a Bedrock-shaped request, since SigV4 is deterministic:
 //! the same request, keys and time make the same signature.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
 /// Keys to sign with: an access key pair, and a session token where the keys

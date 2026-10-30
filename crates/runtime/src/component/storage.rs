@@ -228,6 +228,10 @@ impl AgentHost {
         len: u32,
     ) -> Result<Vec<u8>, String> {
         let len = clamp_read(len);
+        // Held while the bytes are in the host's hands, on their way to the
+        // guest: a chunk is up to `MAX_READ_CHUNK`, and several turns reading
+        // at once are what admission exists to see.
+        let _charge = self.charge(u64::from(len), "read a file")?;
         let (storage, resolved) = self.object_at(&path)?;
 
         // A document is handed over as the words in it, not as the bytes a
@@ -292,6 +296,7 @@ impl AgentHost {
         len: u32,
     ) -> Result<Vec<u8>, String> {
         let len = clamp_read(len);
+        let _charge = self.charge(u64::from(len), "read a file")?;
         // The object as stored: no extraction, no redirect. What read_object
         // does for a document is a convenience for reading; this is for the
         // callers that need the thing itself.
@@ -567,6 +572,9 @@ impl outturn::agent::host::HostObjectWriter for AgentHost {
         chunk: Vec<u8>,
     ) -> Result<(), String> {
         self.take_bytes(chunk.len() as u64)?;
+        // The chunk is already here; held against admission while it is sent
+        // on, as `write_object`'s bytes are.
+        let _charge = self.charge(chunk.len() as u64, "write a file")?;
         let state = self.table.get_mut(&writer).map_err(|e| e.to_string())?;
         match state.inner.write(&chunk).await {
             Ok(()) => Ok(()),
@@ -614,8 +622,10 @@ impl outturn::agent::host::HostObjectReader for AgentHost {
         reader: wasmtime::component::Resource<ReaderState>,
         len: u32,
     ) -> Result<Vec<u8>, String> {
+        let len = clamp_read(len);
+        let _charge = self.charge(u64::from(len), "read a file")?;
         let state = self.table.get_mut(&reader).map_err(|e| e.to_string())?;
-        match state.inner.read(clamp_read(len) as usize).await {
+        match state.inner.read(len as usize).await {
             Ok(bytes) => Ok(bytes),
             Err(e) => Err(self.storage_failed("read", e)),
         }

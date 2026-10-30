@@ -3,7 +3,7 @@
 How defaults cascade from the operator to workspaces to agents, and who may
 change what. Built: the catalog is `crates/api/src/settings/mod.rs`, the rows are
 `setting_overrides`, and the walk is `SettingsStore::resolve`, called once per
-turn in `prepare_turn`. It holds nine settings, listed under
+turn in `prepare_turn`. It holds thirteen settings, listed under
 [What is in it](#what-is-in-it).
 
 Settings that only mean something to a model -- `temperature`,
@@ -80,15 +80,19 @@ over by `stored_bytes_set_by`; see [storage-quota.md](storage-quota.md)). The
 operator also sets any setting for one workspace, including one it keeps to
 itself, at `PUT /v1/workspaces/{id}/settings/{key}`.
 
-- Every setting in the catalog today: temperature, reasoning effort, file
-  access for both scopes, new-host approval, model calls per turn, context
-  budget and session naming. All workspace-overridable.
+- Every setting in the catalog today, by who may override it:
+  - workspace-overridable: temperature, reasoning effort, file access for both
+    scopes, new-host approval, model calls per turn, file writes per turn,
+    context budget and session naming;
+  - operator-only: storage (`max_stored_bytes`, unless handed to workspaces)
+    and who sets storage (`stored_bytes_set_by`);
+  - operator ceilings: dictation and auto-approval (`auto_approve_max_risk`).
 - Model routing: operator-only. The operator certified a workflow against a
   model and pays for it; a workspace switching models breaks both. A workspace that
   brings its own key gets model choice within what the operator has certified,
   and that is a routing feature (see [routing.md](routing.md)), not a setting.
-- Storage retention per scope, when built: operator-only default, workspace may
-  shorten.
+- Storage retention per scope is not built. When it is: an operator-only
+  default a workspace may shorten.
 
 ## What the UI does with it
 
@@ -106,8 +110,8 @@ every setting, and the operator is the one who set the defaults.
 
 ## Skills as a level
 
-When skills exist, a skill sits between workspace and agent in the walk and may
-pin settings: an invoice skill certified at low temperature and high reasoning
+Not built: a skill as a level between workspace and agent in the walk, which
+could pin settings: an invoice skill certified at low temperature and high reasoning
 effort declares that, and an agent running the skill gets those values however
 the workspace configured itself. A skill's pins are declared in its frontmatter,
 because they are facts about the skill; who is billed for running it is not,
@@ -118,8 +122,9 @@ and never belongs there.
 Temperature, reasoning effort and model calls per turn began here, moved out
 of the agent's free-form `policy` JSON, where they had no defaults above the
 agent and no way for an operator to set them once. The rest arrived with the
-features they govern. Storage retention comes when scopes do. Every setting
-below is workspace-overridable, and so overridable per agent too.
+features they govern. Storage retention per scope is not built. Unless its row
+says otherwise, a setting below is workspace-overridable, and so overridable
+per agent too.
 
 | Key | Label | Default | Choices |
 |---|---|---|---|
@@ -258,7 +263,9 @@ the ceiling per workspace; the workspace writes its policies under it. See
 [auto-approval.md](auto-approval.md).
 
 The endpoints are `/v1/settings` (workspace), `/v1/platform/settings`
-(operator) and `/v1/agents/{id}/settings` (agent), each returning every
+(operator), `/v1/agents/{id}/settings` (agent) and
+`/v1/workspaces/{id}/settings` (the operator, for one workspace), each
+returning every
 setting with its effective value, where it came from, what this level would
 inherit, and whether this level has its own row. PUT sets a row, DELETE
 removes it.

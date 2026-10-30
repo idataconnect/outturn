@@ -3,7 +3,7 @@
 When an agent's action needs a person's word first, who is asked, and what
 their yes covers.
 
-Designed, partly built. `docs/action-queue.md` has the queue that shows a
+Built, but for what *Not yet* lists. `docs/action-queue.md` has the queue that shows a
 person what is waiting on them, and `docs/inhibitors.md` has the hold that
 stops the work. This is the part between them: what declares that an operation
 needs approving, what an approval is worth once given, and how far it reaches.
@@ -386,7 +386,7 @@ requests are made by the gateway for a turn: the call's usage, its transcript
 entry and its idempotency record belong to the turn that asked for it, and a
 second path out of the API would be a second thing to keep honest.
 
-**The model is given the answer, not an instruction.** `worker::answered`
+**The model is given the answer, not an instruction.** `answered` in `worker/projection.rs`
 replaces the refused tool result with the response, under a line saying who
 approved it -- "Approved by Dana Reyes and sent:" and then what came back. Declined
 reads "Declined by Dana Reyes", as now. The model never writes the approved call
@@ -438,7 +438,7 @@ prompt stops offering it.
 - [idempotency.md](idempotency.md), *What approvals already assume*: still
   true that the gate refuses before dispatch, and now also that only the held
   request is sent after approval. The retraction it warns about goes away.
-- `worker::answered` stops rewriting "do not retry" into "make this call
+- `worker::projection::answered` stops rewriting "do not retry" into "make this call
   now"; it substitutes the response.
 - The guest needs nothing new. It sees a tool result, as for any call.
 
@@ -468,7 +468,7 @@ the design above, and why:
   refusal; the digest keeps telling the two apart, since a grant is keyed on
   it, and finding a refusal grants nothing. Each held request answers one
   refusal. The runtime puts the answer in the conversation it was handed, and
-  `worker::answered` puts the same sentence (`egress::held::result_text`) there
+  `worker::projection::answered` puts the same sentence (`egress::held::result_text`) there
   on every later turn. Where no refusal is found -- trimmed away, or not
   recognized -- both say it in a note naming the request
   (`egress::held::unmatched_note`): the runtime before the turn's prompt, and
@@ -734,13 +734,10 @@ depending on it.
   rather than completing, keeping the reply it had written. Completing was the
   bug: the hold was taken, the job succeeded, and answering the approval had
   nothing to give back.
-- What the queue row shows for a charge. The payload carries what
-  every target may see and no more (see `NewItem` in `api::actions`), which for
-  a charge is the figure and the unit rather than the conversation that led to
-  it. - Whether a declined approval is distinguishable from an expired one in
+- ~~What the queue row shows for a charge.~~ Built: the item carries `risk`
+  and `money` (`api::gated`); see [auto-approval.md](auto-approval.md).
+- Whether a declined approval is distinguishable from an expired one in
   the transcript. Both leave the turn unable to proceed; only one of them was a
-  decision. - Tagging operations by risk, which [inhibitors.md](inhibitors.md)
-  already places: the right shape applied too early, worth revisiting once there
-  are enough declared operations to see whether they sort into groups. The
-  OpenAPI wizard now produces hundreds, and [auto-approval.md](auto-approval.md)
-  designs `risk` as a selector for workspace policies -- and nothing else.
+  decision.
+- ~~Tagging operations by risk.~~ Built: `risk` in an operation's frontmatter,
+  read by routing and by policies; see [auto-approval.md](auto-approval.md).

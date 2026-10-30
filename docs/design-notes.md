@@ -28,14 +28,20 @@ corrected weekly from the bucket, is [docs/storage-quota.md](storage-quota.md).
 How an agent reaches anything outside the platform -- and why the tier running
 workspace code holds no credential and opens no socket -- is in
 [docs/egress.md](egress.md). It also has the design for reaching a service
-inside the cluster, which is refused today -- an escape hatch rather than the
+inside the cluster, which is refused unless the operator names the host in
+`OUTTURN_INTERNAL_HOSTS` -- an escape hatch rather than the
 usual path, since a customer's service normally has a public name and needs
 none of it. Where one genuinely does not, the guard that stops a workspace
 aiming the gateway at `outturn-api` stops that too, and the operator's list is
 what separates them.
 
 Who supplies those hosts and the credentials that go with them is a separate
-question, designed and unbuilt in [docs/integrations.md](integrations.md):
+question, in [docs/integrations.md](integrations.md). Part of it is built: a
+skill declares its hosts and someone who may write egress rules opens them in
+one step, with client credentials, credential bindings
+([docs/credential-bindings.md](credential-bindings.md)) and sealed credentials
+([docs/sealed-credentials.md](sealed-credentials.md)) to authenticate. The
+rest is designed:
 the operator installs their own APIs, approves extensions a workspace can turn
 on for itself, and may optionally let a workspace add its own hosts -- which is
 today's behavior, so that tier is a restriction to add rather than a feature.
@@ -56,11 +62,12 @@ Written up in [docs/usage.md](usage.md).
 Which model answers, whose key pays and how fallback works across workspaces that
 bring their own keys is in [docs/routing.md](routing.md); how defaults
 cascade from operator to workspace to agent with an explicit override at each
-level is in [docs/settings.md](settings.md). Both are mostly design: each
-says what exists.
+level is in [docs/settings.md](settings.md). Settings are built; routing is
+part built and part replaced by models.md.
 
 Which models a deployment has, and what each accepts, is
-[docs/models.md](models.md), built but for Bedrock: a catalog from models.dev
+[docs/models.md](models.md), built -- Bedrock included, tested against
+stand-ins but not yet against AWS: a catalog from models.dev
 shipped in the image and checked weekly; provider accounts with sealed keys,
 models pinned or tracking the latest in their line, and a chain per traffic
 class, all configured on Platform → Models or made by a recipe on Platform →
@@ -69,11 +76,14 @@ would not survive waiting in the operator's inbox; and a note under any reply
 a fallback answered. The gateway takes each model's facts from the catalog
 rather than its name. How a model's reasoning
 is asked for, shown, kept and given back is [docs/thinking.md](thinking.md);
-asking and showing are built, keeping a thinking block's signature through
-every tier is not.
+asking, showing and keeping are built. Prompt caching marks the system prompt
+and the newest message for Anthropic ([docs/caching.md](caching.md)); a long
+conversation is summarized rather than truncated, and the system prompt is
+spent rather than compacted ([docs/compaction.md](compaction.md)).
 
 Starting a turn when nobody is typing is in [docs/triggers.md](triggers.md)
-— schedules and webhooks being built, email designed and deferred. An inbound
+— schedules, webhooks and inbound email are built; email through IMAP is
+designed and unbuilt. An inbound
 delivery is authenticated by `hmac` or by `shared_secret`, and under `hmac` it
 is recorded so the same signed request cannot be spent twice: the record is
 anchored to the signed timestamp rather than to arrival, and released again on
@@ -93,8 +103,8 @@ reads an operation with `read_object` when it needs one, which is the same
 trade `load_tools` already makes for the guest's own tools.
 
 The wizard and its page are built, and what it makes is a *derivation* -- a stored specification plus annotations keyed by operation
-(notes, preferences, hidden operations, approval rules; observed examples are
-still to come) -- so an updated specification proposes a new version that keeps
+(notes, preferences, hidden operations, approval rules and write identities;
+observed examples are still to come) -- so an updated specification proposes a new version that keeps
 everything people added and reports what no longer applies. Agents still read only published
 versions; annotations never reach a turn. In the same document, under "A
 derivation, not an output".
@@ -102,7 +112,11 @@ derivation, not an output".
 A skill as a body plus files versioned together -- a *package* -- is in
 [docs/skill-packages.md](skill-packages.md), built. A
 version carries its files, a fork copies them, and an agent reads them as
-`skill/<slug>/<path>` from the version its binding resolved to.
+`skill/<slug>/<path>` from the version its binding resolved to. A skill's
+operations are offered to the model as tools of their own
+([docs/skill-operations.md](skill-operations.md)), and an agent made from an
+operator's template keeps the operator's instructions while a workspace adds
+its own ([docs/agent-templates.md](agent-templates.md)).
 
 Several skills shipped and versioned as one thing -- a *bundle*, "Accounts
 Receivable" rather than any one skill in it -- is designed and unbuilt in
@@ -110,11 +124,13 @@ Receivable" rather than any one skill in it -- is designed and unbuilt in
 a bundle whose hosts and credentials a workspace must still arrange by hand
 cannot do its job.
 
-How somebody finds out their skill is not working is designed but unbuilt, in
-[docs/skill-evaluation.md](skill-evaluation.md) — a skill that documents
+How somebody finds out their skill is not working is mostly unbuilt, in
+[docs/skill-evaluation.md](skill-evaluation.md). What exists is a person's
+verdict on a reply or conversation, and per-skill statistics on the dashboard.
+A skill that documents
 its call the way an API's own docs do ("GET https://…") reads fine to a capable
-model and gets called as a tool name by a weaker one, and nothing today would
-say so. Most of that is a query rather than an inference; the judged half reads
+model and gets called as a tool name by a weaker one, and nothing today says so
+on its own. Most of that is a query rather than an inference; the judged half reads
 untrusted transcripts, which is the part to be careful with.
 
 Finding a conversation again is in
@@ -125,8 +141,10 @@ Still designed only: searching message content, and embeddings as an optional co
 rather than beside it: an embedding is a model call, and a model call that
 skipped the ledger would be the first.
 
-What happens to a write nobody saw the answer to is designed but unbuilt, in
-[docs/idempotency.md](idempotency.md) — a tool call has three outcomes
+What happens to a write nobody saw the answer to is part built, in
+[docs/idempotency.md](idempotency.md): the invocation record and declared
+write identities exist, and replay from the record; the read-back probe does
+not — a tool call has three outcomes
 rather than two, and the third, sent-but-never-observed, is what a crash
 creates however carefully a turn is written. Not what a stop creates: stopping
 only happens at a round boundary, and a round cut partway has its tool calls
@@ -192,10 +210,9 @@ skill-packages.md made those files versioned, immutable and writable only under
 is in [docs/action-queue.md](action-queue.md) -- partly built, ahead of the advice
 in inhibitors.md that said to wait for something to notify about. The queue
 exists with role-valued targeting and one read across every workspace a person
-belongs to; what it still points at is an event rather than the hold, and it
-carries a lifecycle column the hold should own. That document settles which is
-the truth and what changes when suspension lands. Nothing should start reading
-`action_items.state` as the answer to whether a request is open.
+belongs to. An approval's item names its hold through `inhibitor_id`. Its
+`state` column is still read as whether a request is pending -- the second copy
+of the hold's lifecycle that action-queue.md argues should go.
 
 A refused call is held whole, and an approved one is sent by the platform. The
 gate answers the guest with "Do not retry this request", which is right while
@@ -232,6 +249,21 @@ conversation, since a few are easy to misread — and two of them recently swapp
 A *package* is one skill shipped as a body plus its files; a *bundle* is several
 skills shipped together. Until recently "bundle" meant the first, so anything
 written before the swap that says "bundle" for one skill means *package*.
+
+Files are more than bytes once a turn reads them. A document's text is
+extracted by an optional Tika component and read in its place
+([docs/document-extraction.md](document-extraction.md)); an agent writes a
+PDF from Markdown through an optional renderer
+([docs/pdf-rendering.md](pdf-rendering.md)); a phone's HEIC photo becomes a
+JPEG at upload ([docs/heic.md](heic.md)); and an image is described by a
+model that can see it rather than handed to one that cannot
+([docs/vision.md](vision.md)). Large files are read and written in parts
+([docs/streaming-storage.md](streaming-storage.md)). Everything besides the
+conversation that shapes what a model is given -- the system prompt, tools
+loaded up front, an invoked skill -- is a prompt contributor
+([docs/prompt-contributors.md](prompt-contributors.md)), composed once per
+conversation. An agent reading its own past conversations is designed and
+unbuilt ([docs/history-access.md](history-access.md)).
 
 ## Direction
 

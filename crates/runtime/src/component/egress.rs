@@ -224,6 +224,11 @@ impl AgentHost {
     /// a fact it already had to guess to ask.
     pub(super) async fn fetch(&mut self, request: HttpRequest) -> Result<HttpResponse, String> {
         Self::count(&mut self.fetches_used, MAX_FETCHES_PER_TURN, "requests")?;
+        // The body as the guest gave it and as it is sent on, held for the
+        // call. What comes back is not charged: nothing yet bounds it (see
+        // docs/roadmap.md).
+        let body = request.body.as_ref().map_or(0, |b| b.len() as u64);
+        let _charge = self.charge(body.saturating_mul(2), "make a request")?;
         let token = self.current_token().await;
         let gates = self.gates.clone();
         let (sent, dispatched) = self.dispatch(request, token, gates).await?;
