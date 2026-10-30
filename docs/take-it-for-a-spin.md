@@ -12,8 +12,8 @@ credentials, and a gateway that does.
 
 ## What you need
 
-A Mac with enough memory for a 20GB model, a local Kubernetes cluster, and
-ollama. [Getting started](guide/getting-started.md) covers the prerequisites and how
+A local Kubernetes cluster, and either a key for a hosted model or a machine
+that can run a 20GB model through ollama. [Getting started](guide/getting-started.md) covers the prerequisites and how
 to get a cluster.
 
 ## 1. Start it
@@ -203,9 +203,8 @@ role rather than to a person: who may approve a charge is a question about the
 house's own organization, and it changes without the pending request changing.
 Answering it releases the hold and gives back any turn parked under it.
 
-What does not yet follow is the charge going through. An approval records no
-capability, so the resumed turn meets the same gate and is refused again --
-`docs/approvals.md`'s *Not yet* has both halves of what closing that loop needs.
+Approving it lets the charge go through: the approval mints a grant for that
+one request, carried in the resumed turn's token.
 
 Decline it instead and the hold stays on. The conversation stays paused, which
 is honest: nothing has changed about whether the charge may happen.

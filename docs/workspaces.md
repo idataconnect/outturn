@@ -62,9 +62,10 @@ is which account is chosen, not how credentials are stored or reached.
 
 An agent's policy decides which model runs its turns, which route serves them,
 whether the model deliberates before answering, and how many tool rounds a turn
-may take. Today it is per-agent and nothing above it has an opinion, so every
-agent is configured from scratch by whoever made it — and an agent created
-without one runs on whatever the deployment happens to default to.
+may take. Today these are settings that cascade -- the agent, its workspace,
+the operator, then the default -- with some the operator keeps to itself and
+some it caps ([settings.md](settings.md)); models come from the operator's
+chains. What is not built is an organization level above the workspace.
 
 That is the wrong level for most of these. Whether a local model should think
 before answering is a property of the deployment, not of an agent: the site
@@ -86,13 +87,16 @@ two.
 
 ## Attribution
 
-Two different questions, and today only the first is answered.
+Two different questions, and both are answered for the operator and its
+workspaces.
 
 **Where did the work happen?** The workspace. Recorded: every message carries
 `session_id`, `user_id`, `provider`, `model`, and five token counts —
 prompt, completion, cache read, cache write and reasoning.
 
-**Whose credential paid for it?** Not recorded. When an organization's key
+**Whose credential paid for it?** Recorded per model call in
+`usage_ledger.credential_owner` and `account`, though every call is paid by the
+operator until a workspace brings its own key ([usage.md](usage.md)). When an organization's key
 serves a workspace's work, those are different parties, and the difference is
 exactly what a bill has to be decomposed by. Without it an organization
 absorbing spend across fifty workspaces can see a total and cannot break it down,
@@ -109,7 +113,9 @@ Monday, and a rule read at query time would say exactly that.
 
 ## Not built
 
-Organizations, the ownership column, the credential resolution order and its
-switch, and the paying-credential attribution. `workspace_id` is the isolation
+Organizations, the ownership column, and their level of credential
+resolution. Workspaces themselves are built: the operator creates, renames and
+deletes them at Platform → Workspaces (`/v1/workspaces`), and the platform's
+own workspace cannot be deleted. `workspace_id` is the isolation
 boundary today and will remain so; everything here is added above and beside
 it rather than through it.
