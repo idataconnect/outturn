@@ -69,8 +69,7 @@ text included, skill versions not -- is its storage quota, counted per object
 as files are written and deleted: [storage-quota.md](storage-quota.md).
 
 Not yet: promotion of a file from session scope to something longer-lived,
-retention configured per workspace rather than by one variable, and a sweeper for
-the policies lifecycle rules cannot express.
+and retention configured per workspace rather than by one variable.
 
 ## The problem this leaves
 
@@ -158,8 +157,10 @@ performed.
 
 ## Not built
 
-Promotion of a file from session scope to something longer-lived, retention
-configured per workspace, and the sweeper. Overflow from a tool result too large to show -- written
+Promotion of a file from session scope to something longer-lived, and
+retention configured per workspace. The sweeper is built
+(`api::storage_sweep`); it sweeps by idleness and deletion, not by a policy a
+workspace chooses. Overflow from a tool result too large to show -- written
 to session scope so the model can go and read it rather than losing it -- is
 the next thing that will want the session scope that now exists.
 

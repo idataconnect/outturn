@@ -381,8 +381,9 @@ Built: the kept specification (`skill_sources`, `skill_source_revisions`),
 annotations (`skill_annotations`), regenerating as a proposal or a published
 version (`api::skill_sources`), and the section of a skill's page that adds
 notes and regenerates. Not yet: detaching a skill from its source, refreshing a
-specification from the URL it was fetched from, observed examples, and the
-auto-approval keys. What follows is the design, and what it was built to.
+specification from the URL it was fetched from, and observed examples. The
+auto-approval keys and `identity` are built (*Auto-approval annotations*,
+below). What follows is the design, and what it was built to.
 
 What the wizard produced was final: a skill version,
 whose body and files are the end of the line. Anything somebody adds afterwards
