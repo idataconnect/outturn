@@ -5,7 +5,7 @@
 # committed under assets/ for the tests and for a runtime run outside a
 # container; this stage is what makes that copy irrelevant to a release.
 # rust-lld needs libLLVM, from llvm-tools, to link a component.
-FROM rust:1 AS agent
+FROM rust:1@sha256:09027f873d45b8ecd1dc86f1fa13b7a62b875c961f017a0e331267b350430137 AS agent
 RUN rustup target add wasm32-wasip2 && rustup component add llvm-tools
 WORKDIR /agent
 COPY agents/default/ ./
@@ -16,7 +16,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --locked --release --target wasm32-wasip2 && \
     cp target/wasm32-wasip2/release/outturn_agent_default.wasm /agent_default.wasm
 
-FROM rust:1 AS builder
+FROM rust:1@sha256:09027f873d45b8ecd1dc86f1fa13b7a62b875c961f017a0e331267b350430137 AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 # The tiers are crates of their own; the root package holds the tools and tests.
@@ -60,21 +60,21 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # match the builder's glibc; a binary built against a newer one than it runs on
 # does not start. Nothing here links OpenSSL (reqwest is on rustls), which is
 # what keeps the `cc` image enough.
-FROM gcr.io/distroless/cc-debian13 AS api
+FROM gcr.io/distroless/cc-debian13@sha256:d74d144baa124dd9defd01d71872bb56c49d4441dba6153ccf790364f97e64b1 AS api
 COPY --from=builder /usr/local/bin/api /usr/local/bin/api
 ENV LISTEN_ADDR=0.0.0.0:8080
 EXPOSE 8080
 USER 65534:65534
 ENTRYPOINT ["api"]
 
-FROM gcr.io/distroless/cc-debian13 AS gateway
+FROM gcr.io/distroless/cc-debian13@sha256:d74d144baa124dd9defd01d71872bb56c49d4441dba6153ccf790364f97e64b1 AS gateway
 COPY --from=builder /usr/local/bin/gateway /usr/local/bin/gateway
 ENV LISTEN_ADDR=0.0.0.0:8081
 EXPOSE 8081
 USER 65534:65534
 ENTRYPOINT ["gateway"]
 
-FROM gcr.io/distroless/cc-debian13 AS runtime
+FROM gcr.io/distroless/cc-debian13@sha256:d74d144baa124dd9defd01d71872bb56c49d4441dba6153ccf790364f97e64b1 AS runtime
 COPY --from=builder /usr/local/bin/runtime /usr/local/bin/runtime
 COPY --from=agent /agent_default.wasm /usr/local/share/outturn/agent_default.wasm
 ENV LISTEN_ADDR=0.0.0.0:8082
@@ -83,7 +83,7 @@ USER 65534:65534
 ENTRYPOINT ["runtime"]
 
 # A model that never was. Runs at zero replicas until a load test wants it.
-FROM gcr.io/distroless/cc-debian13 AS mockllm
+FROM gcr.io/distroless/cc-debian13@sha256:d74d144baa124dd9defd01d71872bb56c49d4441dba6153ccf790364f97e64b1 AS mockllm
 COPY --from=builder /usr/local/bin/mockllm /usr/local/bin/mockllm
 EXPOSE 8083
 USER 65534:65534
@@ -92,7 +92,7 @@ ENTRYPOINT ["mockllm"]
 # A guesthouse that never was. Sends webhooks, answers a REST API, and serves
 # its own OpenAPI document, so the seams between tiers can be tested across
 # real sockets. Zero replicas until something wants it.
-FROM gcr.io/distroless/cc-debian13 AS hollowbrook
+FROM gcr.io/distroless/cc-debian13@sha256:d74d144baa124dd9defd01d71872bb56c49d4441dba6153ccf790364f97e64b1 AS hollowbrook
 COPY --from=builder /usr/local/bin/hollowbrook /usr/local/bin/hollowbrook
 EXPOSE 8084
 USER 65534:65534
@@ -101,7 +101,7 @@ ENTRYPOINT ["hollowbrook"]
 # The PDF renderer, deployed only where an operator wants PDFs
 # (k8s/components/pdf-renderer). A crate of its own, so its fonts and layout
 # are in this image and in no other.
-FROM rust:1 AS renderer-builder
+FROM rust:1@sha256:09027f873d45b8ecd1dc86f1fa13b7a62b875c961f017a0e331267b350430137 AS renderer-builder
 WORKDIR /app
 COPY renderers/pdf/ ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
@@ -109,7 +109,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --bin outturn-renderer && \
     cp /app/target/release/outturn-renderer /usr/local/bin/outturn-renderer
 
-FROM gcr.io/distroless/cc-debian13 AS pdf-renderer
+FROM gcr.io/distroless/cc-debian13@sha256:d74d144baa124dd9defd01d71872bb56c49d4441dba6153ccf790364f97e64b1 AS pdf-renderer
 COPY --from=renderer-builder /usr/local/bin/outturn-renderer /usr/local/bin/outturn-renderer
 ENV LISTEN_ADDR=0.0.0.0:8090
 EXPOSE 8090
@@ -119,7 +119,7 @@ ENTRYPOINT ["outturn-renderer"]
 # The HEIC converter, deployed only where an operator wants phone photos
 # converted (k8s/components/heic). Its own crate and its own image: libheif
 # and its HEVC decoder are in this image and in no other.
-FROM rust:1 AS heic-builder
+FROM rust:1@sha256:09027f873d45b8ecd1dc86f1fa13b7a62b875c961f017a0e331267b350430137 AS heic-builder
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libheif-dev && \
     rm -rf /var/lib/apt/lists/*
@@ -133,7 +133,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # Debian 13 rather than distroless: libheif finds its decoder as a plugin
 # loaded at runtime, and the package manager is what puts that and every
 # library under it in the right place.
-FROM debian:trixie-slim AS heic
+FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS heic
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libheif1 libheif-plugin-libde265 && \
     rm -rf /var/lib/apt/lists/*

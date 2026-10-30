@@ -41,10 +41,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Stable, tracking whatever that is -- to agree with the Dockerfile,
-      # which builds `FROM rust:1`. Pinning a version here would mean CI could
-      # go red for a toolchain the thing being shipped never uses, which is a
-      # worse failure than the occasional surprise from a new release.
+      # Stable, tracking whatever that is. The Dockerfile builds from
+      # `rust:1` pinned by digest, and is moved to the newest when the pins
+      # are raised; CI running ahead of it finds a new release's surprises
+      # before the image does. Pinning a version here would mean CI could go
+      # red for a toolchain the thing being shipped never uses.
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
