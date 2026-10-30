@@ -11148,6 +11148,215 @@ async fn a_sealed_credential_goes_where_it_was_bound_and_nowhere_else() {
     assert_eq!(sent.0.lock().unwrap().len(), after, "and stays refused");
 }
 
+/// A service account key is stored sealed through the API, and the gateway's
+/// real handler signs with it, trades the assertion at the bound endpoint, and
+/// sends the host the token it bought -- never the key, and nothing for a
+/// workspace it was not sealed for. docs/service-accounts.md.
+#[tokio::test]
+async fn a_service_account_key_buys_a_token_and_is_never_sent() {
+    use aws_lc_rs::encoding::AsDer as _;
+    use outturn::egress::seal;
+    use outturn::gateway::egress::transport::{
+        EgressTransport, TransportError, TransportResponse, VettedRequest,
+    };
+    use std::sync::Mutex;
+    use tower::ServiceExt as _;
+
+    // Literal public addresses, so nothing asks a resolver.
+    let host = "93.184.215.14";
+    let token_url = "https://93.184.215.20/token";
+
+    /// Answers the token endpoint with a token, and the API with 200, keeping
+    /// every request's URL, Authorization and body.
+    struct Google(Mutex<Vec<(String, Option<String>, String)>>);
+    #[async_trait::async_trait]
+    impl EgressTransport for Google {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+        async fn send(&self, request: VettedRequest) -> Result<TransportResponse, TransportError> {
+            let auth = request
+                .headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            let token = request.url.path() == "/token";
+            self.0.lock().unwrap().push((
+                request.url.to_string(),
+                auth,
+                request.body.unwrap_or_default(),
+            ));
+            Ok(TransportResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: if token {
+                    r#"{"access_token":"ya29.from-the-exchange","token_type":"Bearer","expires_in":3599}"#
+                        .into()
+                } else {
+                    "{}".into()
+                },
+                truncated: false,
+            })
+        }
+    }
+
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let other = h.make_workspace("Other", "other").await;
+
+    let (status, body) = h.get("/v1/credentials/seal-key", Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let key: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let public = hex::decode(key["public_key"].as_str().unwrap()).unwrap();
+    let key_id = key["key_id"].as_str().unwrap().to_string();
+
+    let pair =
+        aws_lc_rs::signature::RsaKeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
+    let b64 = |b: &[u8]| {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(b)
+    };
+    let pem = format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+        b64(pair.as_der().unwrap().as_ref())
+    );
+
+    let id = Uuid::now_v7();
+    let binding = serde_json::to_vec(&serde_json::json!({
+        "credential": id, "kind": "service_account", "workspaces": [acme],
+        "hosts": [host], "header": "authorization", "token_url": token_url,
+        "account": "bills@example-project.iam.gserviceaccount.com",
+        "scope": "https://www.googleapis.com/auth/spreadsheets",
+    }))
+    .unwrap();
+    let sealed = seal::seal(&public, &binding, pem.as_bytes()).unwrap();
+    let (status, body) = h
+        .post(
+            "/v1/credentials",
+            Some(&admin),
+            &serde_json::json!({
+                "id": id, "name": "Water bills", "binding": b64(&binding),
+                "sealed": b64(&sealed), "key_id": key_id,
+            })
+            .to_string(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (status, _) = h
+        .post(
+            "/v1/egress-rules",
+            Some(&admin),
+            &serde_json::json!({"host": host, "header": "x-goog-api-key", "credential": id})
+                .to_string(),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "only in the header it was bound to"
+    );
+    let (status, body) = h
+        .post(
+            "/v1/egress-rules",
+            Some(&admin),
+            &serde_json::json!({"host": host, "header": "authorization", "credential": id})
+                .to_string(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let seed = [13u8; 32];
+    let minter = TokenMinter::new(&seed).unwrap();
+    let validator = TokenValidator::new(
+        &TokenMinter::public_key_of(&seed),
+        outturn::auth::AUDIENCE_GATEWAY,
+    )
+    .unwrap();
+    let sent = Arc::new(Google(Mutex::new(Vec::new())));
+    let gateway = outturn::gateway::routes(Arc::new(
+        outturn::gateway::GatewayState::new(Vec::new(), validator)
+            .with_egress_transport(sent.clone())
+            .with_sealed(
+                outturn::gateway::egress::sealed::Credentials::default()
+                    .with_keys(seal::Keys::parse(SEAL_KEY).unwrap())
+                    .with_pool(h.db.pool.clone()),
+            ),
+    ));
+    let fetch = |workspace: Uuid, rule: outturn::egress::rule::EgressRule| {
+        let rules = vec![rule.clone()];
+        let token = minter
+            .mint_turn(
+                Uuid::now_v7(),
+                workspace,
+                outturn::egress::commit::root(workspace, &rules),
+                outturn::egress::gate::Gates::none().root(workspace),
+            )
+            .unwrap();
+        let body = serde_json::json!({
+            "method": "GET",
+            "url": format!("https://{host}/v4/spreadsheets/abc/values/A1:B2"),
+            "proof": outturn::egress::commit::prove(workspace, &rules, &rule).unwrap(),
+        });
+        let gateway = gateway.clone();
+        async move {
+            gateway
+                .oneshot(
+                    Request::post("/v1/egress")
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+    let rule = outturn::api::egress::rules_for(&h.db.pool, acme)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.credential == Some(id))
+        .expect("the rule names the credential");
+
+    assert_eq!(fetch(acme, rule.clone()).await, StatusCode::OK);
+    assert_eq!(fetch(acme, rule.clone()).await, StatusCode::OK);
+    let requests = sent.0.lock().unwrap().clone();
+    let exchanges: Vec<_> = requests.iter().filter(|r| r.0 == token_url).collect();
+    assert_eq!(exchanges.len(), 1, "one exchange, then held: {requests:?}");
+    assert!(
+        exchanges[0]
+            .2
+            .contains("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer"),
+        "{}",
+        exchanges[0].2
+    );
+    let to_host: Vec<_> = requests.iter().filter(|r| r.0 != token_url).collect();
+    assert_eq!(to_host.len(), 2);
+    for (_, auth, _) in &to_host {
+        assert_eq!(auth.as_deref(), Some("Bearer ya29.from-the-exchange"));
+    }
+    assert!(
+        requests
+            .iter()
+            .all(|(_, auth, body)| !body.contains("PRIVATE KEY")
+                && !auth.as_deref().unwrap_or_default().contains("PRIVATE KEY")),
+        "the key itself goes nowhere"
+    );
+
+    let before = sent.0.lock().unwrap().len();
+    assert_eq!(fetch(other, rule).await, StatusCode::FORBIDDEN);
+    assert_eq!(
+        sent.0.lock().unwrap().len(),
+        before,
+        "no exchange and no request for another workspace"
+    );
+}
+
 /// A generated skill keeps what people added to it when its specification
 /// changes: a note at the skill level reaches the body, an operation's gate
 /// becomes its frontmatter, regenerating is a proposal until published, and an

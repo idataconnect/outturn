@@ -29,6 +29,7 @@ use outturn_core::egress::commit;
 use outturn_core::egress::rule::{self as rules, ClientAuth, ClientCredentials, EgressRule};
 
 use super::internal::Internal;
+use super::sealed::Opened;
 use super::transport::{EgressTransport, TransportError, VettedRequest};
 
 /// A turn is waiting on this, and a token endpoint that has not answered in
@@ -68,6 +69,8 @@ pub enum ExchangeError {
     Unavailable,
     /// It answered with something that is not a usable bearer token.
     Unusable,
+    /// A service account's sealed key is not one this can sign with.
+    Unsignable,
 }
 
 impl ExchangeError {
@@ -80,6 +83,7 @@ impl ExchangeError {
                 | ExchangeError::Unnamable(_)
                 | ExchangeError::Refused(_)
                 | ExchangeError::Rejected { .. }
+                | ExchangeError::Unsignable
         )
     }
 }
@@ -108,6 +112,11 @@ impl std::fmt::Display for ExchangeError {
                 f,
                 "this host's credential could not be obtained just now; the provider's \
                  token endpoint did not answer"
+            ),
+            ExchangeError::Unsignable => write!(
+                f,
+                "this host's credential could not be used: it is not a private key this can \
+                 sign with. This is a configuration problem; retrying will not help"
             ),
             ExchangeError::Unusable => write!(
                 f,
@@ -138,8 +147,15 @@ enum Held {
 /// and a rule that changed is a different key.
 #[derive(Default)]
 pub struct Tokens {
-    slots: Mutex<HashMap<commit::Hash, Arc<tokio::sync::Mutex<Option<Held>>>>>,
+    slots: Mutex<HashMap<Key, Slot>>,
 }
+
+/// A rule's leaf, and for a sealed key its fingerprint: a key rotated under
+/// the same id is a different key, and the token the old one bought is not
+/// the new one's to reuse.
+type Key = (commit::Hash, String);
+
+type Slot = Arc<tokio::sync::Mutex<Option<Held>>>;
 
 impl Tokens {
     /// The token for a rule, exchanged if none is held or the one held is
@@ -152,59 +168,62 @@ impl Tokens {
         rule: &EgressRule,
         client: &ClientCredentials,
     ) -> Result<String, ExchangeError> {
-        let slot = self.slot(workspace_id, rule);
-        // Held across the exchange: that is the single flight. Everyone else
-        // asking for this rule waits here and reads what the first one got.
-        let mut held = slot.lock().await;
-        let now = Instant::now();
-        match &*held {
-            Some(Held::Token { value, refresh_at }) if now < *refresh_at => {
-                return Ok(value.clone());
-            }
-            Some(Held::Failed { error, until }) if now < *until => return Err(error.clone()),
-            _ => {}
-        }
+        let slot = self.slot((commit::leaf_of(workspace_id, rule), String::new()));
+        held_or_exchanged(
+            &slot,
+            workspace_id,
+            rule,
+            exchange(transport, internal, client),
+        )
+        .await
+    }
 
-        match exchange(transport, internal, client).await {
-            Ok((value, lifetime)) => {
-                let margin = REFRESH_MARGIN.max(lifetime / 10);
-                *held = Some(Held::Token {
-                    value: value.clone(),
-                    refresh_at: Instant::now() + lifetime.saturating_sub(margin),
-                });
-                Ok(value)
-            }
-            Err(error) => {
-                tracing::warn!(
-                    %workspace_id,
-                    host = %rule.host,
-                    error = %error,
-                    "a client-credentials exchange failed"
-                );
-                // A provider that is down is the provider's to back off from;
-                // only a refusal is something asking again cannot change.
-                *held = if error.is_configuration() {
-                    Some(Held::Failed {
-                        error: error.clone(),
-                        until: Instant::now() + FAILURE_MEMORY,
-                    })
-                } else {
-                    None
-                };
-                Err(error)
-            }
-        }
+    /// The token a service account's sealed key buys, by the same rules as a
+    /// client pair's: held per replica, refreshed when nearly spent, one
+    /// exchange in flight. The account, scope and endpoint are the binding's,
+    /// so nothing the rule or the request says reaches the assertion.
+    pub async fn service_account(
+        &self,
+        transport: &dyn EgressTransport,
+        internal: &Internal,
+        workspace_id: Uuid,
+        rule: &EgressRule,
+        opened: &Opened,
+    ) -> Result<String, ExchangeError> {
+        let slot = self.slot((
+            commit::leaf_of(workspace_id, rule),
+            opened.fingerprint.clone(),
+        ));
+        let fresh = async {
+            let binding = &opened.binding;
+            let (Some(account), Some(scope), Some(token_url)) =
+                (&binding.account, &binding.scope, &binding.token_url)
+            else {
+                // Binding::parse refuses one without them; this is that check
+                // failing open somewhere, and it fails closed here.
+                return Err(ExchangeError::Unsignable);
+            };
+            let assertion = assertion(&opened.secret, account, scope, token_url, now_secs())?;
+            let body = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer")
+                .append_pair("assertion", &assertion)
+                .finish();
+            post(transport, internal, token_url, form_headers(), body).await
+        };
+        held_or_exchanged(&slot, workspace_id, rule, fresh).await
     }
 
     /// Forgets a rule's token. Called on a 401 from its host: a provider may
     /// revoke early, and nothing else would tell this cache.
     pub fn evict(&self, workspace_id: Uuid, rule: &EgressRule) {
-        let key = commit::leaf_of(workspace_id, rule);
-        self.slots.lock().expect("token slots").remove(&key);
+        let leaf = commit::leaf_of(workspace_id, rule);
+        self.slots
+            .lock()
+            .expect("token slots")
+            .retain(|(l, _), _| *l != leaf);
     }
 
-    fn slot(&self, workspace_id: Uuid, rule: &EgressRule) -> Arc<tokio::sync::Mutex<Option<Held>>> {
-        let key = commit::leaf_of(workspace_id, rule);
+    fn slot(&self, key: Key) -> Slot {
         self.slots
             .lock()
             .expect("token slots")
@@ -212,6 +231,132 @@ impl Tokens {
             .or_default()
             .clone()
     }
+}
+
+/// What a slot holds if it is still good, or else what `fresh` exchanges for,
+/// remembered as the rules above say.
+async fn held_or_exchanged(
+    slot: &Slot,
+    workspace_id: Uuid,
+    rule: &EgressRule,
+    fresh: impl std::future::Future<Output = Result<(String, Duration), ExchangeError>>,
+) -> Result<String, ExchangeError> {
+    // Held across the exchange: that is the single flight. Everyone else
+    // asking for this rule waits here and reads what the first one got.
+    let mut held = slot.lock().await;
+    let now = Instant::now();
+    match &*held {
+        Some(Held::Token { value, refresh_at }) if now < *refresh_at => {
+            return Ok(value.clone());
+        }
+        Some(Held::Failed { error, until }) if now < *until => return Err(error.clone()),
+        _ => {}
+    }
+
+    match fresh.await {
+        Ok((value, lifetime)) => {
+            let margin = REFRESH_MARGIN.max(lifetime / 10);
+            *held = Some(Held::Token {
+                value: value.clone(),
+                refresh_at: Instant::now() + lifetime.saturating_sub(margin),
+            });
+            Ok(value)
+        }
+        Err(error) => {
+            tracing::warn!(
+                %workspace_id,
+                host = %rule.host,
+                error = %error,
+                "a token exchange failed"
+            );
+            // A provider that is down is the provider's to back off from;
+            // only a refusal is something asking again cannot change.
+            *held = if error.is_configuration() {
+                Some(Held::Failed {
+                    error: error.clone(),
+                    until: Instant::now() + FAILURE_MEMORY,
+                })
+            } else {
+                None
+            };
+            Err(error)
+        }
+    }
+}
+
+/// The longest an assertion may claim to be good for: an hour, which is what
+/// Google accepts and more than an exchange needs.
+const ASSERTION_LIFETIME: u64 = 3600;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+/// A signed RFC 7523 assertion: `account` asking `token_url` for `scope`.
+///
+/// No `sub`, ever. Naming one is how a delegated account acts as somebody
+/// else, and docs/service-accounts.md keeps that out of reach by having no
+/// way to say it.
+fn assertion(
+    key: &[u8],
+    account: &str,
+    scope: &str,
+    token_url: &str,
+    now: u64,
+) -> Result<String, ExchangeError> {
+    use aws_lc_rs::{rand::SystemRandom, signature};
+
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let header = b64.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
+    let claims = b64.encode(
+        serde_json::json!({
+            "iss": account,
+            "aud": token_url,
+            "scope": scope,
+            "iat": now,
+            "exp": now + ASSERTION_LIFETIME,
+        })
+        .to_string(),
+    );
+    let signing_input = format!("{header}.{claims}");
+
+    let der = zeroize::Zeroizing::new(pkcs8_der(key)?);
+    let pair = signature::RsaKeyPair::from_pkcs8(&der).map_err(|_| ExchangeError::Unsignable)?;
+    let mut signature = vec![0u8; pair.public_modulus_len()];
+    pair.sign(
+        &signature::RSA_PKCS1_SHA256,
+        &SystemRandom::new(),
+        signing_input.as_bytes(),
+        &mut signature,
+    )
+    .map_err(|_| ExchangeError::Unsignable)?;
+    Ok(format!("{signing_input}.{}", b64.encode(signature)))
+}
+
+/// The DER inside a PKCS#8 PEM, as a key file's `private_key` holds it.
+///
+/// An escaped newline is read as a newline too, for a key copied out of the
+/// file's JSON as text rather than parsed from it.
+fn pkcs8_der(pem: &[u8]) -> Result<Vec<u8>, ExchangeError> {
+    let text = std::str::from_utf8(pem).map_err(|_| ExchangeError::Unsignable)?;
+    let text = zeroize::Zeroizing::new(text.replace("\\n", "\n"));
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    if lines.next() != Some("-----BEGIN PRIVATE KEY-----") {
+        return Err(ExchangeError::Unsignable);
+    }
+    let mut body = zeroize::Zeroizing::new(String::new());
+    for line in lines {
+        if line == "-----END PRIVATE KEY-----" {
+            return base64::engine::general_purpose::STANDARD
+                .decode(body.as_bytes())
+                .map_err(|_| ExchangeError::Unsignable);
+        }
+        body.push_str(line);
+    }
+    Err(ExchangeError::Unsignable)
 }
 
 /// One exchange at the token endpoint, answering with the token and how long
@@ -231,8 +376,20 @@ async fn exchange(
         .map_err(|_| ExchangeError::Unconfigured(client.client_id_env.clone()))?;
     let secret = std::env::var(&client.client_secret_env)
         .map_err(|_| ExchangeError::Unconfigured(client.client_secret_env.clone()))?;
+    let (headers, body) = request_parts(client, &id, &secret)?;
+    post(transport, internal, &client.token_url, headers, body).await
+}
 
-    let url = reqwest::Url::parse(&client.token_url)
+/// Posts an exchange's form to a token endpoint, vetted as any request from
+/// this tier is, and reads the answer.
+async fn post(
+    transport: &dyn EgressTransport,
+    internal: &Internal,
+    token_url: &str,
+    headers: reqwest::header::HeaderMap,
+    body: String,
+) -> Result<(String, Duration), ExchangeError> {
+    let url = reqwest::Url::parse(token_url)
         .map_err(|_| ExchangeError::Refused("is not a URL".into()))?;
     let host = url
         .host_str()
@@ -258,7 +415,6 @@ async fn exchange(
     }
     .map_err(|_| ExchangeError::Refused("is not reachable from here".into()))?;
 
-    let (headers, body) = request_parts(client, &id, &secret)?;
     let vetted = VettedRequest {
         method: reqwest::Method::POST,
         url,
@@ -292,7 +448,7 @@ fn request_parts(
     id: &str,
     secret: &str,
 ) -> Result<(reqwest::header::HeaderMap, String), ExchangeError> {
-    use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue};
+    use reqwest::header::{AUTHORIZATION, HeaderValue};
 
     let mut form = url::form_urlencoded::Serializer::new(String::new());
     form.append_pair("grant_type", "client_credentials");
@@ -300,12 +456,7 @@ fn request_parts(
         form.append_pair("scope", scope);
     }
 
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("application/x-www-form-urlencoded"),
-    );
-    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    let mut headers = form_headers();
 
     match client.client_auth {
         ClientAuth::Basic => {
@@ -327,6 +478,17 @@ fn request_parts(
     }
 
     Ok((headers, form.finish()))
+}
+
+fn form_headers() -> reqwest::header::HeaderMap {
+    use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderValue};
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/x-www-form-urlencoded"),
+    );
+    headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+    headers
 }
 
 /// Reads what the token endpoint answered.
@@ -767,5 +929,178 @@ mod tests {
                 code: None
             })
         );
+    }
+
+    mod service_accounts {
+        use super::*;
+
+        use aws_lc_rs::encoding::AsDer as _;
+        use aws_lc_rs::signature::{self, KeyPair as _};
+        use outturn_core::egress::seal::{Binding, Kind};
+
+        const ACCOUNT: &str = "bills@example-project.iam.gserviceaccount.com";
+        const SCOPE: &str = "https://www.googleapis.com/auth/spreadsheets";
+
+        /// A key made for the test, so none is checked in, and its public
+        /// half to check what was signed with it.
+        fn key() -> (Vec<u8>, Vec<u8>) {
+            let pair = signature::RsaKeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
+            let der = pair.as_der().unwrap();
+            let body = base64::engine::general_purpose::STANDARD.encode(der.as_ref());
+            let lines: Vec<&str> = body
+                .as_bytes()
+                .chunks(64)
+                .map(|c| std::str::from_utf8(c).unwrap())
+                .collect();
+            let pem = format!(
+                "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+                lines.join("\n")
+            );
+            (pem.into_bytes(), pair.public_key().as_ref().to_vec())
+        }
+
+        fn opened(secret: Vec<u8>, fingerprint: &str) -> Opened {
+            Opened {
+                binding: Binding {
+                    credential: Uuid::nil(),
+                    kind: Kind::ServiceAccount,
+                    workspaces: vec!["*".into()],
+                    hosts: vec!["sheets.googleapis.com".into()],
+                    header: Some("Authorization".into()),
+                    token_url: Some(TOKEN_URL.into()),
+                    account: Some(ACCOUNT.into()),
+                    scope: Some(SCOPE.into()),
+                },
+                secret: zeroize::Zeroizing::new(secret),
+                fingerprint: fingerprint.into(),
+            }
+        }
+
+        fn rule() -> EgressRule {
+            EgressRule {
+                host: "sheets.googleapis.com".into(),
+                header: Some("Authorization".into()),
+                credential_env: None,
+                client: None,
+                credential: Some(Uuid::nil()),
+            }
+        }
+
+        fn form(request: &VettedRequest) -> HashMap<String, String> {
+            url::form_urlencoded::parse(request.body.as_deref().unwrap_or_default().as_bytes())
+                .into_owned()
+                .collect()
+        }
+
+        /// What the token endpoint is sent is an assertion the key signed,
+        /// saying the binding's account, endpoint and scope -- and nobody to
+        /// act as.
+        #[tokio::test]
+        async fn the_assertion_is_signed_and_says_only_what_was_bound() {
+            let (pem, public) = key();
+            let endpoint = Endpoint::new(200, GRANTED);
+            let got = Tokens::default()
+                .service_account(
+                    &endpoint,
+                    &Internal::default(),
+                    Uuid::now_v7(),
+                    &rule(),
+                    &opened(pem, "aa"),
+                )
+                .await;
+            assert_eq!(got.as_deref(), Ok("tok-1"));
+
+            let sent = endpoint.last.lock().unwrap().take().expect("an exchange");
+            assert_eq!(sent.url.as_str(), TOKEN_URL);
+            assert!(
+                sent.headers.get(reqwest::header::AUTHORIZATION).is_none(),
+                "the assertion is the credential; nothing else travels"
+            );
+            let form = form(&sent);
+            assert_eq!(
+                form["grant_type"],
+                "urn:ietf:params:oauth:grant-type:jwt-bearer"
+            );
+            let parts: Vec<&str> = form["assertion"].split('.').collect();
+            assert_eq!(parts.len(), 3);
+            let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            signature::UnparsedPublicKey::new(&signature::RSA_PKCS1_2048_8192_SHA256, &public)
+                .verify(
+                    format!("{}.{}", parts[0], parts[1]).as_bytes(),
+                    &b64.decode(parts[2]).unwrap(),
+                )
+                .expect("signed by the sealed key");
+            let header: serde_json::Value =
+                serde_json::from_slice(&b64.decode(parts[0]).unwrap()).unwrap();
+            assert_eq!(header["alg"], "RS256");
+            let claims: serde_json::Value =
+                serde_json::from_slice(&b64.decode(parts[1]).unwrap()).unwrap();
+            assert_eq!(claims["iss"], ACCOUNT);
+            assert_eq!(claims["aud"], TOKEN_URL);
+            assert_eq!(claims["scope"], SCOPE);
+            assert_eq!(
+                claims["exp"].as_u64().unwrap() - claims["iat"].as_u64().unwrap(),
+                ASSERTION_LIFETIME
+            );
+            assert!(claims.get("sub").is_none(), "nobody is impersonated");
+        }
+
+        #[tokio::test]
+        async fn a_token_is_held_until_the_key_is_rotated() {
+            let (pem, _) = key();
+            let endpoint = Endpoint::new(200, GRANTED);
+            let tokens = Tokens::default();
+            let (ws, internal, rule) = (Uuid::now_v7(), Internal::default(), rule());
+            for fingerprint in ["aa", "aa", "bb"] {
+                tokens
+                    .service_account(
+                        &endpoint,
+                        &internal,
+                        ws,
+                        &rule,
+                        &opened(pem.clone(), fingerprint),
+                    )
+                    .await
+                    .expect("a token");
+            }
+            assert_eq!(
+                endpoint.calls.load(Ordering::SeqCst),
+                2,
+                "one exchange per key, however often it is asked"
+            );
+        }
+
+        /// A key copied out of the file's JSON as text keeps its escapes.
+        #[test]
+        fn an_escaped_key_reads_as_the_key() {
+            let (pem, _) = key();
+            let escaped = String::from_utf8(pem.clone()).unwrap().replace('\n', "\\n");
+            assert_eq!(
+                pkcs8_der(escaped.as_bytes()).unwrap(),
+                pkcs8_der(&pem).unwrap()
+            );
+        }
+
+        #[tokio::test]
+        async fn what_is_not_a_key_is_never_sent() {
+            let endpoint = Endpoint::new(200, GRANTED);
+            for secret in [
+                b"Bearer sk_live_123".to_vec(),
+                b"-----BEGIN PRIVATE KEY-----\nbm90IGEga2V5\n-----END PRIVATE KEY-----\n".to_vec(),
+            ] {
+                let got = Tokens::default()
+                    .service_account(
+                        &endpoint,
+                        &Internal::default(),
+                        Uuid::now_v7(),
+                        &rule(),
+                        &opened(secret, "aa"),
+                    )
+                    .await;
+                assert_eq!(got, Err(ExchangeError::Unsignable));
+                assert!(got.unwrap_err().is_configuration());
+            }
+            assert_eq!(endpoint.calls.load(Ordering::SeqCst), 0);
+        }
     }
 }

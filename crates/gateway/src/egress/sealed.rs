@@ -233,6 +233,8 @@ mod tests {
                 hosts: vec!["a.example.com".into()],
                 header: Some("authorization".into()),
                 token_url: None,
+                account: None,
+                scope: None,
             },
             secret: zeroize::Zeroizing::new(b"k".to_vec()),
             fingerprint: String::new(),

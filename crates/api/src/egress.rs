@@ -297,7 +297,7 @@ pub async fn create(
                 workspace_id,
                 &host,
                 input.header.as_deref(),
-                outturn_core::egress::seal::Kind::Static,
+                binding.kind.on_a_request(),
             )
             .map_err(RuleError::Invalid)?;
     }
@@ -407,7 +407,7 @@ pub async fn set_credential(
                     workspace_id,
                     &host,
                     Some(header),
-                    outturn_core::egress::seal::Kind::Static,
+                    binding.kind.on_a_request(),
                 )
                 .map_err(RuleError::Invalid)?;
         }

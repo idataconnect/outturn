@@ -472,14 +472,12 @@ async fn vet_and_send(
             .get(id)
             .await
             .map_err(|why| (StatusCode::FORBIDDEN, why))?;
+        // The seal's own kind decides how it travels, and the binding refuses
+        // any kind but the two an agent's request may carry.
+        let kind = opened.binding.kind.on_a_request();
         opened
             .binding
-            .allows(
-                claims.workspace_id,
-                &host,
-                Some(header),
-                outturn_core::egress::seal::Kind::Static,
-            )
+            .allows(claims.workspace_id, &host, Some(header), kind)
             .map_err(|why| (StatusCode::FORBIDDEN, why))?;
         let name: reqwest::header::HeaderName = header.parse().map_err(|_| {
             (
@@ -487,7 +485,33 @@ async fn vet_and_send(
                 format!("{header} is not a header name"),
             )
         })?;
-        let mut value = reqwest::header::HeaderValue::from_bytes(&opened.secret).map_err(|_| {
+        let mut value = if kind == outturn_core::egress::seal::Kind::ServiceAccount {
+            // The key never leaves; the token it buys does. Exchanged after the
+            // binding allowed this host, so a token is bought only where it may
+            // go.
+            let token = state
+                .client_tokens
+                .service_account(
+                    state.egress_transport.as_ref(),
+                    &state.internal,
+                    claims.workspace_id,
+                    rule,
+                    &opened,
+                )
+                .await
+                .map_err(|e| {
+                    let status = if e.is_configuration() {
+                        StatusCode::FORBIDDEN
+                    } else {
+                        StatusCode::BAD_GATEWAY
+                    };
+                    (status, e.to_string())
+                })?;
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+        } else {
+            reqwest::header::HeaderValue::from_bytes(&opened.secret)
+        }
+        .map_err(|_| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "this host's credential cannot be sent as a header".to_string(),
@@ -629,7 +653,7 @@ async fn vet_and_send(
             // is, and the agent's next call exchanges afresh. Whether this
             // request is safe to send twice is not this tier's to decide -- see
             // docs/idempotency.md.
-            if response.status == 401 && rule.client.is_some() {
+            if response.status == 401 && (rule.client.is_some() || rule.credential.is_some()) {
                 state.client_tokens.evict(claims.workspace_id, rule);
             }
             Ok(Ok(EgressResponse {

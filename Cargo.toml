@@ -55,6 +55,10 @@ sha2 = "0.10"
 # Webhook signatures, both ends: the API verifies an inbound delivery and the
 # Hollowbrook fixture signs an outbound one.
 hmac = "0.12"
+# RS256 for a service account's assertion (docs/service-accounts.md), gateway
+# only. Already built for rustls, so naming it adds nothing to the tree; and its
+# private-key operations are constant-time, which a pure-Rust RSA's are not.
+aws-lc-rs = { version = "1.18.0", default-features = false, features = ["aws-lc-sys", "prebuilt-nasm"] }
 hex = "0.4"
 # Data URLs for an image on its way to a model; nothing else here needs it,
 # and the session token that claims to be base64 is hex.
@@ -133,6 +137,8 @@ tower = { workspace = true }
 # test-util provides the virtual clock, so tests that only wait need not
 # spend real time doing it.
 tokio = { workspace = true, features = ["test-util"] }
+# A service account key made per test, so none is checked in.
+aws-lc-rs = { workspace = true }
 
 [features]
 # Tests that need services running: Postgres for the database suites, a
