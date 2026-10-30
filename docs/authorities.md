@@ -2,6 +2,32 @@
 
 Who may do what, and where each half of that answer lives.
 
+## The vocabulary
+
+Every authority there is (`crates/core/src/auth/rbac.rs`). Those marked
+*reserved* cannot be put in a workspace role.
+
+| Authority | Lets its holder |
+|---|---|
+| `workspaces:create`, `:read`, `:update`, `:delete` | Manage workspaces across the platform. Reserved |
+| `workspaces:inhibit` | Stop or resume work across their own workspace |
+| `users:create`, `:read`, `:update`, `:delete` | Manage the workspace's people |
+| `roles:assign`, `roles:manage` | Give people roles; define what a role bundles |
+| `agents:create`, `:read`, `:update`, `:delete` | Manage agents |
+| `agents:inhibit` | Stop or resume one agent's work |
+| `sessions:create`, `:read`, `:update`, `:delete` | Hold conversations with agents |
+| `settings:read`, `settings:update` | Read and change the workspace's settings, egress rules and connections |
+| `storage:workspace:read`, `:write` | Read and change workspace-scope files |
+| `storage:agent:read`, `:write` | Read and change agent-scope files |
+| `skills:read`, `skills:write` | Read and publish skills |
+| `usage:read` | Read spend and the dashboard |
+| `credentials:read`, `credentials:write` | See and set sealed credentials |
+| `approvals:answer` | Answer approvals |
+| `approvals:delegate` | With `approvals:answer`, set approval rules |
+| `gateway:invoke` | Call a model through the gateway (a turn's token) |
+| `gateway:fetch` | Fetch a document through the gateway. Reserved |
+| `work:take` | Take turns to run (the runtime). Reserved |
+
 ## Two vocabularies
 
 **Authorities** name actions the code can take: `agents:create`,
@@ -13,13 +39,13 @@ noise and an action nothing names cannot be granted.
 **Roles** bundle authorities under a name a person recognizes. For workspaces,
 roles are data: rows in `roles` and `role_authorities`, owned by the workspace,
 created and edited by whoever holds `roles:manage` there. Every workspace starts
-with copies of the three defaults in `rbac::DEFAULT_ROLES` -- admin, operator,
-viewer -- and may rename them, change what they bundle, or replace them. An
+with copies of the three defaults -- admin, operator, viewer -- which are rows
+in `role_templates`, copied by `RoleStore::seed_defaults` -- and may rename them, change what they bundle, or replace them. An
 enterprise customer whose vocabulary is "analyst" and "compliance reviewer" is
 not a special case; it is three rows with different names.
 
 The platform reserves a few roles for itself, and those are not rows:
-`system_admin`, `runtime`, `turn`. They stay in the `Role` enum because nobody
+`system_admin`, `runtime`, `turn` and `document_fetch`. They stay in the `Role` enum because nobody
 else may define what they mean, and the role store refuses to create a workspace
 role with one of their names.
 
@@ -44,8 +70,8 @@ become a hint rather than the truth.
 `api::router::authorities_of` unions two sources:
 
 - `rbac::platform_authorities` for platform roles, in code. This is all the
-  gateway ever needs, because the only role a token it accepts can carry is
-  `turn`, and the gateway has no role store.
+  gateway ever needs, because the only roles a token it accepts can carry are
+  `turn` and `document_fetch`, and the gateway has no role store.
 - `RoleStore::authorities_for` for workspace roles, from the rows. Cached per
   workspace in each API pod. A write to a workspace's roles announces itself on the
   `outturn_roles` Postgres channel and every pod drops that workspace's entry, so
@@ -54,7 +80,10 @@ become a hint rather than the truth.
 ## Guards, because roles are editable now
 
 A role may bundle only authorities that are *workspace-assignable*. Platform-wide
-authorities -- `workspaces:*`, `work:take` -- are refused, whoever asks. This is
+authorities -- `workspaces:create`, `:read`, `:update` and `:delete`,
+`work:take` and `gateway:fetch` -- are refused, whoever asks.
+`workspaces:inhibit` is assignable despite its prefix: it acts on the caller's
+own workspace, not across them. This is
 the successor to the check constraint that used to pin role names: a workspace
 that could grant itself `workspaces:create` could make workspaces.
 
@@ -241,4 +270,5 @@ writes agent files, and viewer reads both.
 
 These govern people. An agent running in the sandbox reads through host
 imports with no person in the loop, so what *it* may reach is a policy on the
-agent, not an authority on a user. That policy is not built yet.
+agent, not an authority on a user. That policy is the `agent_file_access` and
+`workspace_file_access` settings ([settings.md](settings.md)).
