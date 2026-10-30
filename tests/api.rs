@@ -695,3 +695,5 @@ mod users;
 mod work;
 #[path = "api/leases.rs"]
 mod leases;
+#[path = "api/turn_failures.rs"]
+mod turn_failures;
