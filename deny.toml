@@ -1,0 +1,114 @@
+# What `cargo deny check` holds the dependency tree to. CI runs it beside
+# Clippy; run it locally the same way before changing a pin.
+#
+# Only the root workspace. agents/default and the renderers under renderers/
+# are workspaces of their own and are not covered here.
+
+[graph]
+# Every target, not the host's: a Linux build that passes must not hide a
+# crate that only the macOS image or a developer's laptop pulls in.
+all-features = false
+
+[advisories]
+# Every advisory fails the check, unmaintained and unsound included. One that
+# has to be lived with goes in `ignore` with the reason and what would clear it.
+unmaintained = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# The project is Apache-2.0. Everything below is permissive and compatible
+# with shipping under it. A copyleft license is not on the list: a crate that
+# offers one *or* a permissive one (ittapi, r-efi) passes on the permissive
+# one, and a crate that offers only copyleft is named under `exceptions`
+# with the reason, so it is a decision rather than a default.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "Unlicense",
+    "Unicode-3.0",
+    # webpki-roots: the Mozilla root store's data, under a permissive data
+    # license.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+exceptions = [
+    # Weak, file-level copyleft: modifying attohttpc's own files would oblige
+    # publishing those changes, and linking it does not. It arrives only
+    # through rust-s3's aws-creds, which fetches instance credentials with it.
+    { crate = "attohttpc", allow = ["MPL-2.0"] },
+]
+
+[licenses.private]
+# The workspace's own crates are not published to crates.io.
+ignore = true
+
+[bans]
+# A second version of a crate is a cost -- build time, binary size, and two
+# copies of whatever bug -- but usually not a defect, so it warns.
+multiple-versions = "warn"
+wildcards = "deny"
+# Path dependencies between the workspace's own crates carry no version.
+allow-wildcard-paths = true
+highlight = "all"
+
+# Duplicates of the RustCrypto crates fail outright, except where a
+# dependency we cannot move pins the older generation. Our own code and
+# everything else uses sha2 0.11 / hmac 0.13 / digest 0.11 / rand 0.10 /
+# ed25519-dalek 3; the 0.10 generation below is linked only for:
+#
+#   - wasmtime (cranelift-codegen, wasmtime-environ),
+#     which hashes compiled code with sha2 0.10 -- still so in 50.0.1, its
+#     newest release;
+#   - sqlx (sqlx-core, sqlx-macros-core), for Postgres SCRAM auth -- still so
+#     in 0.9.0, its newest release;
+#   - rust-s3, which signs requests with hmac 0.12 and sha2 0.10 -- still so
+#     in 0.38.0, its newest release.
+#
+# When one moves, drop it from `wrappers` and the duplicate becomes an
+# error, which is the reminder to delete the entry.
+[[bans.deny]]
+crate = "sha2@0.10"
+wrappers = [
+    "cranelift-codegen",
+    "wasmtime-environ",
+    "sqlx-core",
+    "sqlx-macros-core",
+    "rust-s3",
+]
+
+[[bans.deny]]
+crate = "hmac@0.12"
+wrappers = ["rust-s3"]
+
+[[bans.deny]]
+crate = "digest@0.10"
+wrappers = ["sha2", "hmac"]
+
+[[bans.deny]]
+crate = "curve25519-dalek@4"
+
+[[bans.deny]]
+crate = "ed25519-dalek@2"
+
+[[bans.deny]]
+crate = "rand_core@0.6"
+
+[[bans.deny]]
+crate = "rand@0.8"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

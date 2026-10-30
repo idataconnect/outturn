@@ -66,6 +66,20 @@ jobs:
       - name: Test
         run: cargo test
 
+  # Advisories, licenses, banned duplicates and sources, as deny.toml sets
+  # them out. A job of its own, since it reads Cargo.lock and the advisory
+  # database and compiles nothing. The action is pinned to a release because
+  # it carries its own cargo-deny, and a new one can tighten what passes.
+  deny:
+    name: Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: EmbarkStudios/cargo-deny-action@v2.1.1
+        with:
+          command: check
+
   # k8s/deploy and k8s/base are kept apart, and must still agree on what a
   # local cluster is there to teach about production: grace periods, the
   # runtime's memory limit, probes, security contexts. The script says why
