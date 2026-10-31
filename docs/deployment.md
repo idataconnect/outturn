@@ -7,7 +7,7 @@ it, and shares almost nothing with this.
 
 ## What there is
 
-**Images.** CI publishes four to this repository's container registry once it
+**Images.** CI publishes five to this repository's container registry once it
 has passed on a commit (`.github/workflows/images.yml`):
 
 | Image | Is |
@@ -16,6 +16,7 @@ has passed on a commit (`.github/workflows/images.yml`):
 | `ghcr.io/<owner>/outturn-gateway` | Model providers and every outbound request. Holds the credentials |
 | `ghcr.io/<owner>/outturn-runtime` | The WASM sandbox agents run in |
 | `ghcr.io/<owner>/outturn-ui` | The built UI on a static file server, carrying `/v1` through to the API |
+| `ghcr.io/<owner>/outturn-heic` | The HEIC converter, optional: run it to accept phone photos ([heic.md](heic.md)) |
 
 Each push to main is tagged with its full commit SHA; a release tag `v1.2.0`
 publishes `1.2.0` as well. There is no `latest`. A weekly job
@@ -233,7 +234,7 @@ nothing. Two need your attention:
   that would hand a compromised runtime every HTTPS host on the internet: the
   one path every other policy here closes.
 
-None of Tika, the PDF renderer or the HEIC converter is part of a release,
+None of Tika, the PDF renderer or the HEIC converter is part of `k8s/deploy`,
 and no policy here opens a path to one. Setting `OUTTURN_TIKA_URL`,
 `OUTTURN_PDF_RENDERER_URL` or `OUTTURN_HEIC_URL` alone gets a refused
 connection -- documents that are never extracted, a PDF tool that fails, a

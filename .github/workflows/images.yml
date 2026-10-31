@@ -2,6 +2,7 @@
 # registry once CI has passed on the commit they are built from.
 #
 #   ghcr.io/<owner>/outturn-api       ...-gateway   ...-runtime   ...-ui
+#   ghcr.io/<owner>/outturn-heic      the optional HEIC converter
 #
 # Tagged with the full commit SHA on every push to main, and with the version
 # as well on a release tag: v1.2.0 publishes 1.2.0. There is no `latest`, so
@@ -9,8 +10,9 @@
 #
 # After CI rather than beside it, so an image is never published from a red
 # commit: this runs on CI's completion and does nothing unless CI succeeded.
-# The mock provider and the mock guesthouse are test fixtures and are not
-# published.
+# The HEIC converter is optional but no fixture: a deployment that accepts
+# phone photos runs it, so it is published beside the tiers. The mock provider
+# and the mock guesthouse are test fixtures and are not published.
 
 name: Images
 
@@ -114,3 +116,4 @@ jobs:
           build gateway . gateway
           build runtime . runtime
           build ui ui ui
+          build heic . heic
