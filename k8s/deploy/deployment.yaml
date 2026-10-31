@@ -131,6 +131,12 @@ spec:
                   name: outturn-config
                   key: OUTTURN_TIKA_URL
                   optional: true
+            - name: OUTTURN_HEIC_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: outturn-config
+                  key: OUTTURN_HEIC_URL
+                  optional: true
             - name: OUTTURN_CATALOG_FETCH
               valueFrom:
                 configMapKeyRef:
