@@ -405,6 +405,10 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
       wake: message.metadata.wake ?? null,
       // The note a resent request's turn begins with, which nobody sent either.
       resend: message.metadata.resend ?? null,
+      // Whose own keys the reply's requests carried. Said under the reply for
+      // everybody reading the session: what one person's access fetched is
+      // in the conversation now, and the reader should be able to see whose.
+      connections: message.role === 'assistant' ? (message.metadata.connections ?? []) : [],
       // The schedule or webhook an opening message came from. Its words, not
       // a person's, so it is drawn as the trigger's rather than in a bubble on
       // the reader's side as though they had typed it.

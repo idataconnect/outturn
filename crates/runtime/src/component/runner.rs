@@ -54,6 +54,8 @@ pub struct RunOptions {
     pub on_usage: Option<UsageSink>,
     pub on_write: Option<WriteSink>,
     pub on_absorbed: Option<AbsorbedSink>,
+    /// Called when a request goes out with a person's own key.
+    pub on_connection: Option<ConnectionSink>,
     /// Called when the gateway refuses a request for want of an approval.
     pub on_gated: Option<GatedSink>,
     /// Where declared writes are recorded, so one sent twice is one write.
@@ -220,6 +222,8 @@ impl AgentRunner {
             on_usage: options.on_usage,
             on_write: options.on_write,
             on_absorbed: options.on_absorbed,
+            on_connection: options.on_connection,
+            connections_reported: Default::default(),
             session_id: options.session_id,
             // Parsed here so a bad zone from a client degrades to UTC once,
             // rather than on every call the guest makes.

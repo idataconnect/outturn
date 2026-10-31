@@ -350,6 +350,7 @@ impl Puller {
                 })
             }),
             on_absorbed: Some(sinks.on_absorbed),
+            on_connection: Some(sinks.on_connection),
             // Sleeping and timers are the API's to arrange -- a wakeup is a job,
             // a sleep a hold and a queue item -- so this only carries the ask
             // there, under the lease, as an approval request is carried.

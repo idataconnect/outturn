@@ -1244,3 +1244,49 @@ async fn a_gated_call_reaches_the_browser_as_waiting_not_failed() {
     );
     assert_eq!(shown["url"], "http://x.example/charges");
 }
+
+/// A request that went out with a person's own key is recorded on the reply,
+/// by host and by whose, once each -- from the runtime's event rather than
+/// anything the agent's tool results say. docs/user-credentials.md.
+#[tokio::test]
+async fn a_reply_says_whose_connection_it_used() {
+    let h = harness_or_skip!();
+    let (job, lease, session_id, runtime) = a_leased_turn(&h).await;
+    let dana = Uuid::now_v7();
+    sqlx::query("insert into users (id, display_name) values ($1, 'Dana Reyes')")
+        .bind(dana)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+
+    let stream = [
+        serde_json::json!({"kind": "tool", "id": "c1", "name": "fetch_url", "action": "Reading invoices", "arguments": "{}"}),
+        serde_json::json!({"kind": "connection", "host": "books.example.com", "asker": dana}),
+        serde_json::json!({"kind": "tool_result", "id": "c1", "details": "{}", "content": "{}", "is_error": false}),
+        serde_json::json!({"kind": "done", "content": "Here they are.", "prompt_tokens": 1, "completion_tokens": 1, "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0}),
+    ]
+    .map(|line| line.to_string())
+    .join("\n");
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/work/{job}/events"))
+        .header("authorization", format!("Bearer {runtime}"))
+        .header(outturn::api::work::LEASE_HEADER, lease)
+        .body(Body::from(format!("{stream}\n")))
+        .expect("request");
+    let (status, body) = h.send(req).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
+
+    let metadata: Value = sqlx::query_scalar(
+        "select metadata from agent_messages where session_id = $1 and role = 'assistant'",
+    )
+    .bind(session_id)
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("the reply");
+    assert_eq!(
+        metadata["connections"],
+        serde_json::json!([{"host": "books.example.com", "user_id": dana, "name": "Dana Reyes"}]),
+        "{metadata}"
+    );
+}

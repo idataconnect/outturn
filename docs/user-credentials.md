@@ -173,8 +173,14 @@ reaches into a shared session is sharing it with that session, exactly as
 pasting it would be. The platform's part is to make that visible rather than to
 pretend it away:
 
-- every call made with an asker's credential is drawn with whose it was --
-  *with Dana's connection* -- in the transcript, for everyone reading it;
+- a reply whose requests carried an asker's credential says whose, and to
+  which host -- *Used Dana's connection to books.example.com* -- in the
+  transcript, for everyone reading it. Per reply rather than per call, and
+  that is not a shortcut: the guest writes its own tool results, so a label
+  read from them would be the agent's to forge or leave out. The runtime's
+  host reports it instead, from the rule the API committed to, once the
+  gateway has sent the request -- and the host knows the request, not which
+  of the agent's calls it belonged to;
 - the first time a person's credential is about to be used in a session that
   has other participants, the turn says so before it runs, once per person per
   session.
@@ -417,6 +423,13 @@ session.
   sealed in the browser with their id in the binding
   (`ui/src/components/OwnConnections.tsx`). People's own keys are left out of
   *Keys no host uses*.
+- `ExecuteEvent::Connection`: the runtime's host reports a request that went
+  out with a person's own key -- the host and whose, once per host per turn,
+  only after the gateway sent it -- from the rule it matched, never from the
+  guest. The API stores it on the reply as `metadata.connections`, with the
+  person's name as it was, and the transcript draws *Used Dana's connection
+  to books.example.com* under the reply. An API that predates the event logs
+  and skips it, so the runtime may deploy first.
 - `held_requests.asker`, written from the refusing turn's `user_id`. A held
   request for a host whose rule is an asker's is handed only to a turn of that
   person, and any other turn in the session leaves it waiting -- every turn
@@ -424,7 +437,9 @@ session.
   would have sent Dana's with Sam's key, or the workspace's on a resend.
 - `tests/api/credentials.rs`, `a_persons_credential_goes_only_with_their_turns`
   and `a_person_connects_their_own_key_and_their_turns_carry_it`;
-  `tests/api/action_queue.rs`, `a_held_request_to_an_askers_host_waits_for_their_turn`.
+  `tests/api/action_queue.rs`, `a_held_request_to_an_askers_host_waits_for_their_turn`;
+  `tests/api/work.rs`, `a_reply_says_whose_connection_it_used`;
+  `tests/agent_component_fake.rs`, `a_persons_key_going_out_is_reported_by_the_host`.
 
 Two things the build decided that the design left open. On a turn nobody sent,
 an asker's rule naming no workspace credential is left out of the turn's rules
@@ -435,9 +450,9 @@ under that turn's rules, which are already resolved for them. The cost is that
 *Send again* on such a request, being nobody's turn, leaves it for the asker's
 next one.
 
-Not built: machine users, the transcript saying whose connection each call
-used and the notice before a person's key is first used in a shared session,
-and the on-behalf-of header.
+Not built: machine users, the notice before a person's key is first used in
+a shared session, and the on-behalf-of header. A reply cut off partway, and
+rebuilt from its events rather than finished, does not yet carry the line.
 
 ## Not settled
 

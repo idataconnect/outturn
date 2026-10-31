@@ -76,6 +76,8 @@ pub type ToolResultSink = Arc<dyn Fn(&ToolOutcome) + Send + Sync>;
 /// Reports the messages the guest has just been handed mid-turn, by id, at
 /// the moment it took them -- which is where in the reply they belong.
 pub type AbsorbedSink = Arc<dyn Fn(&[uuid::Uuid]) + Send + Sync>;
+/// Told when a request went out with a person's own key: the host, and whose.
+pub type ConnectionSink = Arc<dyn Fn(&str, uuid::Uuid) + Send + Sync>;
 
 /// What one model call cost, and who served it.
 ///
@@ -351,6 +353,10 @@ pub struct AgentHost {
     on_usage: Option<UsageSink>,
     on_write: Option<WriteSink>,
     on_absorbed: Option<AbsorbedSink>,
+    on_connection: Option<ConnectionSink>,
+    /// The hosts a person's own key has been reported sent to this turn, so
+    /// each is said once however many calls went there.
+    connections_reported: std::collections::HashSet<(String, uuid::Uuid)>,
     /// Zero means unbounded.
     max_tool_rounds: u32,
     /// Tools the guest should offer without being asked, by name.

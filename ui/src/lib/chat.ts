@@ -35,6 +35,9 @@ export type StartedBy = {
   name: string | null
 }
 
+/** A person's own key that went out with a reply's requests, to one host. */
+export type ConnectionUsed = { host: string; user_id: string; name: string | null }
+
 /** A tool the agent ran, labeled by the agent with what it was doing. */
 export type ToolCallRecord = {
   id: string
@@ -138,6 +141,9 @@ export type Message = {
   metadata: {
     tool_calls?: ToolCallRecord[]
     parts?: MessagePart[]
+    /** Whose own keys this reply's requests carried, recorded by the
+     *  platform rather than the agent. See docs/user-credentials.md. */
+    connections?: ConnectionUsed[]
     /** Present when this message is a compaction summary standing in for the
      *  conversation up to the id it names. Shown as a summary rather than as
      *  something the agent said, so a reader can see that their conversation

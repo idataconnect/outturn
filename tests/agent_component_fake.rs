@@ -75,6 +75,7 @@ fn options(gateway: &FakeGateway, progress: Option<Progress>) -> RunOptions {
         on_usage: None,
         on_write: None,
         on_absorbed: None,
+        on_connection: None,
         on_gated: None,
         invocations: None,
         on_wait: None,
@@ -2002,7 +2003,8 @@ async fn a_file_that_is_not_text_is_read_as_hex() {
         "a refusal should say how to look anyway: {plain}"
     );
 
-    let hex = read(r#"{"path":"session/IMG.HEIC","format":"hex","action":"Looking at its bytes"}"#).await;
+    let hex =
+        read(r#"{"path":"session/IMG.HEIC","format":"hex","action":"Looking at its bytes"}"#).await;
     let dump: serde_json::Value = serde_json::from_str(&hex).expect("json");
     let content = dump["content"].as_str().unwrap_or_default();
     assert!(
@@ -4194,4 +4196,60 @@ async fn a_banded_policy_reaches_the_gateway_as_committed() {
     assert_eq!(fetched.len(), 1, "{fetched:?}");
     let carried: Gates = serde_json::from_value(fetched[0]["gates"].clone()).unwrap();
     assert!(carried.matches(workspace, &root), "{}", fetched[0]["gates"]);
+}
+
+/// A request that went out with a person's own key is reported by the host,
+/// once per host for the turn; one the gateway did not send, or one that
+/// carries the agent's key, is not. docs/user-credentials.md.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_persons_key_going_out_is_reported_by_the_host() {
+    let dana = Uuid::now_v7();
+    let run = |answered: bool, asker: Option<Uuid>| async move {
+        let gateway = FakeGateway::start(Behavior::ToolThenReply {
+            name: "fetch_url".into(),
+            arguments: r#"{"url":"https://books.example.com/api/invoices","action":"Reading"}"#
+                .into(),
+            reply: "Done.".into(),
+        })
+        .await;
+        if answered {
+            gateway.answer_egress(200, "[]");
+        } else {
+            gateway.fail_egress(false, "the connection was refused");
+        }
+        let reported: Arc<Mutex<Vec<(String, Uuid)>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut options = options(&gateway, None);
+        options.on_connection = Some({
+            let reported = Arc::clone(&reported);
+            Arc::new(move |host: &str, asker: Uuid| {
+                reported.lock().unwrap().push((host.to_string(), asker));
+            })
+        });
+        options.egress = vec![outturn::egress::rule::EgressRule {
+            host: "books.example.com".into(),
+            header: Some("authorization".into()),
+            credential_env: None,
+            client: None,
+            credential: Some(Uuid::now_v7()),
+            asker,
+        }];
+        runner()
+            .run(&component(), user("my invoices"), String::new(), options)
+            .await
+            .expect("run");
+        reported.lock().unwrap().clone()
+    };
+
+    assert_eq!(
+        run(true, Some(dana)).await,
+        vec![("books.example.com".to_string(), dana)]
+    );
+    assert!(
+        run(false, Some(dana)).await.is_empty(),
+        "reported though nothing was sent"
+    );
+    assert!(
+        run(true, None).await.is_empty(),
+        "the agent's key reported as somebody's"
+    );
 }

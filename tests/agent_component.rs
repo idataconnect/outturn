@@ -118,6 +118,7 @@ async fn component_runs_a_turn_and_streams_progress() {
                 on_usage: None,
                 on_write: None,
                 on_absorbed: None,
+                on_connection: None,
                 storage: None,
                 workspace_id,
                 agent_id: Uuid::now_v7(),

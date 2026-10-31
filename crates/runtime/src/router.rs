@@ -11,8 +11,8 @@ pub use outturn_core::protocol::work::{
 };
 
 use super::component::{
-    AbsorbedSink, AgentRunner, CallUsage, ProgressSink, ReasoningSink, ToolActivity, ToolOutcome,
-    ToolResultSink, ToolSink, UsageSink, WriteSink, WritingSink,
+    AbsorbedSink, AgentRunner, CallUsage, ConnectionSink, ProgressSink, ReasoningSink,
+    ToolActivity, ToolOutcome, ToolResultSink, ToolSink, UsageSink, WriteSink, WritingSink,
 };
 
 /// Bounds a runaway guest. Generous enough for a long conversation, finite so
@@ -60,6 +60,7 @@ pub struct Sinks {
     pub on_usage: UsageSink,
     pub on_write: WriteSink,
     pub on_absorbed: AbsorbedSink,
+    pub on_connection: ConnectionSink,
 }
 
 pub fn sinks_for(tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>) -> Sinks {
@@ -169,7 +170,18 @@ pub fn sinks_for(tx: &tokio::sync::mpsc::UnboundedSender<ExecuteEvent>) -> Sinks
         })
     };
 
+    let on_connection: ConnectionSink = {
+        let tx = tx.clone();
+        Arc::new(move |host: &str, asker: uuid::Uuid| {
+            let _ = tx.send(ExecuteEvent::Connection {
+                host: host.to_string(),
+                asker,
+            });
+        })
+    };
+
     Sinks {
+        on_connection,
         progress,
         reasoning,
         writing,

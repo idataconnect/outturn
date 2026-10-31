@@ -12,7 +12,7 @@ import { useDictation } from '../lib/dictation'
 import { ReplyFeedback, ReplyThumbs } from './Feedback'
 import { ReplyModelChange } from './ModelChange'
 import TriggerIcon from './TriggerIcon'
-import type { InvokedSkill, StartedBy } from '../lib/chat'
+import type { ConnectionUsed, InvokedSkill, StartedBy } from '../lib/chat'
 import { Link } from 'react-router'
 import {
   BookText,
@@ -21,6 +21,7 @@ import {
   Copy,
   FileText,
   Hourglass,
+  KeyRound,
   Loader,
   Merge,
   Mic,
@@ -56,6 +57,10 @@ import {
   type WakeRecord,
 } from '../lib/chat'
 import { ApiError } from '../lib/api'
+
+/** One empty list, so a reply with no connections selects the same value each
+ *  render and does not re-render for a fresh `[]`. */
+const NO_CONNECTIONS: ConnectionUsed[] = []
 
 /**
  * Thread built from assistant-ui primitives directly, using this project's
@@ -501,6 +506,11 @@ function AssistantMessage() {
   )
   const newSessionHref = useContext(NewSessionHref)
   const restarted = useAuiState((s) => s.message.metadata.custom?.restarted === true)
+  // Whose own keys this reply's requests went out with, by host: recorded by
+  // the platform, not written by the agent.
+  const connections = useAuiState(
+    (s) => (s.message.metadata.custom?.connections as ConnectionUsed[] | undefined) ?? NO_CONNECTIONS,
+  )
 
   const id = useAuiState((s) => s.message.id)
   // Hooks run before the early returns below, so the age is wired up whether or
@@ -577,6 +587,18 @@ function AssistantMessage() {
         <div className="flex w-full justify-start">
           <RefusalCard refusal={refusal} newSessionHref={newSessionHref} />
         </div>
+      )}
+      {connections.length > 0 && (
+        <p className="mt-1 flex flex-wrap items-center gap-x-1 text-xs text-surface-500 dark:text-surface-400">
+          <KeyRound size={12} aria-hidden />
+          {connections.map((c, i) => (
+            <span key={`${c.user_id}:${c.host}`}>
+              {i > 0 && '; '}
+              Used {c.name ?? 'somebody'}&apos;s connection to{' '}
+              <span className="font-mono">{c.host}</span>
+            </span>
+          ))}
+        </p>
       )}
       {interrupted && !refusal && (
         <p className="mt-1 text-xs italic text-surface-500 dark:text-surface-400">

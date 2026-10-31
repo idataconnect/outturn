@@ -41,8 +41,8 @@ committed and verified, and new work goes in where it belongs, not at the end.
    through the turn by the platform, and a signed on-behalf-of header for
    backends that trust it. Built through the page: an administrator makes a
    host's connection each person's own, and each person connects their key on
-   their Account page. Next, the transcript saying whose connection a call
-   used, then machine users.
+   their Account page, and a reply says whose connection it used. Next,
+   machine users.
 6. **Service accounts** ([service-accounts.md](service-accounts.md)): a
    workspace's own Google service account key, sealed, exchanged by the
    gateway for a token whose scope the binding fixes, and a Sheets skill whose
@@ -224,8 +224,9 @@ transport and cache. Unbuilt.
 
 A connection that is the asker's rather than the agent's, so a backend applies
 its own per-user permissions. Needs sealed credentials, which are built. Built
-through the page; machine users, whose connection a call used in the
-transcript, and the on-behalf-of header are not. Per-user
+through the page, with a reply saying whose connection it used; machine
+users, the notice before a key is first used in a shared session, and the
+on-behalf-of header are not. Per-user
 OAuth grants (*Integrations*, below) are the same mechanism with another
 source of credential, and should be built on it.
 

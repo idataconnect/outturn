@@ -54,6 +54,10 @@ pub(crate) struct TurnOutcome {
     content: String,
     /// Tool calls the agent made, in order, each with the model's own label.
     tools: Vec<serde_json::Value>,
+    /// Whose own keys went out with this reply's requests, and to which
+    /// hosts: `{host, user_id, name}`, once each. Reported by the runtime's
+    /// host, so the line the reader is shown is not the agent's to write.
+    connections: Vec<serde_json::Value>,
     /// The reply in the order it arrived: prose and the calls that sat between
     /// it.
     ///
@@ -354,6 +358,7 @@ impl Worker {
         let mut stream = stream;
         let mut buffer = String::new();
         let mut tools: Vec<serde_json::Value> = Vec::new();
+        let mut connections: Vec<serde_json::Value> = Vec::new();
         // Built as the events arrive, which is the order they happened in.
         // The same builder `replay` assembles with, so what streams and what a
         // reload rebuilds are the same message.
@@ -403,6 +408,22 @@ impl Worker {
                             )
                             .await?;
                         }
+                    }
+                    Ok(ExecuteEvent::Connection { host, asker }) => {
+                        // Named as the person is called now, read once per
+                        // report: the runtime says each host once a turn.
+                        let name: Option<String> =
+                            sqlx::query_scalar("select display_name from users where id = $1")
+                                .bind(asker)
+                                .fetch_optional(&self.pool)
+                                .await
+                                .ok()
+                                .flatten();
+                        connections.push(serde_json::json!({
+                            "host": host,
+                            "user_id": asker,
+                            "name": name,
+                        }));
                     }
                     Ok(ExecuteEvent::Reasoning { text }) => {
                         // A part, where it happened. A model that thinks, calls
@@ -729,6 +750,7 @@ impl Worker {
                             awaiting_approval,
                             content,
                             tools,
+                            connections,
                             parts: parts.into_parts(),
                             usage: Usage {
                                 // Recorded as signed, since a provider that
@@ -1587,13 +1609,19 @@ impl Worker {
             .parts
             .iter()
             .any(|p| matches!(p, crate::chat::parts::Part::Reasoning { .. }));
-        let metadata = if reply.tools.is_empty() && !thought {
+        let mut metadata = if reply.tools.is_empty() && !thought {
             serde_json::json!({})
         } else if reply.tools.is_empty() {
             serde_json::json!({ "parts": reply.parts })
         } else {
             serde_json::json!({ "tool_calls": reply.tools, "parts": reply.parts })
         };
+        // Whose own keys this reply's requests carried, for everybody reading
+        // the session to see (docs/user-credentials.md, *Several people in one
+        // session*).
+        if !reply.connections.is_empty() {
+            metadata["connections"] = serde_json::Value::Array(reply.connections.clone());
+        }
 
         // Whether somebody asked for a stop, read before the final write and
         // acted on with it below.

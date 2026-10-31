@@ -263,6 +263,15 @@ pub enum ExecuteEvent {
     /// course changed and the reader can see the message there rather than
     /// below a reply that answered it.
     Absorbed { ids: Vec<uuid::Uuid> },
+    /// A request went out carrying a person's own key: `asker`'s connection
+    /// to `host` (docs/user-credentials.md). Once per host per turn, and only
+    /// once the gateway sent it.
+    ///
+    /// Reported by the runtime's host from the rule it matched, never by the
+    /// guest: the guest writes its tool results itself, and a line saying
+    /// whose access a reply used must not be one the agent could forge or
+    /// leave out.
+    Connection { host: String, asker: uuid::Uuid },
     /// One model call finished, and this is what it cost. Emitted per call
     /// rather than summed at the end, so a turn that fails after three calls
     /// still bills for three, and a turn that fell back mid-way names both

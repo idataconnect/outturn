@@ -58,6 +58,13 @@ impl AgentHost {
         let url =
             reqwest::Url::parse(&request.url).map_err(|e| format!("that URL is not one: {e}"))?;
         let (_host, rule) = egress::check_url(&self.egress, &url).map_err(|e| e.to_string())?;
+        // Whose key this request carries, if a person's: said once the
+        // gateway has sent it, from the rule the API committed to rather than
+        // from anything the guest reports.
+        let persons = rule
+            .asker
+            .zip(rule.credential)
+            .map(|(asker, _)| (rule.host.clone(), asker));
         let proof = outturn_core::egress::commit::prove(self.workspace_id, &self.egress, rule)
             .ok_or_else(|| {
                 // The rule is in the list this holds but not in what the API
@@ -159,6 +166,13 @@ impl AgentHost {
                 Err(why) if why.did_not_complete => {}
                 Err(_) => record.settle(key, None).await,
             }
+        }
+
+        if let (Some((host, asker)), Ok(_)) = (persons, &outcome)
+            && self.connections_reported.insert((host.clone(), asker))
+            && let Some(sink) = &self.on_connection
+        {
+            sink(&host, asker);
         }
 
         Ok((sent, Dispatched::Sent(outcome)))
