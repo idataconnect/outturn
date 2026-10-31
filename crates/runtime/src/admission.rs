@@ -292,19 +292,25 @@ impl Admission {
     /// top of its flat charge -- an upload's buffer, a renderer's store -- for
     /// as long as the returned guard lives.
     ///
-    /// The test is `try_admit`'s, and so is the exception: the only turn on a
-    /// pod is never refused, because no other turn is there to be squeezed
-    /// and refusing would only fail the work. A refusal is for the caller to
-    /// report to its guest, not a reason to fail the turn.
+    /// It need only fit in what is free once every turn's charge is counted.
+    /// The reserve is not asked for again: it is the headroom `try_admit`
+    /// keeps for the turns already running, and a turn that has been let in
+    /// is one of those. Asking for it here as well refused every charge on a
+    /// pod carrying two turns, however little either of them held.
+    ///
+    /// The exception is `try_admit`'s: the only turn on a pod is never
+    /// refused, because no other turn is there to be squeezed and refusing
+    /// would only fail the work. A refusal is for the caller to report to its
+    /// guest, not a reason to fail the turn.
     pub fn try_charge(&self, bytes: u64) -> Result<Charge, Refusal> {
         if self.in_flight() > 1
             && let Some(available) = self.memory.available_bytes()
         {
             let free = available.saturating_sub(self.reserved.load(Ordering::SeqCst));
-            if free < self.reserve_bytes + bytes {
+            if free < bytes {
                 return Err(Refusal::LowMemory {
                     available: free,
-                    reserve: self.reserve_bytes + bytes,
+                    reserve: bytes,
                 });
             }
         }
@@ -497,6 +503,18 @@ mod tests {
         let _second = a.try_admit().expect("admitted");
         let _fits = a.try_charge(800).expect("room for it");
         assert!(matches!(a.try_charge(800), Err(Refusal::LowMemory { .. })));
+    }
+
+    #[test]
+    fn a_charge_does_not_ask_for_the_reserve_again() {
+        // Two turns admitted with the reserve kept clear. The charge fits in
+        // what is free, and not in what is free less the reserve.
+        let a = with_memory(4, 800, Some(1_000));
+        let _first = a.try_admit().expect("admitted");
+        let _second = a.try_admit().expect("admitted");
+        let _charge = a
+            .try_charge(300)
+            .expect("a charge that fits was refused for the reserve");
     }
 
     #[test]
