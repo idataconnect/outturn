@@ -1174,3 +1174,157 @@ async fn a_rule_says_who_is_asking_only_beside_the_agents_own_key() {
         dana
     );
 }
+
+/// Before a turn may reach a host as the person asking, in a conversation
+/// somebody else is in, their prompt says so for everybody reading: whose,
+/// which hosts, and who else is here. Not alone, not twice for a host, and
+/// not for a host they have not connected. docs/user-credentials.md,
+/// *Several people in one session*.
+#[tokio::test]
+async fn a_prompt_says_whose_access_a_shared_session_is_about_to_see() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let dana_token = h
+        .login_as("dana@acme.example", None, Some((acme, "operator")))
+        .await;
+    let sam_token = h
+        .login_as("sam@acme.example", None, Some((acme, "operator")))
+        .await;
+    let person = |email: &'static str| {
+        let pool = h.db.pool.clone();
+        async move {
+            sqlx::query_as::<_, (Uuid, String)>(
+                "select u.id, u.display_name from users u \
+                 join user_identities i on i.user_id = u.id \
+                 where i.provider = 'password' and i.provider_subject = $1",
+            )
+            .bind(email)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let (dana, dana_name) = person("dana@acme.example").await;
+    let (_, sam_name) = person("sam@acme.example").await;
+
+    let (status, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"Books","slug":"books","policy":{"model":"test-model"}}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let agent = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let rule = |host: &'static str, extra: Value| {
+        let h = &h;
+        let admin = &admin;
+        async move {
+            let mut body = serde_json::json!({ "host": host });
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let (status, body) = h
+                .post("/v1/egress-rules", Some(admin), &body.to_string())
+                .await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+            serde_json::from_str::<Value>(&body).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .parse::<Uuid>()
+                .unwrap()
+        }
+    };
+    let books = rule(
+        "books.example.com",
+        serde_json::json!({ "header": "authorization", "owner": "asker" }),
+    )
+    .await;
+    // Dana's own key for it, as her connection stores one.
+    sqlx::query(
+        "insert into credentials \
+             (id, workspace_id, name, binding, sealed, key_id, user_id, rule_id) \
+         values ($1, $2, 'books.example.com', '\\x7b7d', '\\x00', 'k', $3, $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(acme)
+    .bind(dana)
+    .bind(books)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    // Somebody else's host whose connection is each person's own, which she
+    // has not connected: not reached as her, so not said.
+    rule(
+        "mail.example.com",
+        serde_json::json!({ "header": "authorization", "owner": "asker" }),
+    )
+    .await;
+
+    let (status, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&dana_token),
+            &serde_json::json!({ "agent_id": agent, "title": "" }).to_string(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let session = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let say = |token: &str, words: &str| {
+        let h = &h;
+        let path = format!("/v1/agent-sessions/{session}/messages");
+        let body = serde_json::json!({ "content": words }).to_string();
+        let token = token.to_string();
+        async move {
+            let (status, body) = h.post(&path, Some(&token), &body).await;
+            assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+            serde_json::from_str::<Value>(&body).unwrap()["metadata"]["shared"].clone()
+        }
+    };
+
+    assert!(
+        say(&dana_token, "my invoices").await.is_null(),
+        "nobody else is here"
+    );
+    assert!(
+        say(&sam_token, "and mine?").await.is_null(),
+        "Sam has connected nothing"
+    );
+    assert_eq!(
+        say(&dana_token, "the overdue ones").await,
+        serde_json::json!({
+            "name": dana_name, "hosts": ["books.example.com"], "with": [sam_name],
+        }),
+        "Sam is here now, so before her turn runs it says so"
+    );
+    assert!(
+        say(&dana_token, "and last month's").await.is_null(),
+        "said once"
+    );
+
+    // A host that is told who is asking reaches it as her too, and is said
+    // when it is first in reach.
+    let ledger = rule("ledger.example.com", serde_json::json!({})).await;
+    sqlx::query(
+        "update egress_rules set header = 'authorization', \
+             credential_env = 'OUTTURN_EGRESS_LEDGER', on_behalf_of = true where id = $1",
+    )
+    .bind(ledger)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        say(&dana_token, "and the ledger").await["hosts"],
+        serde_json::json!(["ledger.example.com"]),
+        "only what was not said before"
+    );
+}

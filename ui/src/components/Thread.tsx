@@ -12,7 +12,7 @@ import { useDictation } from '../lib/dictation'
 import { ReplyFeedback, ReplyThumbs } from './Feedback'
 import { ReplyModelChange } from './ModelChange'
 import TriggerIcon from './TriggerIcon'
-import type { ConnectionUsed, InvokedSkill, StartedBy } from '../lib/chat'
+import type { ConnectionUsed, InvokedSkill, SharedNotice, StartedBy } from '../lib/chat'
 import { Link } from 'react-router'
 import {
   BookText,
@@ -30,6 +30,7 @@ import {
   Send,
   ShieldAlert,
   Square,
+  Users,
   X,
 } from 'lucide-react'
 
@@ -273,6 +274,40 @@ function describe(status: MessageStatus): {
   }
 }
 
+/** "Sam", "Sam and Lee", "Sam, Lee and Kim". */
+function listed(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? ''
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+/**
+ * Said under a prompt before its turn runs: the turn may reach these hosts as
+ * the person who sent it, and what comes back will be in a conversation the
+ * others here read too. Across the width, for everybody, because it is about
+ * the conversation rather than something the sender typed.
+ */
+function SharedMark({ shared }: { shared: SharedNotice }) {
+  return (
+    <p
+      className="mt-1 flex w-full items-start gap-1.5 text-xs text-surface-600 dark:text-surface-400"
+      role="note"
+    >
+      <Users size={12} className="mt-0.5 shrink-0" aria-hidden />
+      <span>
+        Requests to{' '}
+        {shared.hosts.map((host, i) => (
+          <span key={host}>
+            {i > 0 && (i === shared.hosts.length - 1 ? ' and ' : ', ')}
+            <span className="font-mono">{host}</span>
+          </span>
+        ))}{' '}
+        go as {shared.name} from here on. What they bring back is in this conversation, which{' '}
+        {listed(shared.with)} can read too.
+      </span>
+    </p>
+  )
+}
+
 function UserMessage({
   onRetry,
   newSessionHref,
@@ -298,6 +333,9 @@ function UserMessage({
   )
   const skill = useAuiState(
     (s) => s.message.metadata.custom?.skill as InvokedSkill | null | undefined,
+  )
+  const shared = useAuiState(
+    (s) => s.message.metadata.custom?.shared as SharedNotice | null | undefined,
   )
   const typed = useAuiState((s) =>
     s.message.content.some((p) => p.type === 'text' && p.text.trim() !== ''),
@@ -338,6 +376,7 @@ function UserMessage({
         </div>
       )}
       <MessageAge phrase={phrase} shown={shown} align="right" />
+      {shared && <SharedMark shared={shared} />}
       {/* Terminal states stay with the message they are about, on the right
           where it sits. */}
       {!held && status && (

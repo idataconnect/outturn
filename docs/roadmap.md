@@ -49,8 +49,9 @@ committed and verified, and new work goes in where it belongs, not at the end.
    host's connection each person's own, and each person connects their key on
    their Account page, a reply says whose connection it used, and an agent's
    turns nobody started can carry a machine user, and a host that trusts the
-   platform can be told who is asking in a header the gateway signs. Next,
-   the notice before a person's key is first used in a shared session.
+   platform can be told who is asking in a header the gateway signs, and a
+   prompt in a session somebody else is in says beforehand whose access its
+   turn may bring in. What is left is under *Not settled* there.
 7. **Service accounts** ([service-accounts.md](service-accounts.md)): a
    workspace's own Google service account key, sealed, exchanged by the
    gateway for a token whose scope the binding fixes, and a Sheets skill whose
@@ -233,8 +234,8 @@ transport and cache. Unbuilt.
 A connection that is the asker's rather than the agent's, so a backend applies
 its own per-user permissions. Needs sealed credentials, which are built. Built
 through the page, with a reply saying whose connection it used and machine
-users for turns nobody started, and the signed on-behalf-of header; the notice
-before a key is first used in a shared session is not. Per-user
+users for turns nobody started, the signed on-behalf-of header, and the notice
+before a person's access is first brought into a shared session. Per-user
 OAuth grants (*Integrations*, below) are the same mechanism with another
 source of credential, and should be built on it.
 

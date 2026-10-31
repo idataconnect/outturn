@@ -38,6 +38,11 @@ export type StartedBy = {
 /** A person's own key that went out with a reply's requests, to one host. */
 export type ConnectionUsed = { host: string; user_id: string; name: string | null }
 
+/** Said on a prompt before its turn runs, when the turn may reach hosts as the
+ *  person who sent it in a conversation somebody else is in: whose, which
+ *  hosts, and who else is here, by the names they had then. */
+export type SharedNotice = { name: string; hosts: string[]; with: string[] }
+
 /** A tool the agent ran, labeled by the agent with what it was doing. */
 export type ToolCallRecord = {
   id: string
@@ -178,6 +183,9 @@ export type Message = {
      *  one, and the name it had then. Drawn as a chip beside what was typed,
      *  which may be nothing. */
     skill?: InvokedSkill
+    /** Present on a prompt whose turn may reach hosts as its sender in a
+     *  conversation somebody else is in. See docs/user-credentials.md. */
+    shared?: SharedNotice
   }
   /** How many deltas `content` already accounts for. */
   delta_next: number

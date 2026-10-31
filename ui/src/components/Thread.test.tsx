@@ -383,3 +383,36 @@ describe('a reply that shows its thinking', () => {
     expect(screen.getByRole('button', { name: /thought/i })).toBeInTheDocument()
   })
 })
+
+describe('a prompt in a conversation somebody else is in', () => {
+  it('says whose access its turn may bring in, and who else reads it', () => {
+    render(
+      <Harness
+        messages={[
+          {
+            role: 'user',
+            content: [{ type: 'text', text: 'the overdue invoices' }],
+            metadata: {
+              custom: {
+                shared: {
+                  name: 'Dana',
+                  hosts: ['books.example.com', 'ledger.example.com'],
+                  with: ['Lee', 'Sam'],
+                },
+              },
+            },
+          },
+        ]}
+      />,
+    )
+    expect(screen.getByRole('note')).toHaveTextContent(
+      'Requests to books.example.com and ledger.example.com go as Dana from here on. What they ' +
+        'bring back is in this conversation, which Lee and Sam can read too.',
+    )
+  })
+
+  it('says nothing on a prompt without the notice', () => {
+    render(<Harness messages={[{ role: 'user', content: [{ type: 'text', text: 'hello' }] }]} />)
+    expect(screen.queryByRole('note')).toBeNull()
+  })
+})

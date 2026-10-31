@@ -376,6 +376,17 @@ pub async fn send_message(
             .map_err(internal)?;
     }
 
+    // Before the turn runs, said on the prompt for everybody reading: what
+    // this person's access brings back is about to be in a conversation
+    // somebody else is in.
+    if let Some(shared) =
+        super::connections::shared_notice(&state.pool, claims.workspace_id, id, claims.subject)
+            .await
+            .map_err(internal)?
+    {
+        metadata[super::connections::SHARED] = serde_json::to_value(shared).map_err(internal)?;
+    }
+
     let message = state
         .chat
         .append_message_with(

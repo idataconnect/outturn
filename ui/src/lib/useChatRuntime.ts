@@ -416,6 +416,10 @@ const convertMessage = (message: Annotated): ThreadMessageLike => ({
       // A skill the person picked from the `/` menu, drawn as a chip beside
       // what they typed rather than as words they did not write.
       skill: message.role === 'user' ? (message.metadata.skill ?? null) : null,
+      // Whose access the turn this prompt starts may bring into a conversation
+      // somebody else is in. Said under the prompt, for everybody reading,
+      // before anything comes back.
+      shared: message.role === 'user' ? (message.metadata.shared ?? null) : null,
       // When it stopped being written. The id is creation time, which for a
       // reply that waited on an approval is not remotely the same thing.
       finishedAt: message.finished_at ?? null,

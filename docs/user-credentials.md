@@ -376,7 +376,7 @@ gateway, so the three tiers deploy together, as they did for sealed rules.
 
 ## As built
 
-Steps 1 to 6 but for the one-time notice in a shared session.
+Steps 1 to 6.
 
 - `egress::seal`: the binding's `user`, refused on any kind but `static` and
   with any `workspaces` but one id; `Binding::belongs_to`, which the gateway
@@ -497,8 +497,24 @@ under that turn's rules, which are already resolved for them. The cost is that
 *Send again* on such a request, being nobody's turn, leaves it for the asker's
 next one.
 
-Not built: the notice before a person's key is first used in a shared
-session. A reply sent on another's behalf does not carry the *Used Dana's
+- The notice in a shared session (`api::connections::shared_notice`): when a
+  person sends a prompt, before the turn is queued, the API works out the
+  hosts a turn of theirs reaches as them -- an asker's host where they have
+  connected a key, and a host that is told who is asking -- and, if anybody
+  else is in the session, stores on the prompt `metadata.shared`: their name,
+  the hosts not yet said for them in this session, and the others by name.
+  *Somebody else* is whoever started the session or has sent a prompt in it,
+  since anyone who may talk to the agent may write in it. Once per person per
+  host per session, so a host connected later is said when it is first in
+  reach; on the prompt rather than the reply, so it is there before anything
+  comes back. The transcript draws it under the prompt: *Requests to
+  books.example.com go as Dana from here on. What they bring back is in this
+  conversation, which Sam can read too.* A reader with `sessions:read` who
+  never wrote in the session is not counted, since nothing says they read
+  it; the line is in the transcript for them all the same. Test:
+  `a_prompt_says_whose_access_a_shared_session_is_about_to_see`.
+
+A reply sent on another's behalf does not carry the *Used Dana's
 connection* line, since the runtime does not know whose turn it is -- the
 token does, and the gateway is what reads it. A reply cut off partway, and
 rebuilt from its events rather than finished, does not yet carry the line.

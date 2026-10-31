@@ -303,3 +303,83 @@ pub async fn disconnect(
     );
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// What a prompt says before its turn runs, when the turn may reach a host
+/// as the person who sent it in a conversation somebody else is in. See
+/// docs/user-credentials.md, *Several people in one session*.
+///
+/// Whatever their key, or the gateway's statement of who is asking, brings
+/// back lands in a transcript everybody in the session reads. So the first
+/// time it could, the prompt says so, for everybody reading: whose, which
+/// hosts, and who else is here. Once per person per host per session -- a
+/// host they connect later is said when it is first in reach.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Shared {
+    /// The person, by the name they had then.
+    pub name: String,
+    /// The hosts newly in reach as them.
+    pub hosts: Vec<String>,
+    /// Everybody else in the session, by name: whoever started it, and
+    /// whoever has sent a prompt in it.
+    pub with: Vec<String>,
+}
+
+/// The key the notice is stored under on a prompt's metadata.
+pub const SHARED: &str = "shared";
+
+/// The notice a prompt `asker` is about to send in `session_id` carries, if
+/// any.
+///
+/// The hosts are those a turn of theirs reaches as them: one whose
+/// connection is each person's own, where they have connected a key, and one
+/// that is told who is asking. A host they have not connected is not reached
+/// as them -- the gateway refuses it -- so it is not said until they do.
+pub(crate) async fn shared_notice(
+    pool: &sqlx::PgPool,
+    workspace_id: Uuid,
+    session_id: Uuid,
+    asker: Uuid,
+) -> Result<Option<Shared>, sqlx::Error> {
+    let with: Vec<String> = sqlx::query_scalar(
+        "select u.display_name from users u \
+         where u.id <> $2 and u.machine_of is null and u.id in ( \
+             select user_id from agent_messages \
+              where session_id = $1 and role = 'user' and user_id is not null \
+             union \
+             select user_id from agent_sessions where id = $1 and user_id is not null) \
+         order by u.display_name",
+    )
+    .bind(session_id)
+    .bind(asker)
+    .fetch_all(pool)
+    .await?;
+    if with.is_empty() {
+        return Ok(None);
+    }
+    let hosts: Vec<String> = sqlx::query_scalar(
+        "select r.host from egress_rules r \
+         where r.workspace_id = $1 and r.enabled \
+           and (r.on_behalf_of or (r.owner = 'asker' and exists ( \
+               select 1 from credentials c \
+                where c.rule_id = r.id and c.user_id = $2 and c.revoked_at is null))) \
+           and r.host not in ( \
+               select jsonb_array_elements_text(m.metadata -> 'shared' -> 'hosts') \
+                 from agent_messages m \
+                where m.session_id = $3 and m.user_id = $2 and m.role = 'user' \
+                  and m.metadata ? 'shared') \
+         order by r.host",
+    )
+    .bind(workspace_id)
+    .bind(asker)
+    .bind(session_id)
+    .fetch_all(pool)
+    .await?;
+    if hosts.is_empty() {
+        return Ok(None);
+    }
+    let name: String = sqlx::query_scalar("select display_name from users where id = $1")
+        .bind(asker)
+        .fetch_one(pool)
+        .await?;
+    Ok(Some(Shared { name, hosts, with }))
+}
