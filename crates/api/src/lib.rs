@@ -10,6 +10,7 @@ pub mod auto_approval;
 pub mod catalog;
 pub mod chat;
 pub mod compact;
+mod connections;
 mod credentials;
 pub mod egress;
 mod error_body;

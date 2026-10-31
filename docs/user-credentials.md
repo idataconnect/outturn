@@ -2,8 +2,8 @@
 
 A connection that is the asking person's rather than the agent's, so that a
 backend with permissions of its own sees who is asking and applies them.
-Designed; the enforcement is built (*As built*, at the end), and nothing
-resolves a rule for an asker yet, so no turn carries one. It rests on [sealed-credentials.md](sealed-credentials.md)
+Built but for the page, machine users and the on-behalf-of header (*As
+built*, at the end). It rests on [sealed-credentials.md](sealed-credentials.md)
 and the commitment ([invariants.md](invariants.md), *The commitment is what
 makes a rule a rule*), both built, and generalizes the ownership rules that
 [integrations.md](integrations.md#whose-token-it-is) wrote for OAuth grants to
@@ -365,8 +365,7 @@ gateway, so the three tiers deploy together, as they did for sealed rules.
 
 ## As built
 
-Steps 1 and 4, and the API's refusal of a person's binding on the workspace
-routes:
+Steps 1 to 4 but for the page and machine users.
 
 - `egress::seal`: the binding's `user`, refused on any kind but `static` and
   with any `workspaces` but one id; `Binding::belongs_to`, which the gateway
@@ -382,13 +381,48 @@ routes:
   connected refused and said, a person's seal refused anywhere but on their
   own turn -- by `Binding::attaches`, the same check the API runs when a rule
   is written, so an agent's rule naming a person's key is refused there too.
-- `api::credentials`: a binding naming a person is refused, since nothing but
-  their own connection may store one and that route is not built.
-- `tests/api/credentials.rs`, `a_persons_credential_goes_only_with_their_turns`.
+- `api::credentials`: a binding naming a person is refused on the workspace's
+  routes; only their own connection stores one.
+- Migration `0074_user_credentials.sql`: `egress_rules.owner`, `agent` or
+  `asker`; `credentials.user_id` and `rule_id`, one live key per person per
+  rule; names unique only among the workspace's own keys, since a person's is
+  named for its host; and a trigger revoking a person's keys when their last
+  role in the workspace goes, however it goes.
+- `api::egress`: a rule written with `owner: asker`, which takes a header and
+  no environment variable, exchange or wildcard, and may name the workspace's
+  credential for a turn nobody sent. Its header cannot change afterwards,
+  since people's keys are sealed to it. `rules_for_turn` resolves each
+  asker's rule for the prompt's `user_id`; `prepare_turn` and `gates_for` both
+  use it, so the gates the API later derives again are over the same hosts.
+- `work::asker_of` is the prompt's `user_id`. A trade-in still renews a token
+  with no asker, which carries nobody's key -- a turn minted before this,
+  across a deploy.
+- `api::connections`: `GET /v1/connections` lists the caller's connections
+  with the seal key to seal to, since connecting one's own needs no
+  authority; `PUT /v1/connections/{rule_id}` connects or replaces a key sealed
+  as the caller's, for this workspace, host and header; `DELETE` disconnects
+  it. Members only -- a role, not just a token -- so leaving reaches every key.
+  An administrator revokes one through `DELETE /v1/credentials/{id}`.
+- `held_requests.asker`, written from the refusing turn's `user_id`. A held
+  request for a host whose rule is an asker's is handed only to a turn of that
+  person, and any other turn in the session leaves it waiting -- every turn
+  used to send the session's waiting requests, which with an asker's rule
+  would have sent Dana's with Sam's key, or the workspace's on a resend.
+- `tests/api/credentials.rs`, `a_persons_credential_goes_only_with_their_turns`
+  and `a_person_connects_their_own_key_and_their_turns_carry_it`;
+  `tests/api/action_queue.rs`, `a_held_request_to_an_askers_host_waits_for_their_turn`.
 
-Not built: everything from step 2 on but the gateway's check -- the columns,
-resolution at mint time, the Account page, machine users, held requests and
-the on-behalf-of header.
+Two things the build decided that the design left open. On a turn nobody sent,
+an asker's rule naming no workspace credential is left out of the turn's rules
+rather than committed as *nothing connected*: there is no asker for that leaf
+to name, so the host is simply not reachable on that turn. And a held request
+is not given a leaf of its own: it waits for a turn of its asker's and goes
+under that turn's rules, which are already resolved for them. The cost is that
+*Send again* on such a request, being nobody's turn, leaves it for the asker's
+next one.
+
+Not built: Connections on the Account page, machine users and the
+on-behalf-of header.
 
 ## Not settled
 

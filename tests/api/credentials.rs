@@ -574,3 +574,183 @@ async fn a_service_account_key_buys_a_token_and_is_never_sent() {
         "no exchange and no request for another workspace"
     );
 }
+
+/// The whole of a connection that is each person's own, through the routes a
+/// page would use: an administrator makes the rule, a viewer connects their
+/// own key, a turn they send carries it, a turn somebody else sends is told
+/// they have nothing connected, a turn nobody sent cannot reach the host, and
+/// leaving the workspace takes the key away. docs/user-credentials.md.
+#[tokio::test]
+async fn a_person_connects_their_own_key_and_their_turns_carry_it() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let dana_token = h
+        .login_as("dana@acme.example", None, Some((acme, "viewer")))
+        .await;
+    let sam_token = h
+        .login_as("sam@acme.example", None, Some((acme, "viewer")))
+        .await;
+    let id_of = |email: &'static str| {
+        let pool = h.db.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Uuid>(
+                "select user_id from user_identities \
+                 where provider = 'password' and provider_subject = $1",
+            )
+            .bind(email)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let (dana, sam) = (
+        id_of("dana@acme.example").await,
+        id_of("sam@acme.example").await,
+    );
+    let host = "93.184.215.14";
+
+    // An asker's rule carries each person's own key in a header, and nothing
+    // the operator or an exchange supplies.
+    let (status, _) = h
+        .post(
+            "/v1/egress-rules",
+            Some(&admin),
+            &serde_json::json!({"host": host, "header": "authorization",
+                "credential_env": "OUTTURN_EGRESS_BOOKS", "owner": "asker"})
+            .to_string(),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an asker's rule from the environment"
+    );
+    let (status, body) = h
+        .post(
+            "/v1/egress-rules",
+            Some(&admin),
+            &serde_json::json!({"host": host, "header": "authorization", "owner": "asker"})
+                .to_string(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let rule_id: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // Dana sees it, unconnected, with what to seal to -- holding no authority
+    // over the workspace's credentials.
+    let (status, body) = h.get("/v1/connections", Some(&dana_token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let listed: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(listed["connections"][0]["host"], host);
+    assert!(listed["connections"][0]["connected"].is_null());
+    let public = hex::decode(listed["seal_key"]["public_key"].as_str().unwrap()).unwrap();
+    let key_id = listed["seal_key"]["key_id"].as_str().unwrap().to_string();
+
+    let connect = |token: &str, user: Uuid, secret: &[u8]| {
+        let id = Uuid::now_v7();
+        let binding = serde_json::to_vec(&serde_json::json!({
+            "credential": id, "kind": "static", "workspaces": [acme],
+            "hosts": [host], "header": "authorization", "user": user,
+        }))
+        .unwrap();
+        let sealed = seal::seal(&public, &binding, secret).unwrap();
+        let request = Request::put(format!("/v1/connections/{rule_id}"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "id": id, "binding": b64(&binding),
+                    "sealed": b64(&sealed), "key_id": key_id,
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let h = &h;
+        async move { (h.send(request).await, id) }
+    };
+
+    let ((status, _), _) = connect(&dana_token, sam, b"Bearer sam?").await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a key sealed as somebody else"
+    );
+    let ((status, body), first) = connect(&dana_token, dana, b"Bearer dana-1").await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let ((status, body), credential) = connect(&dana_token, dana, b"Bearer dana").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "connecting again replaces: {body}"
+    );
+    let first_revoked: bool =
+        sqlx::query_scalar("select revoked_at is not null from credentials where id = $1")
+            .bind(first)
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert!(first_revoked, "the key it replaced is revoked");
+
+    // What each turn is given, as the API mints it.
+    let rules = |asker: Option<Uuid>| {
+        let pool = h.db.pool.clone();
+        async move {
+            outturn::api::egress::rules_for_turn(&pool, acme, asker)
+                .await
+                .unwrap()
+        }
+    };
+    let hers = rules(Some(dana)).await;
+    assert_eq!(hers.len(), 1);
+    assert_eq!(
+        (hers[0].asker, hers[0].credential),
+        (Some(dana), Some(credential))
+    );
+    let his = rules(Some(sam)).await;
+    assert_eq!((his[0].asker, his[0].credential), (Some(sam), None));
+    assert!(
+        rules(None).await.is_empty(),
+        "a turn nobody sent cannot reach a host whose connection is each person's"
+    );
+
+    let sent = Recorder::new();
+    let gateway = Gateway::new(&h, sent.clone());
+    let url = format!("https://{host}/api/invoices");
+    let (status, body) = gateway.fetch(acme, Some(dana), &hers[0], &url).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        sent.last().and_then(|(_, auth)| auth),
+        Some("Bearer dana".to_string())
+    );
+    let before = sent.len();
+    let (status, body) = gateway.fetch(acme, Some(sam), &his[0], &url).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body.contains("has not connected"), "{body}");
+    assert_eq!(sent.len(), before, "nothing sent for Sam");
+
+    // Leaving the workspace takes her key with her.
+    h.users
+        .revoke_workspace_role(dana, acme, "viewer")
+        .await
+        .unwrap();
+    let live: bool = sqlx::query_scalar("select revoked_at is null from credentials where id = $1")
+        .bind(credential)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert!(!live, "a key outliving its owner's membership");
+    let (status, _) = h.get("/v1/connections", Some(&dana_token)).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "and she connects nothing there"
+    );
+    drop(sam_token);
+}

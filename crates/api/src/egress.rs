@@ -16,7 +16,7 @@ use outturn_core::egress::rule::{ClientAuth, ClientCredentials, EgressRule};
 macro_rules! rule_columns {
     () => {
         "host, header, credential_env, credential_id, \
-     token_url, scope, client_id_env, client_secret_env, client_auth"
+     token_url, scope, client_id_env, client_secret_env, client_auth, owner"
     };
 }
 
@@ -27,26 +27,74 @@ macro_rules! rule_columns {
 /// somewhere would be a decision made on a workspace's behalf about who their
 /// agents may talk to.
 pub async fn rules_for(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<EgressRule>, sqlx::Error> {
+    rules_for_turn(pool, workspace_id, None).await
+}
+
+/// The hosts whose connection is each person's own: what a held request is
+/// checked against before it is sent on somebody's turn.
+pub async fn asker_hosts(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "select host from egress_rules where workspace_id = $1 and owner = 'asker' and enabled",
+    )
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// The rules a turn `asker` sent may use, with each asker's rule resolved to
+/// the credential that person connected for it. See
+/// docs/user-credentials.md, *Whose turn it is*.
+///
+/// Decided here, once, by the tier that mints the turn: the rule the runtime
+/// carries names the credential and the person, the commitment covers both,
+/// and the gateway never works out whose key to use from anything the
+/// runtime says.
+///
+/// An asker's rule on a turn of theirs names their live credential, or none
+/// when they have connected nothing -- which the gateway refuses with a
+/// reason rather than sending bare. On a turn nobody sent it is the
+/// workspace's credential the rule names for that case, as an agent's rule;
+/// naming none, the rule is left out, and the turn cannot reach the host.
+pub async fn rules_for_turn(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    asker: Option<Uuid>,
+) -> Result<Vec<EgressRule>, sqlx::Error> {
     let rows = sqlx::query(concat!(
-        "select ",
+        "select id, ",
         rule_columns!(),
-        " from egress_rules \
+        ", (select c.id from credentials c \
+            where c.rule_id = egress_rules.id and c.user_id = $2 \
+              and c.revoked_at is null) as own_credential \
+         from egress_rules \
          where workspace_id = $1 and enabled \
          order by host"
     ))
     .bind(workspace_id)
+    .bind(asker)
     .fetch_all(pool)
     .await?;
 
     Ok(rows
         .iter()
-        .map(|r| EgressRule {
-            host: r.get("host"),
-            header: r.get("header"),
-            credential_env: r.get("credential_env"),
-            client: read_client(r),
-            credential: r.get("credential_id"),
-            asker: None,
+        .filter_map(|r| {
+            let rule = EgressRule {
+                host: r.get("host"),
+                header: r.get("header"),
+                credential_env: r.get("credential_env"),
+                client: read_client(r),
+                credential: r.get("credential_id"),
+                asker: None,
+            };
+            match (Owner::read(r), asker) {
+                (Owner::Agent, _) => Some(rule),
+                (Owner::Asker, Some(person)) => Some(EgressRule {
+                    credential: r.get("own_credential"),
+                    asker: Some(person),
+                    ..rule
+                }),
+                (Owner::Asker, None) => rule.credential.is_some().then_some(rule),
+            }
         })
         .collect())
 }
@@ -102,10 +150,39 @@ pub async fn hosts_from_skills(
 /// this is safe to return, log and show in a browser. That is the point of
 /// naming credentials rather than storing them: the thing describing the rule
 /// cannot leak the thing that makes it work.
+/// Whose credential a rule's requests carry. See docs/user-credentials.md.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Owner {
+    /// The one the rule names, whoever asked: as every rule was before.
+    #[default]
+    Agent,
+    /// The one the person who asked connected for this rule. The credential
+    /// a rule names is then used only on a turn nobody sent.
+    Asker,
+}
+
+impl Owner {
+    fn read(row: &sqlx::postgres::PgRow) -> Self {
+        match row.get::<&str, _>("owner") {
+            "asker" => Owner::Asker,
+            _ => Owner::Agent,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Owner::Agent => "agent",
+            Owner::Asker => "asker",
+        }
+    }
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct Rule {
     pub id: Uuid,
     pub host: String,
+    pub owner: Owner,
     pub header: Option<String>,
     pub credential_env: Option<String>,
     /// Names and a URL, never a secret or a token, for the same reason.
@@ -156,6 +233,10 @@ pub struct CreateRule {
     /// A sealed credential sent in `header`, instead of `credential_env`.
     #[serde(default)]
     pub credential: Option<Uuid>,
+    /// Whose credential the rule's requests carry. For an asker's rule,
+    /// `credential` is the workspace's, used only on a turn nobody sent.
+    #[serde(default)]
+    pub owner: Owner,
 }
 
 #[derive(Debug)]
@@ -224,11 +305,40 @@ pub async fn create(
     let host =
         outturn_core::egress::rule::normalize_host(&input.host).map_err(RuleError::Invalid)?;
 
+    // An asker's rule carries each person's own key, in a header the rule
+    // names, to the one host that key is sealed for. Never an environment
+    // variable, which is the operator's and nobody's own, and never an
+    // exchange, which is the platform authenticating as itself.
+    let asker = input.owner == Owner::Asker;
+    if asker {
+        if input.header.is_none() {
+            return Err(RuleError::Invalid(
+                "a connection each person makes needs a header for their key to travel in, \
+                 such as authorization"
+                    .into(),
+            ));
+        }
+        if input.credential_env.is_some() || input.client.is_some() {
+            return Err(RuleError::Invalid(
+                "a connection each person makes carries their own key, not one from the \
+                 gateway's environment or an exchange"
+                    .into(),
+            ));
+        }
+        if host.contains('*') {
+            return Err(RuleError::Invalid(
+                "a connection each person makes names one host, not a wildcard: their key is \
+                 bound to a name, not a pattern"
+                    .into(),
+            ));
+        }
+    }
+
     // A header without a variable would attach nothing; a variable without a
     // header has nowhere to go. Either alone is a rule that looks configured
     // and is not, which is worse than one that plainly is not.
     match (&input.header, &input.credential_env, input.credential) {
-        (Some(_), None, None) => {
+        (Some(_), None, None) if !asker => {
             return Err(RuleError::Invalid(
                 "a header needs a credential, or the name of an environment variable, to take \
                  its value from"
@@ -326,8 +436,9 @@ pub async fn create(
     let client = input.client.as_ref();
     let row = sqlx::query(concat!(
         "insert into egress_rules (id, workspace_id, host, header, credential_env, \
-             token_url, scope, client_id_env, client_secret_env, client_auth, credential_id) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+             token_url, scope, client_id_env, client_secret_env, client_auth, credential_id, \
+             owner) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
          returning id, ",
         rule_columns!(),
         ", enabled"
@@ -343,6 +454,7 @@ pub async fn create(
     .bind(client.map(|c| &c.client_secret_env))
     .bind(client.map(|c| c.client_auth.as_str()))
     .bind(input.credential)
+    .bind(input.owner.as_str())
     .fetch_one(pool)
     .await
     .map_err(|e| match &e {
@@ -370,7 +482,8 @@ pub async fn set_credential(
     credential: Option<Uuid>,
 ) -> Result<Rule, RuleError> {
     let row = sqlx::query(
-        "select host, credential_env, token_url from egress_rules where id = $1 and workspace_id = $2",
+        "select host, header, credential_env, token_url, owner from egress_rules \
+         where id = $1 and workspace_id = $2",
     )
     .bind(id)
     .bind(workspace_id)
@@ -388,7 +501,17 @@ pub async fn set_credential(
                 .into(),
         ));
     }
+    // An asker's rule keeps the header each person's key travels in: their
+    // keys are sealed to it, and a new one would strand every one of them.
+    // What may change is the workspace's credential for a turn nobody sent.
+    let asker = Owner::read(&row) == Owner::Asker;
+    if asker && header != row.get::<Option<String>, _>("header") {
+        return Err(RuleError::Invalid(
+            "a connection each person makes keeps the header their keys are sealed to".into(),
+        ));
+    }
     match (&header, credential) {
+        (Some(_), None) if asker => {}
         (Some(header), Some(credential)) => {
             if host.contains('*') {
                 return Err(RuleError::Invalid(
@@ -467,6 +590,7 @@ fn read_rule(row: &sqlx::postgres::PgRow) -> Rule {
     Rule {
         id: row.get("id"),
         host: row.get("host"),
+        owner: Owner::read(row),
         header: row.get("header"),
         credential_env: row.get("credential_env"),
         credential: row.get("credential_id"),

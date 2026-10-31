@@ -2144,6 +2144,11 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             axum::routing::put(super::credentials::rotate).delete(super::credentials::revoke),
         )
         .route("/v1/credentials/{id}/test", post(super::credentials::test))
+        .route("/v1/connections", get(super::connections::list))
+        .route(
+            "/v1/connections/{rule_id}",
+            axum::routing::put(super::connections::connect).delete(super::connections::disconnect),
+        )
         .route(
             "/v1/egress-rules/{id}",
             axum::routing::delete(delete_egress_rule).patch(set_rule_credential),

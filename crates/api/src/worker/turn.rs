@@ -1027,9 +1027,13 @@ impl Worker {
         }
         let history = up_to(history.messages, payload.message_id);
 
-        let egress = crate::egress::rules_for(&self.pool, payload.workspace_id)
-            .await
-            .map_err(|e| anyhow::anyhow!("egress rules: {e}"))?;
+        // Resolved for whoever sent the prompt: an asker's rule carries their
+        // own credential, and the token minted for this turn says it is theirs
+        // (`work::asker_of`). See docs/user-credentials.md.
+        let egress =
+            crate::egress::rules_for_turn(&self.pool, payload.workspace_id, payload.user_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("egress rules: {e}"))?;
         // Committed here, next to the rules it is over, so the token minted
         // for this turn can carry a hash rather than the runtime's word for
         // what it was given. The runtime executes workspace code and cannot be
@@ -1213,7 +1217,20 @@ impl Worker {
         // each, committed into a second token. Not in this one: the guest's
         // calls travel under it, and the model making an approved call a
         // second time must be refused and asked about again, not let through.
-        let waiting: Vec<&crate::held::Held> = held.iter().filter(|h| h.waiting()).collect();
+        //
+        // A request for a host whose connection is each person's own goes out
+        // only on a turn of the person it was refused for: their key, never
+        // the key of whoever sent the session's next prompt, or the
+        // workspace's. Any other turn leaves it waiting for theirs. See
+        // docs/user-credentials.md, *An approval answered by somebody else*.
+        let askers_hosts = crate::egress::asker_hosts(&self.pool, payload.workspace_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("egress rules: {e}"))?;
+        let waiting: Vec<&crate::held::Held> = held
+            .iter()
+            .filter(|h| h.waiting())
+            .filter(|h| h.asker == payload.user_id || !askers_hosts.contains(&h.host()))
+            .collect();
         let held_gates = (!waiting.is_empty()).then(|| {
             outturn_core::egress::gate::Gates::of(gates.clone())
                 .with_grants(waiting.iter().map(|h| h.grant()).collect())
@@ -1947,7 +1964,10 @@ pub async fn gates_for(
         .await
         .map_err(|e| anyhow::anyhow!("skills: {e}"))?;
 
-    let egress = crate::egress::rules_for(pool, payload.workspace_id)
+    // The same rules `prepare_turn` resolved, for the same asker: which hosts
+    // a turn may reach depends on whose turn it is, and the gates fan across
+    // those hosts.
+    let egress = crate::egress::rules_for_turn(pool, payload.workspace_id, payload.user_id)
         .await
         .map_err(|e| anyhow::anyhow!("egress: {e}"))?;
 

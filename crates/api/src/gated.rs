@@ -444,6 +444,7 @@ pub async fn raise(
                 url,
                 headers: input.headers.clone(),
                 body: input.body.clone(),
+                asker: payload.user_id,
             },
         )
         .await;

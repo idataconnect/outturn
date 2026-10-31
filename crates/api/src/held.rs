@@ -38,6 +38,9 @@ pub struct NewHeld {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+    /// Whose turn it was refused on, and so whose key it goes out with to a
+    /// host whose connection is each person's own (docs/user-credentials.md).
+    pub asker: Option<Uuid>,
 }
 
 /// Holds one.
@@ -52,8 +55,8 @@ pub async fn hold(pool: &sqlx::PgPool, held: NewHeld) -> Result<Uuid, sqlx::Erro
     sqlx::query(
         "insert into held_requests \
          (workspace_id, id, item_id, session_id, job_id, requires, shape, operation, \
-          method, url, headers, body) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+          method, url, headers, body, asker) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(held.workspace_id)
     .bind(id)
@@ -67,6 +70,7 @@ pub async fn hold(pool: &sqlx::PgPool, held: NewHeld) -> Result<Uuid, sqlx::Erro
     .bind(&held.url)
     .bind(headers)
     .bind(&held.body)
+    .bind(held.asker)
     .execute(pool)
     .await?;
     Ok(id)
@@ -168,9 +172,19 @@ pub struct Held {
     pub settled_at: Option<chrono::DateTime<chrono::Utc>>,
     /// Who said yes, by name, as the model is told it.
     pub approved_by: String,
+    /// Whose turn it was refused on: see `NewHeld::asker`.
+    pub asker: Option<Uuid>,
 }
 
 impl Held {
+    /// The host it is for, as a rule names one: lower case, no port.
+    pub fn host(&self) -> String {
+        reqwest::Url::parse(&self.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+            .unwrap_or_default()
+    }
+
     /// Whether the next turn should send it.
     pub fn waiting(&self) -> bool {
         self.state == "approved"
@@ -372,10 +386,12 @@ pub async fn in_session(
         Option<serde_json::Value>,
         Option<chrono::DateTime<chrono::Utc>>,
         Option<String>,
+        Option<Uuid>,
     );
     let rows: Vec<Row> = sqlx::query_as(
         "select h.id, h.item_id, h.requires, h.shape, h.state, h.attempts, h.operation, \
-                h.method, h.url, h.headers, h.body, h.outcome, h.settled_at, u.display_name \
+                h.method, h.url, h.headers, h.body, h.outcome, h.settled_at, u.display_name, \
+                h.asker \
          from held_requests h left join users u on u.id = h.approved_by \
          where h.workspace_id = $1 and h.session_id = $2 and h.state not in ('held', 'declined') \
          order by h.id",
@@ -401,6 +417,7 @@ pub async fn in_session(
                 outcome,
                 settled_at,
                 name,
+                asker,
             )| {
                 Ok(Held {
                     id,
@@ -417,6 +434,7 @@ pub async fn in_session(
                     outcome: outcome.map(|o| decoded(id, "outcome", o)).transpose()?,
                     settled_at,
                     approved_by: name.unwrap_or_else(|| SOMEBODY.to_string()),
+                    asker,
                 })
             },
         )

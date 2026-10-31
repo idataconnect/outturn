@@ -57,7 +57,7 @@ pub async fn seal_key_for(
 }
 
 /// The key and what a sealer needs beside it, for whoever may seal.
-pub(super) fn seal_key_of(state: &ApiState) -> Result<SealKey, ApiError> {
+pub(crate) fn seal_key_of(state: &ApiState) -> Result<SealKey, ApiError> {
     let (public, id) = state.seal_key.as_ref().ok_or_else(no_seal_key)?;
     Ok(SealKey {
         public_key: hex::encode(public),
@@ -157,7 +157,7 @@ fn check(
 /// Reads a seal for credential `id`: its binding's bytes, the binding they
 /// say, and the ciphertext. Refused when the binding names another
 /// credential or the seal is to a key this deployment does not publish.
-pub(super) fn decode(
+pub(crate) fn decode(
     state: &ApiState,
     id: Uuid,
     seal: &Sealed,

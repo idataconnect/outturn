@@ -1309,6 +1309,7 @@ mod projection_tests {
             outcome,
             settled_at: None,
             approved_by: "Dana Reyes".into(),
+            asker: None,
         }
     }
 

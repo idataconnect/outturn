@@ -531,6 +531,87 @@ async fn a_resend_starts_a_turn_that_sends_it() {
     finish!(h);
 }
 
+/// A request held for a host whose connection is each person's own goes out
+/// with the key of the person it was refused for, so only on a turn of
+/// theirs: a resend nobody sent leaves it waiting, and their next turn sends
+/// it. docs/user-credentials.md, *An approval answered by somebody else*.
+#[tokio::test]
+async fn a_held_request_to_an_askers_host_waits_for_their_turn() {
+    let h = harness_or_skip!();
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (job, lease, held) = approved_and_resumed(&h, &admin).await;
+    let (status, body) = report_held(
+        &h,
+        job,
+        lease,
+        &held,
+        serde_json::json!({ "outcome": "no_answer", "message": "the connection reset" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    outturn::jobs::complete(&h.db.pool, job, Some(lease))
+        .await
+        .expect("complete");
+
+    // The host's connection becomes each person's own.
+    sqlx::query(
+        "update egress_rules set owner = 'asker', header = 'authorization' \
+         where workspace_id = $1 and host = 'api.hollowbrook.test'",
+    )
+    .bind(acme)
+    .execute(&h.db.pool)
+    .await
+    .expect("owner");
+
+    let (_, queue) = get_with_cookie(&h, "/v1/action-items", &admin).await;
+    let followup = items(&queue)
+        .into_iter()
+        .find(|i| i["payload"]["followup"] == "unknown")
+        .unwrap_or_else(|| panic!("no follow-up: {queue}"));
+    let followup = followup["id"].as_str().unwrap().to_string();
+    let (status, body) = post_with_cookie(
+        &h,
+        &format!("/v1/approvals/{followup}/answer"),
+        &admin,
+        r#"{"approved":true}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The resend is nobody's turn, so it does not carry the request.
+    let (job, lease, assignment) = take_assignment(&h).await;
+    assert!(
+        assignment["held"].as_array().is_none_or(Vec::is_empty),
+        "sent on a turn that is not the asker's: {assignment}"
+    );
+    outturn::jobs::complete(&h.db.pool, job, Some(lease))
+        .await
+        .expect("complete");
+
+    // The person it was refused for asks again, and their turn sends it.
+    let session: Uuid =
+        sqlx::query_scalar("select session_id from held_requests where id = $1::uuid")
+            .bind(&held)
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("session");
+    let (status, _) = h
+        .post(
+            &format!("/v1/agent-sessions/{session}/messages"),
+            Some(&admin),
+            r#"{"content":"Did that charge go through?"}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (_, _, assignment) = take_assignment(&h).await;
+    assert_eq!(assignment["held"][0]["id"], held.as_str(), "{assignment}");
+
+    finish!(h);
+}
+
 /// Sent, with no refusal in the conversation to put the answer in, the model
 /// is told on the turns after as well -- not only on the one that sent it,
 /// after which it was left a stale refusal and nothing to explain it.
