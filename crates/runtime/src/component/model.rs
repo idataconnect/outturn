@@ -329,32 +329,48 @@ impl AgentHost {
         use outturn_core::vision;
 
         let (storage, resolved) = self.object_at(&path)?;
+
+        // What the file is and how large, before anything is charged for it:
+        // a file that could never be shown is answered as that, whatever the
+        // pod's memory, rather than as a shortage that waiting will not fix.
+        let size = storage
+            .stat(&resolved)
+            .await
+            .map_err(|e| format!("could not read {path}: {e}"))?
+            .size;
+        if size >= vision::MAX_IMAGE_BYTES as u64 {
+            return Err(format!(
+                "{path} is too large to show a model; the limit is {}MB",
+                vision::MAX_IMAGE_BYTES / (1024 * 1024)
+            ));
+        }
+        // Sniffed rather than trusted from the name: an extension is a claim
+        // by whoever uploaded the file, and a provider told the wrong type
+        // refuses in a way that reads like a fault here.
+        let head = storage
+            .read(&resolved, 0, 16)
+            .await
+            .map_err(|e| format!("could not read {path}: {e}"))?;
+        let Some(media_type) = vision::media_type(&head) else {
+            return Err(format!(
+                "{path} is not an image this can show a model (PNG, JPEG, GIF and WebP are)"
+            ));
+        };
+
         // The image, its base64 in the request, and the request as sent: about
         // three and a third times the image, held until the answer is back.
-        let _charge = self.charge(
-            (vision::MAX_IMAGE_BYTES as u64).saturating_mul(10) / 3,
-            "look at an image",
-        )?;
+        let _charge = self.charge(size.saturating_mul(10) / 3, "look at an image")?;
 
         let bytes = storage
             .read(&resolved, 0, vision::MAX_IMAGE_BYTES as u32)
             .await
             .map_err(|e| format!("could not read {path}: {e}"))?;
 
-        // Sniffed rather than trusted from the name: an extension is a claim
-        // by whoever uploaded the file, and a provider told the wrong type
-        // refuses in a way that reads like a fault here.
-        let Some(media_type) = vision::media_type(&bytes) else {
-            return Err(format!(
-                "{path} is not an image this can show a model (PNG, JPEG, GIF and WebP are)"
-            ));
-        };
-
-        if bytes.len() >= vision::MAX_IMAGE_BYTES {
-            return Err(format!(
-                "{path} is too large to show a model; the limit is {}MB",
-                vision::MAX_IMAGE_BYTES / (1024 * 1024)
-            ));
+        // Checked again on what was read: the file can be replaced between
+        // the look above and this read, and what was charged for is the size
+        // seen then.
+        if bytes.len() as u64 > size || vision::media_type(&bytes) != Some(media_type) {
+            return Err(format!("{path} changed while it was being read; try again"));
         }
 
         let encoded = {
