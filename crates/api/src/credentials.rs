@@ -508,10 +508,18 @@ pub async fn test(
     bare.credential_env = None;
     bare.header = None;
 
-    let authorization = rule
-        .header
-        .as_deref()
-        .is_some_and(|h| h.eq_ignore_ascii_case("authorization"));
+    // A service account's token is the gateway's to format, so a refusal says
+    // nothing about how the key was pasted.
+    let exchanged = binding_of(&state.pool, claims.workspace_id, id)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|b| b.kind == outturn_core::egress::seal::Kind::ServiceAccount);
+    let authorization = !exchanged
+        && rule
+            .header
+            .as_deref()
+            .is_some_and(|h| h.eq_ignore_ascii_case("authorization"));
     let keyed = fetch(&state, &claims, &gateway, &url, rule).await?;
     let without_key = fetch(&state, &claims, &gateway, &url, bare)
         .await

@@ -43,6 +43,24 @@ pub enum Kind {
     /// an agent asked for at the provider's host, would be spent on
     /// whatever that agent liked.
     Provider,
+    /// A service account's private key, signed into an assertion that the
+    /// bound token endpoint trades for an access token
+    /// (docs/service-accounts.md). Never attached itself, and never as anybody
+    /// but the bound account, for no scope but the bound one.
+    ServiceAccount,
+}
+
+impl Kind {
+    /// The kind a rule may name on an agent's request: itself, for the two
+    /// kinds that travel there, and `Static` for any other -- which a binding
+    /// of that other kind then refuses, so a client half or a provider key is
+    /// never sent as a header.
+    pub fn on_a_request(self) -> Kind {
+        match self {
+            Kind::ServiceAccount => Kind::ServiceAccount,
+            _ => Kind::Static,
+        }
+    }
 }
 
 /// Where a credential may go: the associated data it was sealed under.
@@ -68,6 +86,16 @@ pub struct Binding {
     /// kinds, absent for `static`.
     #[serde(default)]
     pub token_url: Option<String>,
+    /// The account a service account key signs as. Required for
+    /// `service_account`, absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// The scope a service account key is exchanged for, sent as written.
+    /// Bound rather than ruled, because a key like this mints tokens for every
+    /// API its project enables. Required for `service_account`, absent
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 impl Binding {
@@ -114,22 +142,36 @@ impl Binding {
                 ));
             }
         }
+        if self.kind != Kind::ServiceAccount && (self.account.is_some() || self.scope.is_some()) {
+            return Err("only a service account names an account or a scope".into());
+        }
         match (self.kind, &self.header, &self.token_url) {
             (Kind::Static, Some(header), None) if !header.trim().is_empty() => Ok(()),
             (Kind::Static, _, _) => {
                 Err("a static credential names its header and no token endpoint".into())
             }
-            (Kind::ClientId | Kind::ClientSecret, None, Some(url)) => {
-                let parsed = reqwest::Url::parse(url).map_err(|_| format!("{url} is not a URL"))?;
-                if parsed.scheme() != "https" {
-                    return Err(format!("{url} is not https"));
-                }
-                Ok(())
-            }
+            (Kind::ClientId | Kind::ClientSecret, None, Some(url)) => https(url),
             (Kind::ClientId | Kind::ClientSecret, _, _) => {
                 Err("a client credential names its token endpoint and no header".into())
             }
             (Kind::Provider, None, None) => Ok(()),
+            (Kind::ServiceAccount, Some(header), Some(url))
+                if header.eq_ignore_ascii_case("authorization") =>
+            {
+                https(url)?;
+                let account = self.account.as_deref().unwrap_or_default();
+                if account.is_empty() || !account.contains('@') || account.contains(char::is_whitespace) {
+                    return Err("a service account names the account it signs as".into());
+                }
+                let scope = self.scope.as_deref().unwrap_or_default();
+                if scope.trim().is_empty() {
+                    return Err("a service account names the scope it is exchanged for".into());
+                }
+                Ok(())
+            }
+            (Kind::ServiceAccount, _, _) => Err(
+                "a service account travels in Authorization and names its token endpoint".into(),
+            ),
             (Kind::Provider, _, _) => Err(
                 "a provider key names neither a header nor a token endpoint: its protocol decides where it goes".into(),
             ),
@@ -164,7 +206,7 @@ impl Binding {
         if self.kind != kind {
             return Err("this credential is not for this use".into());
         }
-        if kind == Kind::Static {
+        if matches!(kind, Kind::Static | Kind::ServiceAccount) {
             let bound = self.header.as_deref().unwrap_or_default();
             if !header.is_some_and(|h| h.eq_ignore_ascii_case(bound)) {
                 return Err(format!("this credential travels only in {bound}"));
@@ -172,6 +214,14 @@ impl Binding {
         }
         Ok(())
     }
+}
+
+fn https(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| format!("{url} is not a URL"))?;
+    if parsed.scheme() != "https" {
+        return Err(format!("{url} is not https"));
+    }
+    Ok(())
 }
 
 /// A short, stable name for a public key, so a seal says which key it was made
@@ -468,6 +518,81 @@ mod tests {
             b.allows(acme, "books.example.com", None, Kind::ClientSecret)
                 .is_err()
         );
+    }
+
+    fn service_account() -> serde_json::Value {
+        serde_json::json!({
+            "credential": Uuid::nil(), "kind": "service_account",
+            "workspaces": [ACME], "hosts": ["sheets.googleapis.com"],
+            "header": "Authorization",
+            "token_url": "https://oauth2.googleapis.com/token",
+            "account": "bills@example-project.iam.gserviceaccount.com",
+            "scope": "https://www.googleapis.com/auth/spreadsheets",
+        })
+    }
+
+    #[test]
+    fn a_service_account_is_used_only_as_one() {
+        let b = Binding::parse(&serde_json::to_vec(&service_account()).unwrap()).unwrap();
+        let acme = Uuid::parse_str(ACME).unwrap();
+        let host = "sheets.googleapis.com";
+        assert!(
+            b.allows(acme, host, Some("authorization"), Kind::ServiceAccount)
+                .is_ok()
+        );
+        assert!(
+            b.allows(acme, host, Some("Authorization"), Kind::Static)
+                .is_err(),
+            "the key itself is never a header"
+        );
+        assert!(
+            b.allows(acme, host, Some("X-Goog-Api-Key"), Kind::ServiceAccount)
+                .is_err()
+        );
+        assert!(
+            b.allows(
+                acme,
+                "gmail.googleapis.com",
+                Some("Authorization"),
+                Kind::ServiceAccount
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_service_account_binding_says_who_where_and_for_what() {
+        let refused = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = service_account();
+            edit(&mut v);
+            Binding::parse(&serde_json::to_vec(&v).unwrap()).is_err()
+        };
+        assert!(!refused(&|_| {}));
+        assert!(refused(&|v| {
+            v.as_object_mut().unwrap().remove("scope");
+        }));
+        assert!(refused(&|v| v["scope"] = serde_json::json!(" ")));
+        assert!(refused(&|v| {
+            v.as_object_mut().unwrap().remove("account");
+        }));
+        assert!(refused(
+            &|v| v["account"] = serde_json::json!("not an address")
+        ));
+        assert!(refused(&|v| {
+            v.as_object_mut().unwrap().remove("token_url");
+        }));
+        assert!(refused(
+            &|v| v["token_url"] = serde_json::json!("http://oauth2.googleapis.com/token")
+        ));
+        assert!(refused(
+            &|v| v["header"] = serde_json::json!("X-Goog-Api-Key")
+        ));
+        assert!(
+            refused(&|v| v["sub"] = serde_json::json!("someone@example.com")),
+            "nobody is impersonated: there is no field to name them in"
+        );
+        // And no other kind may carry a scope it would never be held to.
+        assert!(refused(&|v| v["kind"] = serde_json::json!("client_secret")));
     }
 
     #[test]

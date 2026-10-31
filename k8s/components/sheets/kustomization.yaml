@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# A Google Sheets skill, for spreadsheets shared with a workspace's own
+# service account.
+#
+# Like weather, nothing is deployed for it: one Job and the skill it installs.
+# Unlike weather, the host wants a credential, and it is not here. A
+# workspace connects its own service account's key on the skill's page, sealed
+# in the browser to the gateway, and shares the spreadsheets it wants reached
+# with that account's address. See docs/service-accounts.md.
+resources:
+  - install-job.yaml
+
+configMapGenerator:
+  - name: install-sheets
+    files:
+      - install.sh
+  - name: sheets-skill
+    files:
+      - skill/index.md
+      - skill/read_values.md
+      - skill/append_values.md
+      - skill/update_values.md
+
+generatorOptions:
+  disableNameSuffixHash: false

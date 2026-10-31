@@ -156,14 +156,30 @@ pub fn digest(gate: &Gate, method: &str, host: &str, path: &str, body: Option<&s
                 hasher.update(if *b { b"1" } else { b"0" });
             }
             Some(serde_json::Value::Null) | None => hasher.update(b"-"),
-            // An object or an array where a scalar was declared. Hashed as its
-            // own kind rather than refused here: `binds` is validated at publish,
-            // and a request that arrives with the wrong shape must not be able to
-            // match a grant taken out on a scalar.
-            Some(_) => hasher.update(b"?"),
+            // An array or an object -- the rows of a spreadsheet write -- bound
+            // whole, as its own kind, so it can never match a grant taken out on
+            // a scalar. Length-prefixed, since unlike a scalar it can hold the
+            // separator.
+            Some(value) => {
+                let text = structured(value);
+                hasher.update(b"j");
+                hasher.update((text.len() as u64).to_le_bytes());
+                hasher.update(text.as_bytes());
+            }
         }
     }
     hex::encode(hasher.finalize())
+}
+
+/// A structured bound value as one string: compact JSON, its keys sorted
+/// (serde_json's map is ordered here), so what a body chose to send in another
+/// key order or spacing is the same value, and anything else is not.
+///
+/// Whole rather than by path. A bound field is still a top-level field; what
+/// it may now hold is the whole of what made the request the one somebody saw,
+/// and no part of it is a place a security decision reaches into.
+pub fn structured(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).unwrap_or_default()
 }
 
 /// The unit a `covers` grant is keyed on, read out of the request body.
@@ -225,15 +241,11 @@ pub fn missing_bound_field(gate: &Gate, path: &str, body: Option<&str>) -> Optio
         .iter()
         .find(|field| {
             match bound.get(field.as_str()) {
-                Some(serde_json::Value::String(_))
-                | Some(serde_json::Value::Number(_))
-                | Some(serde_json::Value::Bool(_)) => false,
                 // An explicit null is not a value, so it is absent by another
-                // spelling. An object or an array where a scalar was declared is
-                // the `binds` rule -- top-level scalars only -- being enforced
-                // where somebody can see it rather than silently digested as a
-                // shape of its own.
-                _ => true,
+                // spelling.
+                Some(serde_json::Value::Null) | None => true,
+                // An array or an object is bound whole: see `digest`.
+                Some(_) => false,
             }
         })
         .cloned()
@@ -516,8 +528,8 @@ mod tests {
         ));
     }
 
-    /// A body that is not JSON, or a field that is not a scalar, must not be
-    /// able to match a grant taken out on one.
+    /// A body that is not JSON, or a structured value where the grant was taken
+    /// out on a scalar, must not be able to match it.
     #[test]
     fn an_unreadable_body_matches_nothing_taken_out_on_a_real_one() {
         let gate = charge_gate();
@@ -562,16 +574,45 @@ mod tests {
         );
     }
 
-    /// And an object where a scalar was declared, which is the `binds` rule
-    /// enforced where somebody can see it.
+    /// A structured value is a value: bound whole, as itself.
     #[test]
-    fn a_non_scalar_where_a_scalar_was_declared_is_refused() {
+    fn a_structured_value_is_carried() {
         let gate = charge_gate();
         let nested =
             r#"{"payment_account_id":{"id":"pa_4471"},"booking_id":"bk_8812","amount_pence":9000}"#;
+        assert!(missing_bound_field(&gate, "/charges", Some(nested)).is_none());
+    }
+
+    /// The rows of a write are what makes it the one somebody saw, so a grant
+    /// for one row covers that row and no other -- however the body spells it,
+    /// and never a scalar that happens to read the same.
+    #[test]
+    fn a_structured_value_is_bound_whole() {
+        let gate = Gate {
+            binds: vec!["values".into()],
+            ..charge_gate()
+        };
+        let key = |body: &str| digest(&gate, "POST", "api.example.com", "/charges", Some(body));
+        let row = key(r#"{"values":[["2026 Q3","1611","$231.40"]]}"#);
         assert_eq!(
-            missing_bound_field(&gate, "/charges", Some(nested)).as_deref(),
-            Some("payment_account_id"),
+            row,
+            key(r#"{ "values" : [ ["2026 Q3", "1611", "$231.40"] ] }"#),
+            "spacing is not a different row"
+        );
+        assert_ne!(row, key(r#"{"values":[["2026 Q3","1611","$231.41"]]}"#));
+        assert_ne!(
+            row,
+            key(r#"{"values":[["2026 Q3","1611","$231.40"],["x"]]}"#)
+        );
+        assert_ne!(
+            row,
+            key(r#"{"values":"[[\"2026 Q3\",\"1611\",\"$231.40\"]]"}"#),
+            "a string spelling the same JSON is a string"
+        );
+        assert_eq!(
+            key(r#"{"values":{"a":1,"b":2}}"#),
+            key(r#"{"values":{"b":2,"a":1}}"#),
+            "key order is not a different value"
         );
     }
 

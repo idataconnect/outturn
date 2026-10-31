@@ -2004,6 +2004,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "base64",
  "bytes",
@@ -2104,6 +2105,7 @@ name = "outturn-gateway"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "base64",
  "bytes",
