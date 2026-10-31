@@ -235,6 +235,8 @@ Next:
   1. Review $secret_file, and keep it out of version control.
   2. Write $dir/kustomization.yaml over k8s/deploy, which reads this
      Secret by name, with the images pinned and an outturn-config
-     ConfigMap -- docs/deployment.md has the whole of one.
+     ConfigMap -- docs/deployment.md has the whole of one. Set
+     OUTTURN_ASSERTION_ISSUER in it to the public origin, or the assertion
+     key above signs nothing.
   3. kubectl apply -k $dir
 EOF

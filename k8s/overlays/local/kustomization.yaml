@@ -67,14 +67,18 @@ patches:
                 key: OUTTURN_SEAL_PUBLIC_KEY
                 optional: true
           # The public half of the gateway's assertion key, served at
-          # /.well-known/jwks.json. Optional for the same reason.
+          # /.well-known/jwks.json. Optional for the same reason. Published
+          # only beside the issuer the gateway signs as, so the page's warning
+          # is about what the gateway will do.
           - name: OUTTURN_ASSERTION_PUBLIC_KEY
             valueFrom:
               secretKeyRef:
                 name: outturn-dev-secrets
                 key: OUTTURN_ASSERTION_PUBLIC_KEY
                 optional: true
-          # The API is the only tier that signs anything. Generated per clone
+          - name: OUTTURN_ASSERTION_ISSUER
+            value: http://localhost:3000
+          # The API signs every token. Generated per clone
           # by scripts/dev-secrets.sh, never committed: a key in the repository
           # is one every clone shares. A real deployment uses its own Secret --
           # see scripts/deploy-prod.sh.

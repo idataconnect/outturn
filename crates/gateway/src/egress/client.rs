@@ -288,7 +288,7 @@ async fn held_or_exchanged(
 /// Google accepts and more than an exchange needs.
 const ASSERTION_LIFETIME: u64 = 3600;
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

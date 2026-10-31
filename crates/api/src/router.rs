@@ -77,6 +77,10 @@ pub struct ApiState {
     /// The gateway's seal public key and its id, handed to whoever seals a
     /// credential. `None` when this deployment has none.
     pub(super) seal_key: Option<(Vec<u8>, String)>,
+    /// The keys the gateway signs on-behalf-of assertions with, as served at
+    /// `/.well-known/jwks.json`. Read once: the route is public, and a value
+    /// that does not parse is said at startup rather than on every request.
+    pub(super) assertion_keys: Arc<outturn_core::egress::assertion::Jwks>,
 }
 
 impl ApiState {
@@ -143,7 +147,14 @@ impl ApiState {
             bindings: outturn_core::egress::bindings::Bindings::from_env(),
             seal_key: super::credentials::seal_key_from_env(),
             heic_url: super::heic::url(),
+            assertion_keys: Arc::new(outturn_core::egress::assertion::Jwks::from_env()),
         }
+    }
+
+    /// The assertion keys to publish, for a test.
+    pub fn with_assertion_keys(mut self, keys: outturn_core::egress::assertion::Jwks) -> Self {
+        self.assertion_keys = Arc::new(keys);
+        self
     }
 
     /// Where HEIC photos are converted, for a test with a fake converter or
@@ -716,10 +727,10 @@ async fn set_rule_on_behalf_of(
 /// The keys the gateway signs on-behalf-of assertions with, for a backend to
 /// verify them. Public, unauthenticated and the same for every workspace: a
 /// backend has no token, and a public key is safe with anybody.
-async fn jwks() -> impl axum::response::IntoResponse {
+async fn jwks(State(state): State<Arc<ApiState>>) -> impl axum::response::IntoResponse {
     (
         [(axum::http::header::CACHE_CONTROL, "public, max-age=300")],
-        Json(outturn_core::egress::assertion::Jwks::from_env()),
+        Json(state.assertion_keys.as_ref().clone()),
     )
 }
 

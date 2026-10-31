@@ -543,11 +543,12 @@ pub async fn refresh_token(
     // which conversation; they do not say whose turn, and a person's token
     // kept past their turn and traded in under the next one's lease would
     // carry their credentials into somebody else's turn, renewed every
-    // quarter hour. The asker is copied below, so it must be this job's.
-    // A token with no asker carries nobody's credentials -- the gateway
-    // refuses a person's rule on it -- so it renews as what it is: a turn
-    // minted before this existed, mid-flight across a deploy.
-    if claims.asker.is_some() && claims.asker != asker_of(&state, &payload).await? {
+    // quarter hour. The asker is copied below, so it must be this job's --
+    // nobody included. A token with no asker sends no on-behalf-of header,
+    // so one kept from a turn nobody sent and renewed under a person's lease
+    // would reach that host as the integration itself, for as long as their
+    // turn ran.
+    if claims.asker != asker_of(&state, &payload).await? {
         return Err((
             StatusCode::FORBIDDEN,
             "that token is for somebody else's turn".to_string(),

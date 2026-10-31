@@ -273,9 +273,7 @@ async fn vet_and_send(
     let on_behalf_of = match (rule.on_behalf_of, claims.asker) {
         (false, _) | (true, None) => None,
         (true, Some(asker)) => {
-            let carries =
-                rule.credential_env.is_some() || rule.client.is_some() || rule.credential.is_some();
-            if rule.asker.is_some() || !carries {
+            if rule.asker.is_some() || !rule.carries_credential() {
                 return Err((
                     StatusCode::FORBIDDEN,
                     format!(
@@ -289,16 +287,13 @@ async fn vet_and_send(
                     StatusCode::FORBIDDEN,
                     format!(
                         "{host} expects to be told who is asking, and this deployment has no \
-                         key to sign that with. An operator sets OUTTURN_ASSERTION_KEY; \
+                         key to sign that with. An operator sets OUTTURN_ASSERTION_KEY and \
+                         OUTTURN_ASSERTION_ISSUER; \
                          nothing was sent"
                     ),
                 )
             })?;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or_default();
-            Some(signer.sign(&host, claims.workspace_id, asker, now))
+            Some(signer.sign(&host, claims.workspace_id, asker, client::now_secs()))
         }
     };
 
@@ -763,9 +758,7 @@ fn may_carry_credential(
     scheme: &str,
     operator_opened: bool,
 ) -> bool {
-    let carries =
-        rule.credential_env.is_some() || rule.client.is_some() || rule.credential.is_some();
-    !carries || scheme == "https" || operator_opened
+    !rule.carries_credential() || scheme == "https" || operator_opened
 }
 
 /// What a caller is allowed to reach, as far as this tier can tell.
@@ -1428,6 +1421,7 @@ mod client_credentials {
         };
 
         let dana = uuid::Uuid::now_v7();
+        let before = super::client::now_secs();
         send(gateway(true), Some(dana))
             .await
             .map_err(|(s, m)| format!("{s}: {m}"))
@@ -1454,15 +1448,13 @@ mod client_credentials {
             seen[0].0, "Bearer the-agents",
             "the agent's own credential beside it"
         );
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        // Checked as of before it was signed, which it outlives by its whole
+        // lifetime, so how long the sends took does not decide the outcome.
         let claims = assertion::verify(
             seen[0].1.as_deref().expect("an assertion on Dana's turn"),
             &published,
             "93.184.215.14",
-            now,
+            before,
         )
         .expect("verifies for this host");
         assert_eq!((claims.sub, claims.workspace), (dana, workspace));

@@ -82,6 +82,14 @@ pub struct EgressRule {
     pub on_behalf_of: bool,
 }
 
+impl EgressRule {
+    /// Whether a request this rule admits goes out with a credential on it,
+    /// from whichever source the rule names.
+    pub fn carries_credential(&self) -> bool {
+        self.credential_env.is_some() || self.client.is_some() || self.credential.is_some()
+    }
+}
+
 /// Where a rule's access token comes from. See docs/client-credentials.md.
 ///
 /// Every field decides where a secret goes or what it is exchanged for, so

@@ -73,7 +73,7 @@ either keypair is in [sealed-credentials.md](sealed-credentials.md) and
 
 Both in the namespace outturn runs in.
 
-**Secret `outturn-secrets`** -- the five keys above, and:
+**Secret `outturn-secrets`** -- the seven keys above, and:
 
 | Key | Read by |
 |---|---|
@@ -102,6 +102,7 @@ the API alone and the seal key the gateway alone.
 | `OUTTURN_PDF_RENDERER_URL` | runtime | See [pdf-rendering.md](pdf-rendering.md) |
 | `OUTTURN_HEIC_URL` | api | The HEIC converter. Unset, HEIC photos are refused at upload; see [heic.md](heic.md) |
 | `OUTTURN_CATALOG_FETCH` | api | `off` to stop the weekly catalog fetch |
+| `OUTTURN_ASSERTION_ISSUER` | api, gateway | The public origin, as for CORS. What the on-behalf-of header is signed as; without it the gateway signs nothing and the API publishes no key. See [user-credentials.md](user-credentials.md) |
 
 The branding is read when the UI container starts, not when it was built, so
 the published image serves every deployment; [themes/README.md](https://github.com/idataconnect/outturn/blob/main/ui/src/themes/README.md)
@@ -162,6 +163,7 @@ configMapGenerator:
   - name: outturn-config
     literals:
       - OUTTURN_CORS_ORIGINS=https://agents.example.com
+      - OUTTURN_ASSERTION_ISSUER=https://agents.example.com
       - OUTTURN_BRAND_NAME=Example Agents
 
 patches:

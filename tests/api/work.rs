@@ -491,6 +491,22 @@ async fn a_running_turn_can_refresh_its_gateway_token() {
     let (status, body) = refresh(lease.clone(), theirs).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 
+    // Nor a turn nobody sent, in the same conversation: renewed under this
+    // person's lease it would keep reaching a host that is told who is asking
+    // as the integration itself, without a header naming anybody.
+    let nobodys = h
+        .minter
+        .mint_turn(
+            session_id,
+            acme,
+            before.egress_commitment.expect("egress"),
+            before.gate_commitment.expect("gates"),
+            None,
+        )
+        .expect("mint");
+    let (status, body) = refresh(lease.clone(), nobodys).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
     // An expired token is refused rather than read. A path honoring expired
     // credentials is the exception that outlives its reason.
     let expired = h

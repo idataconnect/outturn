@@ -722,25 +722,43 @@ pub async fn set_on_behalf_of(
             "each person's own key already says who is asking".into(),
         ));
     }
-    if on && rule.credential_env.is_none() && rule.client.is_none() && rule.credential.is_none() {
+    if on && !rule.as_egress_rule().carries_credential() {
         return Err(RuleError::Invalid(
             "saying who is asking needs the agent's own key beside it, so the host knows the \
              statement came from here; connect one first"
                 .into(),
         ));
     }
+    // One host, as a connection each person makes is: a held request waits
+    // for its asker's turn by its host, and a statement naming a person is
+    // for the one backend it was signed for.
+    if on && rule.host.contains('*') {
+        return Err(RuleError::Invalid(
+            "saying who is asking names one host, not a wildcard".into(),
+        ));
+    }
+    // The checks above again, in the update: a rule that lost its key or
+    // became an asker's since it was read is refused here rather than by the
+    // table's constraint, as a database error.
     let row = sqlx::query(concat!(
         "update egress_rules set on_behalf_of = $3 \
-         where id = $1 and workspace_id = $2 returning id, ",
+         where id = $1 and workspace_id = $2 \
+           and (not $3 or (owner = 'agent' and position('*' in host) = 0 \
+                and (credential_env is not null or token_url is not null \
+                     or credential_id is not null))) \
+         returning id, ",
         rule_columns!(),
         ", enabled"
     ))
     .bind(id)
     .bind(workspace_id)
     .bind(on)
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await
-    .map_err(|e| RuleError::Database(e.to_string()))?;
+    .map_err(|e| RuleError::Database(e.to_string()))?
+    .ok_or_else(|| {
+        RuleError::Invalid("the rule changed while this was being set; try again".into())
+    })?;
     Ok(read_rule(&row))
 }
 

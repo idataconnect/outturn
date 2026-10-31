@@ -405,9 +405,10 @@ Steps 1 to 6 but for the one-time notice in a shared session.
   since people's keys are sealed to it. `rules_for_turn` resolves each
   asker's rule for the prompt's `user_id`; `prepare_turn` and `gates_for` both
   use it, so the gates the API later derives again are over the same hosts.
-- `work::asker_of` is the prompt's `user_id`. A trade-in still renews a token
-  with no asker, which carries nobody's key -- a turn minted before this,
-  across a deploy.
+- `work::asker_of` is the prompt's `user_id`. A trade-in renews only a token
+  whose asker is the leased job's, nobody included: a token kept from a turn
+  nobody sent, renewed under a person's lease, would reach a host that is
+  told who is asking as the integration itself.
 - `api::connections`: `GET /v1/connections` lists the caller's connections
   with the seal key to seal to, since connecting one's own needs no
   authority; `PUT /v1/connections/{rule_id}` connects or replaces a key sealed
@@ -469,13 +470,18 @@ Steps 1 to 6 but for the one-time notice in a shared session.
   The header is reserved: a guest cannot set it and a rule cannot attach a
   credential in it. The API serves `OUTTURN_ASSERTION_PUBLIC_KEY`, one key or
   two during a rotation, at `/.well-known/jwks.json`, unauthenticated, and
-  the UI's server carries that path through as it does `/v1`.
+  the UI's server carries that path through as it does `/v1`. Read once at
+  startup, and published only beside an `OUTTURN_ASSERTION_ISSUER`, which
+  both tiers read from `outturn-config`: the gateway signs nothing without
+  one, so a published key with no issuer would tell the page it does.
   `PUT /v1/egress-rules/{id}/on-behalf-of` sets it, under `settings:update`
-  and `credentials:write`, refusing an asker's rule or one with no
-  credential, as the table's constraint does; removing the credential or
+  and `credentials:write`, refusing an asker's rule, one with no credential
+  and a wildcard, and checking the first two again in the update itself;
+  removing the credential or
   making the rule an asker's turns it off. A held request for such a host
   waits for its asker's turn, as one for an asker's host does, since sent on
-  another's it would name them. The page: *Tell it who is asking* on a
+  another's it would name them -- matched against the rules' hosts as a rule
+  matches, so `books.example.com.` waits as `books.example.com` does. The page: *Tell it who is asking* on a
   connected host, with where the keys are published, and a warning when
   none are. Tests: `egress::assertion`'s own, the leaf's in `egress::commit`,
   `a_rule_that_says_who_is_asking_signs_it_for_the_host` in the gateway, and

@@ -101,14 +101,31 @@ impl Jwks {
     /// `OUTTURN_TOKEN_PUBLIC_KEY` takes. Unset is none, and the API serves an
     /// empty set rather than a 404, so a backend polling it sees the
     /// deployment rather than a typo.
+    ///
+    /// None, too, without `OUTTURN_ASSERTION_ISSUER`: the gateway signs
+    /// nothing without one, and a published key would tell the page that it
+    /// does. Both tiers read the issuer from the same place, so the page's
+    /// warning is about what the gateway will actually do.
     pub fn from_env() -> Self {
-        match std::env::var("OUTTURN_ASSERTION_PUBLIC_KEY") {
-            Ok(value) if !value.trim().is_empty() => Self::parse(&value).unwrap_or_else(|e| {
-                tracing::error!(error = %e, "OUTTURN_ASSERTION_PUBLIC_KEY could not be read; no assertion key is published");
-                Self::default()
-            }),
-            _ => Self::default(),
+        let value = std::env::var("OUTTURN_ASSERTION_PUBLIC_KEY").unwrap_or_default();
+        if value.trim().is_empty() {
+            return Self::default();
         }
+        if std::env::var("OUTTURN_ASSERTION_ISSUER")
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            tracing::error!(
+                "OUTTURN_ASSERTION_PUBLIC_KEY is set without OUTTURN_ASSERTION_ISSUER, which the \
+                 gateway cannot sign without; no assertion key is published"
+            );
+            return Self::default();
+        }
+        Self::parse(&value).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "OUTTURN_ASSERTION_PUBLIC_KEY could not be read; no assertion key is published");
+            Self::default()
+        })
     }
 
     pub fn parse(value: &str) -> Result<Self, String> {

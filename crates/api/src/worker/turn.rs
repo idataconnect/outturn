@@ -1253,7 +1253,14 @@ impl Worker {
         let waiting: Vec<&crate::held::Held> = held
             .iter()
             .filter(|h| h.waiting())
-            .filter(|h| h.asker == asker || !askers_hosts.contains(&h.host()))
+            // Matched as a rule matches, not compared as strings: a request
+            // to `books.example.com.` is the host `books.example.com` is.
+            .filter(|h| {
+                h.asker == asker
+                    || !askers_hosts
+                        .iter()
+                        .any(|r| outturn_core::egress::rule::host_matches(r, &h.host()))
+            })
             .collect();
         let held_gates = (!waiting.is_empty()).then(|| {
             outturn_core::egress::gate::Gates::of(gates.clone())

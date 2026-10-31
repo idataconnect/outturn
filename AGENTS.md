@@ -132,7 +132,7 @@ is empty. See [user-credentials.md](docs/user-credentials.md):
 | Variable | Tier | Is |
 |---|---|---|
 | `OUTTURN_ASSERTION_KEY` | gateway only | Ed25519 seed, 64 hex chars, that signs the header |
-| `OUTTURN_ASSERTION_ISSUER` | gateway | The deployment's public URL, the token's `iss`; required beside the key |
+| `OUTTURN_ASSERTION_ISSUER` | api, gateway | The deployment's public URL, the token's `iss`. Without it the gateway signs nothing and the API publishes no key |
 | `OUTTURN_ASSERTION_PUBLIC_KEY` | api | Its public half, served at `/.well-known/jwks.json`. Comma-separate two during a rotation |
 
 An idle runtime pod always accepts a turn however tight memory looks. Without

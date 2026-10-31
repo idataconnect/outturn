@@ -1137,6 +1137,21 @@ async fn a_rule_says_who_is_asking_only_beside_the_agents_own_key() {
         "a person's own key: {body}"
     );
 
+    // Nor over a wildcard: a held request waits for its asker's turn by its
+    // host, and a statement naming a person is for the one backend it was
+    // signed for.
+    let every = rule_for("*.ledger.example.com").await;
+    sqlx::query(
+        "update egress_rules set header = 'authorization', \
+             credential_env = 'OUTTURN_EGRESS_LEDGER' where id = $1::uuid",
+    )
+    .bind(&every)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    let (status, body) = say(every, true).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a wildcard: {body}");
+
     let (status, body) = say(books, false).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
@@ -1144,7 +1159,18 @@ async fn a_rule_says_who_is_asking_only_beside_the_agents_own_key() {
         false
     );
 
+    // Public, and the key a backend checks the gateway's signature with.
     let (status, body) = h.get(outturn::egress::assertion::JWKS_PATH, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(serde_json::from_str::<Value>(&body).unwrap()["keys"].is_array());
+    let published: outturn::egress::assertion::Jwks = serde_json::from_str(&body).unwrap();
+    let signer =
+        outturn::egress::assertion::Signer::parse(ASSERTION_KEY, "https://test.example").unwrap();
+    let dana = Uuid::now_v7();
+    let token = signer.sign("books.example.com", acme, dana, 1_000);
+    assert_eq!(
+        outturn::egress::assertion::verify(&token, &published, "books.example.com", 1_000)
+            .unwrap()
+            .sub,
+        dana
+    );
 }

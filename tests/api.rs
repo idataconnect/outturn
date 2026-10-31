@@ -61,6 +61,10 @@ const TEST_RUNTIME_KEY: &str = "test-runtime-key-test-runtime-key-test-runtime-k
 /// The gateway's seal key in these tests. Not a secret: a test's.
 const SEAL_KEY: &str = "0505050505050505050505050505050505050505050505050505050505050505";
 
+/// The seed a test's gateway signs on-behalf-of assertions with; the API
+/// publishes its public half.
+const ASSERTION_KEY: &str = "0606060606060606060606060606060606060606060606060606060606060606";
+
 /// A chain answering assistant traffic, as every deployment that answers at
 /// all has: a turn's model is the first of its class's chain, and a turn
 /// with none is refused. Its model is `test-model`, which is what the tests
@@ -193,6 +197,13 @@ async fn harness_with(
     .with_heic_url(heic_url)
     // The public half of the seal key a test's gateway opens with.
     .with_seal_key(outturn::egress::seal::public_of(SEAL_KEY).expect("seal key"))
+    .with_assertion_keys(outturn::egress::assertion::Jwks {
+        keys: vec![outturn::egress::assertion::Jwk::of(
+            &outturn::egress::assertion::Signer::parse(ASSERTION_KEY, "https://test.example")
+                .expect("assertion key")
+                .public_key(),
+        )],
+    })
     // What the gateway would have bound, so a rule naming these is one the
     // API accepts. Every workspace, because each test makes its own.
     .with_bindings(
