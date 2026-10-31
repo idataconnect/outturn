@@ -22,7 +22,13 @@ committed and verified, and new work goes in where it belongs, not at the end.
    ten fixes, the retention sweeps, the indexes and the migration lock, name uniqueness, the prompt
    and sandbox boundaries with the storage quota, and the gateway's findings are in; the rest goes in
    the order given there.
-2. **Text an operator can change, in any language.** Designed before built.
+2. **A request whose body is a session file.** `fetch_url` takes its body
+   as a string, so an agent cannot send a file to an API that accepts
+   uploads. A body naming a session path, streamed by the host through the
+   gateway and charged against the file's size, makes any such service a
+   skill: Tika's `/meta`, given an egress rule and the internal host, reads a
+   photo's EXIF, HEIC included, with nothing added to core.
+3. **Text an operator can change, in any language.** Designed before built.
    Every user-facing block of text -- UI strings, refusals, the platform
    preamble, notices such as being over a storage quota -- named by key
    with a shipped default, overridable per deployment, and translated per
@@ -30,12 +36,12 @@ committed and verified, and new work goes in where it belongs, not at the end.
    without a build; dropping a new block into code is one call with a key
    and a default. When a block's source text changes, its translations are
    marked stale and an agent drafts new ones for a person to accept.
-3. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
+4. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
-4. **A first real call to Amazon Bedrock**, by whoever first has an AWS
+5. **A first real call to Amazon Bedrock**, by whoever first has an AWS
    account: everything in [bedrock.md](bedrock.md) is tried against
    stand-ins only, and the two-doors recipe says so until then.
-5. **Credentials that are the asker's** ([user-credentials.md](user-credentials.md)):
+6. **Credentials that are the asker's** ([user-credentials.md](user-credentials.md)):
    a connection the agent holds or one each person connects, so a backend
    applies its own per-user permissions; the asker's credential threaded
    through the turn by the platform, and a signed on-behalf-of header for
@@ -45,7 +51,7 @@ committed and verified, and new work goes in where it belongs, not at the end.
    turns nobody started can carry a machine user, and a host that trusts the
    platform can be told who is asking in a header the gateway signs. Next,
    the notice before a person's key is first used in a shared session.
-6. **Service accounts** ([service-accounts.md](service-accounts.md)): a
+7. **Service accounts** ([service-accounts.md](service-accounts.md)): a
    workspace's own Google service account key, sealed, exchanged by the
    gateway for a token whose scope the binding fixes, and a Sheets skill whose
    writes need approving. Dogfooded on a spreadsheet of water bills.
