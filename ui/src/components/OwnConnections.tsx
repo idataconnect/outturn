@@ -75,12 +75,15 @@ export default function OwnConnections({ workspaceId, userId }: { workspaceId: s
       )}
       <ul className="space-y-3">
         {listed.connections.map((c) => (
-          <Row
+          <KeyRow
             key={c.rule_id}
             connection={c}
-            sealKey={listed.seal_key}
-            workspaceId={workspaceId}
-            userId={userId}
+            sealable={listed.seal_key !== null}
+            whose="Your"
+            onConnect={(secret) =>
+              connectOwn(c, workspaceId, userId, listed.seal_key!, secret)
+            }
+            onDisconnect={() => disconnectOwn(c.rule_id)}
             onChanged={load}
           />
         ))}
@@ -89,17 +92,24 @@ export default function OwnConnections({ workspaceId, userId }: { workspaceId: s
   )
 }
 
-function Row({
+/** One host's key for one account: connect, replace, disconnect. Shared by a
+ *  person's own connections and an administrator's machine users, which
+ *  differ only in whose key it is and where it is sent. */
+export function KeyRow({
   connection,
-  sealKey,
-  workspaceId,
-  userId,
+  sealable,
+  whose,
+  onConnect,
+  onDisconnect,
   onChanged,
 }: {
   connection: OwnConnection
-  sealKey: Listed['seal_key']
-  workspaceId: string
-  userId: string
+  /** Whether this deployment can seal a key at all. */
+  sealable: boolean
+  /** "Your", or the machine user's name: whose key the form asks for. */
+  whose: string
+  onConnect: (secret: string) => Promise<void>
+  onDisconnect: () => Promise<void>
   onChanged: () => Promise<void>
 }) {
   const connected = connection.connected !== null
@@ -122,18 +132,18 @@ function Row({
   }
 
   const save = () => {
-    if (!sealKey) return
+    if (!sealable) return
     const value = secret
     setSecret('')
     void run(async () => {
-      await connectOwn(connection, workspaceId, userId, sealKey, value)
+      await onConnect(value)
       setEditing(false)
     })
   }
 
   const remove = () => {
-    if (!window.confirm(`Disconnect your key for ${connection.host}?`)) return
-    void run(() => disconnectOwn(connection.rule_id))
+    if (!window.confirm(`Disconnect ${whose === 'Your' ? 'your' : `${whose}'s`} key for ${connection.host}?`)) return
+    void run(onDisconnect)
   }
 
   return (
@@ -161,7 +171,8 @@ function Row({
           }}
         >
           <label className="block text-xs text-surface-700 dark:text-surface-300">
-            Your key, sent in <span className="font-mono">{connection.header}</span>
+            {whose === 'Your' ? 'Your key' : `${whose}'s key`}, sent in{' '}
+            <span className="font-mono">{connection.header}</span>
             <input
               type="password"
               autoComplete="off"
@@ -196,10 +207,10 @@ function Row({
           <button
             type="button"
             onClick={() => setEditing(true)}
-            disabled={!sealKey}
+            disabled={!sealable}
             className="rounded-md border border-surface-300 dark:border-surface-700 px-3 py-1.5 text-xs disabled:opacity-50"
           >
-            {connected ? 'Replace key' : 'Connect your key'}
+            {connected ? 'Replace key' : whose === 'Your' ? 'Connect your key' : 'Connect its key'}
           </button>
           {connected && (
             <button

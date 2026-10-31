@@ -291,7 +291,10 @@ export function Connection({
         <p className="mt-1 text-xs text-surface-600 dark:text-surface-400">
           People connect their own key under their account, and the service applies its own
           permissions to what each of them asks for. A turn nobody started — a schedule, a webhook
-          — {connected ? 'uses the key below.' : 'cannot reach this host unless a key is connected below for it.'}
+          — sends its agent&apos;s machine user&apos;s key, if the agent names one;{' '}
+          {connected
+            ? 'otherwise the key below.'
+            : 'otherwise it cannot reach this host unless a key is connected below for it.'}
         </p>
       )}
 

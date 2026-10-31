@@ -16,6 +16,7 @@ pub mod egress;
 mod error_body;
 mod events;
 pub mod fetch;
+mod machine_users;
 pub use outturn_core::extract;
 mod feedback;
 mod files;

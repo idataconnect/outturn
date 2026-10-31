@@ -444,7 +444,9 @@ pub async fn raise(
                 url,
                 headers: input.headers.clone(),
                 body: input.body.clone(),
-                asker: payload.user_id,
+                asker: super::worker::asker_for(&state.pool, &payload)
+                    .await
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
             },
         )
         .await;

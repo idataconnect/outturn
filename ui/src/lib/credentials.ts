@@ -207,18 +207,16 @@ export type OwnConnections = {
 
 export const listOwnConnections = () => api<OwnConnections>('/v1/connections')
 
-/**
- * Connects the caller's own key for a host: sealed here as theirs, for this
- * workspace, host and header, and stored. Replaces one connected before. The
- * secret leaves this function only sealed.
- */
-export async function connectOwn(
+/** A key sealed in this browser as `user`'s own, for one host whose
+ *  connection is each person's: what both a person's own route and a machine
+ *  user's take. The secret leaves this function only sealed. */
+async function sealOwn(
   connection: OwnConnection,
   workspace: string,
   user: string,
   key: { public_key: string; key_id: string },
   secret: string,
-): Promise<void> {
+): Promise<string> {
   const id = uuidv7()
   const binding = bindingBytes({
     credential: id,
@@ -229,20 +227,81 @@ export async function connectOwn(
     user,
   })
   const sealed = await seal(key.public_key, binding, secret)
+  return JSON.stringify({
+    id,
+    binding: toBase64(binding),
+    sealed: toBase64(sealed),
+    key_id: key.key_id,
+  })
+}
+
+/** Connects the caller's own key for a host, replacing one connected before. */
+export async function connectOwn(
+  connection: OwnConnection,
+  workspace: string,
+  user: string,
+  key: { public_key: string; key_id: string },
+  secret: string,
+): Promise<void> {
   await api<unknown>(`/v1/connections/${connection.rule_id}`, {
     method: 'PUT',
-    body: JSON.stringify({
-      id,
-      binding: toBase64(binding),
-      sealed: toBase64(sealed),
-      key_id: key.key_id,
-    }),
+    body: await sealOwn(connection, workspace, user, key, secret),
   })
 }
 
 /** Disconnects the caller's own key for a host. */
 export const disconnectOwn = (ruleId: string) =>
   api<void>(`/v1/connections/${ruleId}`, { method: 'DELETE' })
+
+/** An account that holds keys for the turns nobody sent: nobody signs in as
+ *  it, and an administrator connects its keys. See docs/user-credentials.md. */
+export type MachineUser = {
+  id: string
+  display_name: string
+  connections: OwnConnection[]
+  /** The agents whose turns nobody sent carry it. */
+  agents: string[]
+}
+
+export const listMachineUsers = () =>
+  api<{ machine_users: MachineUser[]; seal_key: OwnConnections['seal_key'] }>('/v1/machine-users')
+
+export const createMachineUser = (displayName: string) =>
+  api<MachineUser>('/v1/machine-users', {
+    method: 'POST',
+    body: JSON.stringify({ display_name: displayName }),
+  })
+
+/** Deletes one and every key connected for it. */
+export const deleteMachineUser = (id: string) =>
+  api<void>(`/v1/machine-users/${id}`, { method: 'DELETE' })
+
+/** Connects a machine user's key for a host, sealed as its own. */
+export async function connectMachine(
+  machine: string,
+  connection: OwnConnection,
+  workspace: string,
+  key: { public_key: string; key_id: string },
+  secret: string,
+): Promise<void> {
+  await api<unknown>(`/v1/machine-users/${machine}/connections/${connection.rule_id}`, {
+    method: 'PUT',
+    body: await sealOwn(connection, workspace, machine, key, secret),
+  })
+}
+
+export const disconnectMachine = (machine: string, ruleId: string) =>
+  api<void>(`/v1/machine-users/${machine}/connections/${ruleId}`, { method: 'DELETE' })
+
+/** The machine user an agent's turns nobody sent carry, or null. */
+export const agentMachineUser = (agent: string) =>
+  api<{ machine_user_id: string | null }>(`/v1/agents/${agent}/machine-user`)
+
+export const setAgentMachineUser = (agent: string, machineUserId: string | null) =>
+  api<{ machine_user_id: string | null }>(`/v1/agents/${agent}/machine-user`, {
+    method: 'PUT',
+    body: JSON.stringify({ machine_user_id: machineUserId }),
+  })
 
 /** Allows a host for this workspace's agents, with no key. */
 export const allowHost = (host: string) =>

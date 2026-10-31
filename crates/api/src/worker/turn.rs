@@ -1052,10 +1052,12 @@ impl Worker {
         // Resolved for whoever sent the prompt: an asker's rule carries their
         // own credential, and the token minted for this turn says it is theirs
         // (`work::asker_of`). See docs/user-credentials.md.
-        let egress =
-            crate::egress::rules_for_turn(&self.pool, payload.workspace_id, payload.user_id)
-                .await
-                .map_err(|e| anyhow::anyhow!("egress rules: {e}"))?;
+        let asker = asker_for(&self.pool, payload)
+            .await
+            .map_err(|e| anyhow::anyhow!("asker: {e}"))?;
+        let egress = crate::egress::rules_for_turn(&self.pool, payload.workspace_id, asker)
+            .await
+            .map_err(|e| anyhow::anyhow!("egress rules: {e}"))?;
         // Committed here, next to the rules it is over, so the token minted
         // for this turn can carry a hash rather than the runtime's word for
         // what it was given. The runtime executes workspace code and cannot be
@@ -1251,7 +1253,7 @@ impl Worker {
         let waiting: Vec<&crate::held::Held> = held
             .iter()
             .filter(|h| h.waiting())
-            .filter(|h| h.asker == payload.user_id || !askers_hosts.contains(&h.host()))
+            .filter(|h| h.asker == asker || !askers_hosts.contains(&h.host()))
             .collect();
         let held_gates = (!waiting.is_empty()).then(|| {
             outturn_core::egress::gate::Gates::of(gates.clone())
@@ -1977,6 +1979,34 @@ pub async fn assemble_gates(
 /// The gates for a turn that is already running, re-derived from its payload.
 ///
 /// Used by the refusal path, which has a job id and nothing else. Resolves the
+/// Whose credentials a turn carries: the person who sent the prompt it
+/// answers, or, on a turn nobody sent, the machine user its agent names, if
+/// any. The one answer the mint, a token trade-in, a held request and the
+/// rules all ask, so they cannot disagree about whose turn it is. See
+/// docs/user-credentials.md, *Nobody asked*.
+///
+/// Never a person by inference: a turn nobody sent is a machine user's or
+/// nobody's, and `user_id` -- what the stopped-session latch reads -- stays
+/// null on it either way.
+pub async fn asker_for(
+    pool: &sqlx::PgPool,
+    payload: &ChatTurnPayload,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    if payload.user_id.is_some() {
+        return Ok(payload.user_id);
+    }
+    let named: Option<Option<Uuid>> = sqlx::query_scalar(
+        "select a.machine_user_id from agents a \
+         join users u on u.id = a.machine_user_id and u.machine_of = a.workspace_id \
+         where a.id = $1 and a.workspace_id = $2",
+    )
+    .bind(payload.agent_id)
+    .bind(payload.workspace_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(named.flatten())
+}
+
 /// same skills, egress rules and settings `prepare_turn` did -- so a skill
 /// unbound mid-turn narrows what can be approved rather than widening it, which
 /// is the safe direction.
@@ -1995,7 +2025,10 @@ pub async fn gates_for(
     // The same rules `prepare_turn` resolved, for the same asker: which hosts
     // a turn may reach depends on whose turn it is, and the gates fan across
     // those hosts.
-    let egress = crate::egress::rules_for_turn(pool, payload.workspace_id, payload.user_id)
+    let asker = asker_for(pool, payload)
+        .await
+        .map_err(|e| anyhow::anyhow!("asker: {e}"))?;
+    let egress = crate::egress::rules_for_turn(pool, payload.workspace_id, asker)
         .await
         .map_err(|e| anyhow::anyhow!("egress: {e}"))?;
 

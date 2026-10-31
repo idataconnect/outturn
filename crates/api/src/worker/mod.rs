@@ -26,7 +26,7 @@ mod turn;
 
 pub use compaction::{PromptStatus, StaleSkill};
 pub(crate) use turn::LeaseHeartbeat;
-pub use turn::{LeaseLost, assemble_gates, gates_for};
+pub use turn::{LeaseLost, asker_for, assemble_gates, gates_for};
 
 /// Job kind for "the user said something; produce a reply".
 pub const CHAT_TURN: &str = "chat.turn";

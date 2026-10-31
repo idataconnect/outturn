@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Plug, Trash2 } from 'lucide-react'
 
+import MachineUsers from '../components/MachineUsers'
 import { Connection } from '../components/SkillConnections'
 import { ApiError } from '../lib/api'
 import {
@@ -34,6 +35,9 @@ export default function Connections() {
   const [credentials, setCredentials] = useState<Credential[]>([])
   const [host, setHost] = useState('')
   const [error, setError] = useState<string | null>(null)
+  // Bumped on every reload, so the machine users' keys follow a host made
+  // each person's own, or back.
+  const [reloads, setReloads] = useState(0)
 
   const load = useCallback(async () => {
     try {
@@ -47,6 +51,7 @@ export default function Connections() {
       setRules(r)
       setCredentials(c)
       setError(null)
+      setReloads((n) => n + 1)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'failed to load connections')
     }
@@ -161,6 +166,14 @@ export default function Connections() {
           </ul>
         ))}
       </div>
+
+      {canKey && workspaceId && (
+        <MachineUsers
+          workspaceId={workspaceId}
+          askers={(rules ?? []).filter((r) => r.owner === 'asker').length}
+          reloads={reloads}
+        />
+      )}
 
       {unused.length > 0 && (
         <section className="mt-8">

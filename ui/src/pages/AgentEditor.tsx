@@ -10,6 +10,7 @@ import {
   pinTemplateVersion,
   type VersionChoice,
 } from '../lib/agentTemplates'
+import AgentMachineUser from '../components/AgentMachineUser'
 import AgentSkills from '../components/AgentSkills'
 import AgentTriggers from '../components/AgentTriggers'
 
@@ -400,6 +401,8 @@ export default function AgentEditor() {
       {!creating && !loading && id && <AgentSkills agentId={id} />}
 
       {!creating && !loading && id && <AgentTriggers agentId={id} />}
+
+      {!creating && !loading && id && <AgentMachineUser agentId={id} />}
 
       {!creating && !loading && (
         <section className="mt-8 space-y-4">

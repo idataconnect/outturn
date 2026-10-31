@@ -836,3 +836,201 @@ async fn a_hosts_connection_switches_between_one_key_and_each_persons_own() {
             .unwrap();
     assert!(revoked, "the keys people connected go with it");
 }
+
+/// A machine user holds the keys for the turns nobody sent: an administrator
+/// makes one, connects its key, and names it on an agent, whose turns nobody
+/// sent then carry it as their asker. Nobody signs in as it, it holds no
+/// role, and deleting it takes its keys. docs/user-credentials.md, *Nobody
+/// asked*.
+#[tokio::test]
+async fn a_machine_user_holds_the_keys_for_turns_nobody_sent() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let host = "93.184.215.14";
+    let send = |method: &str, uri: String, body: serde_json::Value| {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {admin}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let h = &h;
+        async move { h.send(request).await }
+    };
+
+    let (status, body) = h
+        .post(
+            "/v1/egress-rules",
+            Some(&admin),
+            &serde_json::json!({"host": host, "header": "authorization", "owner": "asker"})
+                .to_string(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let rule_id: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (status, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"Reports","slug":"reports","policy":{"model":"test-model"}}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let agent: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let (status, body) = send(
+        "POST",
+        "/v1/machine-users".into(),
+        serde_json::json!({"display_name": "Nightly reports"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let machine: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // Nobody signs in as it, and it holds no role, whoever asks.
+    let roled = sqlx::query(
+        "insert into user_workspace_roles (user_id, workspace_id, role_id) \
+         select $1, $2, id from roles where workspace_id = $2 and name = 'viewer'",
+    )
+    .bind(machine)
+    .bind(acme)
+    .execute(&h.db.pool)
+    .await;
+    assert!(roled.is_err(), "a machine user was given a role");
+    let signed = sqlx::query(
+        "insert into user_identities (id, user_id, provider, provider_subject) \
+         values ($1, $2, 'password', 'nightly@acme.example')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(machine)
+    .execute(&h.db.pool)
+    .await;
+    assert!(signed.is_err(), "a machine user was given a way to sign in");
+
+    // Its key, connected by the administrator, sealed as its own.
+    let (public, key_id) = seal_key(&h, &admin).await;
+    let sealed_as = |user: Uuid| {
+        let id = Uuid::now_v7();
+        let binding = serde_json::to_vec(&serde_json::json!({
+            "credential": id, "kind": "static", "workspaces": [acme],
+            "hosts": [host], "header": "authorization", "user": user,
+        }))
+        .unwrap();
+        let sealed = seal::seal(&public, &binding, b"Bearer nightly").unwrap();
+        (
+            id,
+            serde_json::json!({"id": id, "binding": b64(&binding),
+                "sealed": b64(&sealed), "key_id": key_id}),
+        )
+    };
+    let (_, as_somebody_else) = sealed_as(Uuid::now_v7());
+    let (status, _) = send(
+        "PUT",
+        format!("/v1/machine-users/{machine}/connections/{rule_id}"),
+        as_somebody_else,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "sealed as somebody else");
+    let (credential, its_own) = sealed_as(machine);
+    let (status, body) = send(
+        "PUT",
+        format!("/v1/machine-users/{machine}/connections/{rule_id}"),
+        its_own,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (status, body) = send(
+        "PUT",
+        format!("/v1/agents/{agent}/machine-user"),
+        serde_json::json!({"machine_user_id": machine}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h.get("/v1/machine-users", Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let listed: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        listed["machine_users"][0]["agents"],
+        serde_json::json!([agent])
+    );
+    assert_eq!(
+        listed["machine_users"][0]["connections"][0]["connected"]["credential_id"],
+        credential.to_string()
+    );
+
+    // A turn nobody sent carries it; a person's turn carries the person.
+    let payload = |user_id: Option<Uuid>| outturn::api::worker::ChatTurnPayload {
+        workspace_id: acme,
+        session_id: Uuid::now_v7(),
+        agent_id: agent,
+        message_id: Uuid::now_v7(),
+        timezone: None,
+        user_id,
+    };
+    let asker = outturn::api::worker::asker_for(&h.db.pool, &payload(None))
+        .await
+        .unwrap();
+    assert_eq!(asker, Some(machine));
+    let dana = Uuid::now_v7();
+    assert_eq!(
+        outturn::api::worker::asker_for(&h.db.pool, &payload(Some(dana)))
+            .await
+            .unwrap(),
+        Some(dana)
+    );
+    let rules = outturn::api::egress::rules_for_turn(&h.db.pool, acme, asker)
+        .await
+        .unwrap();
+    assert_eq!(
+        (rules[0].asker, rules[0].credential),
+        (Some(machine), Some(credential))
+    );
+    let sent = Recorder::new();
+    let gateway = Gateway::new(&h, sent.clone());
+    let (status, body) = gateway
+        .fetch(acme, asker, &rules[0], &format!("https://{host}/reports"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        sent.last().and_then(|(_, auth)| auth),
+        Some("Bearer nightly".to_string())
+    );
+
+    // Deleting it takes its keys, and the agent goes back to having nobody.
+    let (status, _) = send(
+        "DELETE",
+        format!("/v1/machine-users/{machine}"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        outturn::api::worker::asker_for(&h.db.pool, &payload(None))
+            .await
+            .unwrap(),
+        None
+    );
+    let gone: i64 = sqlx::query_scalar("select count(*) from credentials where id = $1")
+        .bind(credential)
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(gone, 0, "its key outlived it");
+}

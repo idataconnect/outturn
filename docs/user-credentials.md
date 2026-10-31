@@ -192,20 +192,25 @@ question about sessions, and is recorded under *Not settled*.
 ## Nobody asked
 
 A turn with no person -- a schedule, a webhook, mail, an automation -- has no
-asker, and an asker-owned rule then has one of three answers, chosen on the
-rule by whoever holds `settings:update`:
+asker, and an asker-owned rule then has one of three answers:
 
-- **The agent's credential.** The rule names one, used only when nobody asked.
-  Right for a backend that has an integration account for exactly this.
-- **A named machine user.** An account in the workspace that cannot sign in,
-  exists to hold connections, and is named on the rule; an administrator
-  connects its credential, which is the one exception to *nobody stores a key
-  as somebody else* and the reason the account cannot sign in -- it is nobody.
-  The turn's `asker` is the machine user, so the binding check and the
-  on-behalf-of header work unchanged, and the backend sees a caller it can
-  give its own narrow permissions to.
-- **Refused**, the default. The rule resolves to nothing, as for an asker with
-  nothing connected, below.
+- **A machine user, named on the agent.** An account in the workspace that
+  cannot sign in and holds no role, existing to hold connections. An
+  administrator connects its keys, which is the one exception to *nobody
+  stores a key as somebody else* and the reason the account cannot sign in --
+  it is nobody. The agent's turns nobody sent carry it as their `asker`, so
+  every asker-owned rule resolves to the key connected for it, the binding
+  check and the on-behalf-of header work unchanged, and the backend sees a
+  caller it can give its own narrow permissions to. Named on the agent rather
+  than on each rule, as first designed, because a turn has one asker: the
+  token carries one and the gateway compares one, and a turn reaching two
+  hosts whose rules named different machine users could carry only one of
+  them.
+- **The workspace's credential**, where the agent names no machine user. The
+  rule names one, used only when nobody asked. Right for a backend that has an
+  integration account for exactly this.
+- **Refused**, where neither is set. The rule is left out of the turn's rules,
+  and the turn cannot reach the host.
 
 Never a person's credential by inference. A trigger's owner set it up and is
 accountable for it; that is not the same as having agreed to lend it their
@@ -371,8 +376,7 @@ gateway, so the three tiers deploy together, as they did for sealed rules.
 
 ## As built
 
-Steps 1 to 5 but for machine users and the one-time notice in a shared
-session.
+Steps 1 to 5 but for the one-time notice in a shared session.
 
 - `egress::seal`: the binding's `user`, refused on any kind but `static` and
   with any `workspaces` but one id; `Binding::belongs_to`, which the gateway
@@ -430,13 +434,26 @@ session.
   person's name as it was, and the transcript draws *Used Dana's connection
   to books.example.com* under the reply. An API that predates the event logs
   and skips it, so the runtime may deploy first.
+- Machine users (`api::machine_users`, migration `0075_machine_users.sql`):
+  `users.machine_of` names the one workspace an account belongs to as one, and
+  triggers refuse it a way to sign in or a role, whatever route asks.
+  `/v1/machine-users` makes, lists and deletes them -- deleting revokes their
+  keys and clears the agents naming them -- and connects their keys through
+  the same checks as a person's own, under `credentials:write`.
+  `agents.machine_user_id`, set through `/v1/agents/{id}/machine-user` under
+  `agents:update` and `credentials:write`. `worker::asker_for` is the one
+  answer to whose turn it is -- the prompt's sender, or on a turn nobody sent
+  the agent's machine user -- and the mint, a trade-in, a held request and the
+  rules all ask it. The page: *Machine users* under Settings -> Connections,
+  and *When nobody started the turn* on an agent.
 - `held_requests.asker`, written from the refusing turn's `user_id`. A held
   request for a host whose rule is an asker's is handed only to a turn of that
   person, and any other turn in the session leaves it waiting -- every turn
   used to send the session's waiting requests, which with an asker's rule
   would have sent Dana's with Sam's key, or the workspace's on a resend.
-- `tests/api/credentials.rs`, `a_persons_credential_goes_only_with_their_turns`
-  and `a_person_connects_their_own_key_and_their_turns_carry_it`;
+- `tests/api/credentials.rs`, `a_persons_credential_goes_only_with_their_turns`,
+  `a_person_connects_their_own_key_and_their_turns_carry_it` and
+  `a_machine_user_holds_the_keys_for_turns_nobody_sent`;
   `tests/api/action_queue.rs`, `a_held_request_to_an_askers_host_waits_for_their_turn`;
   `tests/api/work.rs`, `a_reply_says_whose_connection_it_used`;
   `tests/agent_component_fake.rs`, `a_persons_key_going_out_is_reported_by_the_host`.
@@ -450,8 +467,8 @@ under that turn's rules, which are already resolved for them. The cost is that
 *Send again* on such a request, being nobody's turn, leaves it for the asker's
 next one.
 
-Not built: machine users, the notice before a person's key is first used in
-a shared session, and the on-behalf-of header. A reply cut off partway, and
+Not built: the notice before a person's key is first used in a shared
+session, and the on-behalf-of header. A reply cut off partway, and
 rebuilt from its events rather than finished, does not yet carry the line.
 
 ## Not settled

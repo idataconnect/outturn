@@ -92,33 +92,7 @@ pub async fn list(
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Connections>, ApiError> {
     let claims = member(&state, &headers).await?;
-    let rows = sqlx::query(
-        "select r.id, r.host, r.header, c.id as credential_id, c.created_at \
-         from egress_rules r \
-         left join credentials c on c.rule_id = r.id and c.user_id = $2 \
-              and c.revoked_at is null \
-         where r.workspace_id = $1 and r.owner = 'asker' \
-         order by r.host",
-    )
-    .bind(claims.workspace_id)
-    .bind(claims.subject)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let connections = rows
-        .iter()
-        .map(|row| Connection {
-            rule_id: row.get("id"),
-            host: row.get("host"),
-            header: row.get("header"),
-            connected: row
-                .get::<Option<Uuid>, _>("credential_id")
-                .map(|credential_id| Connected {
-                    credential_id,
-                    connected_at: row.get("created_at"),
-                }),
-        })
-        .collect();
+    let connections = of(&state, claims.workspace_id, claims.subject).await?;
     Ok(Json(Connections {
         connections,
         seal_key: seal_key_of(&state).ok(),
@@ -127,10 +101,6 @@ pub async fn list(
 
 /// Connects the caller's key for a rule, replacing any they connected
 /// before.
-///
-/// Refused unless the seal names the caller, this workspace alone, the rule's
-/// host and header, and is a static key: what the gateway will ask of it on
-/// every request, said while somebody is looking.
 pub async fn connect(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
@@ -138,12 +108,39 @@ pub async fn connect(
     Json(input): Json<NewConnection>,
 ) -> Result<(StatusCode, Json<Connected>), ApiError> {
     let claims = member(&state, &headers).await?;
+    let connected = store(
+        &state,
+        claims.workspace_id,
+        claims.subject,
+        claims.subject,
+        rule_id,
+        &input,
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(connected)))
+}
+
+/// Stores `user`'s key for a rule whose connection is each person's own,
+/// replacing any connected before, on behalf of `actor` -- the person
+/// themselves, or an administrator for a machine user.
+///
+/// Refused unless the seal names `user`, this workspace alone, the rule's host
+/// and header, and is a static key: what the gateway will ask of it on every
+/// request, said while somebody is looking.
+pub(crate) async fn store(
+    state: &ApiState,
+    workspace_id: Uuid,
+    user: Uuid,
+    actor: Uuid,
+    rule_id: Uuid,
+    input: &NewConnection,
+) -> Result<Connected, ApiError> {
     let rule = sqlx::query(
         "select host, header from egress_rules \
          where id = $1 and workspace_id = $2 and owner = 'asker'",
     )
     .bind(rule_id)
-    .bind(claims.workspace_id)
+    .bind(workspace_id)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -154,24 +151,18 @@ pub async fn connect(
     let host: String = rule.get("host");
     let header: String = rule.get("header");
 
-    let (binding, parsed, sealed) = decode(&state, input.id, &input.seal)?;
+    let (binding, parsed, sealed) = decode(state, input.id, &input.seal)?;
     let bad = |m: String| (StatusCode::BAD_REQUEST, m);
-    if parsed.user != Some(claims.subject) {
+    if parsed.user != Some(user) {
         return Err(bad(
-            "a key connected here is sealed as the caller's own".into()
+            "a key connected here is sealed as its owner's own".into()
         ));
     }
-    if parsed.workspaces != [claims.workspace_id.to_string()] {
+    if parsed.workspaces != [workspace_id.to_string()] {
         return Err(bad("a key is bound to this workspace and no other".into()));
     }
     parsed
-        .attaches(
-            claims.workspace_id,
-            &host,
-            Some(&header),
-            Kind::Static,
-            Some(claims.subject),
-        )
+        .attaches(workspace_id, &host, Some(&header), Kind::Static, Some(user))
         .map_err(bad)?;
 
     // The old one revoked and the new one stored together, so a turn
@@ -188,22 +179,23 @@ pub async fn connect(
          where rule_id = $1 and user_id = $2 and revoked_at is null",
     )
     .bind(rule_id)
-    .bind(claims.subject)
+    .bind(user)
     .execute(&mut *tx)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let connected_at: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
         "insert into credentials \
              (id, workspace_id, name, binding, sealed, key_id, created_by, user_id, rule_id) \
-         values ($1, $2, $3, $4, $5, $6, $7, $7, $8) returning created_at",
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning created_at",
     )
     .bind(input.id)
-    .bind(claims.workspace_id)
+    .bind(workspace_id)
     .bind(&host)
     .bind(&binding)
     .bind(&sealed)
     .bind(&input.seal.key_id)
-    .bind(claims.subject)
+    .bind(actor)
+    .bind(user)
     .bind(rule_id)
     .fetch_one(&mut *tx)
     .await
@@ -218,19 +210,74 @@ pub async fn connect(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     tracing::info!(
-        actor = %claims.subject,
-        workspace_id = %claims.workspace_id,
+        actor = %actor,
+        user_id = %user,
+        workspace_id = %workspace_id,
         rule_id = %rule_id,
         credential_id = %input.id,
         "own key connected"
     );
-    Ok((
-        StatusCode::CREATED,
-        Json(Connected {
-            credential_id: input.id,
-            connected_at,
-        }),
-    ))
+    Ok(Connected {
+        credential_id: input.id,
+        connected_at,
+    })
+}
+
+/// Revokes `user`'s key for a rule. False when nothing was connected.
+pub(crate) async fn revoke(
+    state: &ApiState,
+    workspace_id: Uuid,
+    user: Uuid,
+    rule_id: Uuid,
+) -> Result<bool, ApiError> {
+    let revoked = sqlx::query(
+        "update credentials set sealed = null, revoked_at = now(), \
+             generation = generation + 1, updated_at = now() \
+         where rule_id = $1 and user_id = $2 and workspace_id = $3 and revoked_at is null",
+    )
+    .bind(rule_id)
+    .bind(user)
+    .bind(workspace_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(revoked.rows_affected() > 0)
+}
+
+/// The rules whose connection is each person's own, and `user`'s key for
+/// each.
+pub(crate) async fn of(
+    state: &ApiState,
+    workspace_id: Uuid,
+    user: Uuid,
+) -> Result<Vec<Connection>, ApiError> {
+    let rows = sqlx::query(
+        "select r.id, r.host, r.header, c.id as credential_id, c.created_at \
+         from egress_rules r \
+         left join credentials c on c.rule_id = r.id and c.user_id = $2 \
+              and c.revoked_at is null \
+         where r.workspace_id = $1 and r.owner = 'asker' \
+         order by r.host",
+    )
+    .bind(workspace_id)
+    .bind(user)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(rows
+        .iter()
+        .map(|row| Connection {
+            rule_id: row.get("id"),
+            host: row.get("host"),
+            header: row.get("header"),
+            connected: row
+                .get::<Option<Uuid>, _>("credential_id")
+                .map(|credential_id| Connected {
+                    credential_id,
+                    connected_at: row.get("created_at"),
+                }),
+        })
+        .collect())
 }
 
 /// Disconnects the caller's key for a rule. Their turns then reach the host
@@ -241,18 +288,8 @@ pub async fn disconnect(
     Path(rule_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let claims = member(&state, &headers).await?;
-    let revoked = sqlx::query(
-        "update credentials set sealed = null, revoked_at = now(), \
-             generation = generation + 1, updated_at = now() \
-         where rule_id = $1 and user_id = $2 and workspace_id = $3 and revoked_at is null",
-    )
-    .bind(rule_id)
-    .bind(claims.subject)
-    .bind(claims.workspace_id)
-    .execute(&state.pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    if revoked.rows_affected() == 0 {
+    let revoked = revoke(&state, claims.workspace_id, claims.subject, rule_id).await?;
+    if !revoked {
         return Err((
             StatusCode::NOT_FOUND,
             "nothing is connected for that".to_string(),

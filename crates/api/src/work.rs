@@ -244,14 +244,19 @@ pub async fn take(
                 Ok(crate::worker::Prepared::Run(request)) => {
                     let request = *request;
                     let gateway_token_expires_at = token_expiry();
-                    let gateway_token = match mint_for(
-                        &state,
-                        payload.session_id,
-                        payload.workspace_id,
-                        request.egress_commitment,
-                        request.gate_commitment,
-                        asker_of(&payload),
-                    ) {
+                    // Read once for both tokens. Failing, the turn goes back
+                    // as a failed mint does.
+                    let asker = asker_of(&state, &payload).await;
+                    let gateway_token = match asker.clone().and_then(|asker| {
+                        mint_for(
+                            &state,
+                            payload.session_id,
+                            payload.workspace_id,
+                            request.egress_commitment,
+                            request.gate_commitment,
+                            asker,
+                        )
+                    }) {
                         Ok(token) => token,
                         Err(e) => {
                             // The placeholder is already written and
@@ -277,6 +282,7 @@ pub async fn take(
                             .parse()
                             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
                             .and_then(|gates| {
+                                let asker = asker.clone()?;
                                 mint_for(
                                     &state,
                                     payload.session_id,
@@ -289,7 +295,7 @@ pub async fn take(
                                     // request sent on another turn is not yet
                                     // given its own (docs/user-credentials.md,
                                     // *An approval answered by somebody else*).
-                                    asker_of(&payload),
+                                    asker,
                                 )
                             }) {
                             Ok(token) => Some(token),
@@ -460,15 +466,16 @@ pub fn mint_for(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-/// Whose credentials a turn carries: the one answer both the mint and a
-/// trade-in ask, so a token can only ever be renewed for the turn it was
-/// minted for.
-///
-/// The person who sent the prompt the turn answers, whose credentials
-/// `egress::rules_for_turn` resolved its rules to; none on a turn nobody
-/// sent. See docs/user-credentials.md.
-fn asker_of(payload: &super::worker::ChatTurnPayload) -> Option<Uuid> {
-    payload.user_id
+/// Whose credentials a turn carries, as `worker::asker_for` answers it: the
+/// one answer both the mint and a trade-in ask, so a token can only ever be
+/// renewed for the turn it was minted for.
+async fn asker_of(
+    state: &ApiState,
+    payload: &super::worker::ChatTurnPayload,
+) -> Result<Option<Uuid>, ApiError> {
+    super::worker::asker_for(&state.pool, payload)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 /// When a token minted now will stop being good, erring early.
@@ -540,7 +547,7 @@ pub async fn refresh_token(
     // A token with no asker carries nobody's credentials -- the gateway
     // refuses a person's rule on it -- so it renews as what it is: a turn
     // minted before this existed, mid-flight across a deploy.
-    if claims.asker.is_some() && claims.asker != asker_of(&payload) {
+    if claims.asker.is_some() && claims.asker != asker_of(&state, &payload).await? {
         return Err((
             StatusCode::FORBIDDEN,
             "that token is for somebody else's turn".to_string(),

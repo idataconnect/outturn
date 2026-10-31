@@ -2174,6 +2174,23 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         .route("/v1/credentials/{id}/test", post(super::credentials::test))
         .route("/v1/connections", get(super::connections::list))
         .route(
+            "/v1/machine-users",
+            get(super::machine_users::list).post(super::machine_users::create),
+        )
+        .route(
+            "/v1/machine-users/{id}",
+            axum::routing::delete(super::machine_users::delete),
+        )
+        .route(
+            "/v1/machine-users/{id}/connections/{rule_id}",
+            axum::routing::put(super::machine_users::connect)
+                .delete(super::machine_users::disconnect),
+        )
+        .route(
+            "/v1/agents/{id}/machine-user",
+            get(super::machine_users::of_agent).put(super::machine_users::set_for_agent),
+        )
+        .route(
             "/v1/connections/{rule_id}",
             axum::routing::put(super::connections::connect).delete(super::connections::disconnect),
         )
