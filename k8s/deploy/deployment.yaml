@@ -70,6 +70,15 @@ spec:
                 secretKeyRef:
                   name: outturn-secrets
                   key: OUTTURN_SEAL_PUBLIC_KEY
+            # Served at /.well-known/jwks.json for backends that check an
+            # on-behalf-of token. Optional, so a Secret from before it still
+            # starts; nothing is then published.
+            - name: OUTTURN_ASSERTION_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_ASSERTION_PUBLIC_KEY
+                  optional: true
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -208,6 +217,15 @@ spec:
                 secretKeyRef:
                   name: outturn-secrets
                   key: OUTTURN_SEAL_KEY
+            # Signs on-behalf-of tokens. Gateway only. Takes effect with
+            # OUTTURN_ASSERTION_ISSUER, the deployment's public URL, which a
+            # deployment sets in its own overlay. See docs/user-credentials.md.
+            - name: OUTTURN_ASSERTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_ASSERTION_KEY
+                  optional: true
             - name: OUTTURN_TOKEN_PUBLIC_KEY
               valueFrom:
                 secretKeyRef:

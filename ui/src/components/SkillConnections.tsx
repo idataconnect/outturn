@@ -3,12 +3,15 @@ import { CheckCircle2, KeyRound, LoaderCircle, Plug, TriangleAlert, Users } from
 
 import { ApiError } from '../lib/api'
 import {
+  assertionKeys,
   connect,
   disconnect,
+  JWKS_PATH,
   listCredentials,
   listRules,
   readServiceAccount,
   replaceKey,
+  setOnBehalfOf,
   setOwner,
   testCredential,
   type Credential,
@@ -117,6 +120,73 @@ export default function SkillConnections({
 /** One host's key: connect it, test it, replace it, take it off. */
 /** What a test proved, in words. Only a refusal without the key beside an
  *  answer with it says the key works; a path that answers anybody says nothing. */
+/**
+ * Whether the agent's key goes with a signed statement of who is asking, for a
+ * service that would rather trust the platform than hold a key per person.
+ * Says where the service finds the keys to check it with, and that there are
+ * none when the deployment has no key to sign with.
+ */
+function OnBehalfOf({
+  rule,
+  busy,
+  run,
+  onChanged,
+}: {
+  rule: EgressRule
+  busy: boolean
+  run: (work: () => Promise<unknown>) => Promise<void>
+  onChanged: () => Promise<void>
+}) {
+  const [keys, setKeys] = useState<number | null>(null)
+  useEffect(() => {
+    if (!rule.on_behalf_of) return
+    assertionKeys()
+      .then(setKeys)
+      .catch(() => setKeys(0))
+  }, [rule.on_behalf_of])
+
+  return (
+    <div className="mt-3 text-xs text-surface-700 dark:text-surface-300">
+      <label className="flex items-start gap-2">
+        <input
+          type="checkbox"
+          checked={rule.on_behalf_of}
+          disabled={busy}
+          onChange={(e) => {
+            const on = e.target.checked
+            void run(async () => {
+              await setOnBehalfOf(rule, on)
+              await onChanged()
+            })
+          }}
+          className="mt-0.5"
+        />
+        <span>
+          Tell it who is asking
+          <span className="mt-0.5 block text-surface-500 dark:text-surface-400">
+            Each request also carries <span className="font-mono">Outturn-On-Behalf-Of</span>, a
+            token signed for this host naming the person whose conversation it is, good for a
+            minute. For a service of your own that takes this platform&apos;s word for who is
+            asking. It checks the token with the keys at{' '}
+            <span className="break-all font-mono">
+              {window.location.origin}
+              {JWKS_PATH}
+            </span>
+            .
+          </span>
+        </span>
+      </label>
+      {rule.on_behalf_of && keys === 0 && (
+        <p className="mt-1 flex items-center gap-1 text-amber-700 dark:text-amber-400" role="status">
+          <TriangleAlert size={12} aria-hidden />
+          This deployment publishes no signing key, so requests to {rule.host} are refused until an
+          operator sets one.
+        </p>
+      )}
+    </div>
+  )
+}
+
 function describeTest(t: Tested): string {
   const said = t.said ? ` It said: ${t.said}` : ''
   const hint = t.hint ? ` ${t.hint}` : ''
@@ -488,6 +558,10 @@ export function Connection({
             </button>
           </div>
         </div>
+      )}
+
+      {!asker && connected && !editing && (
+        <OnBehalfOf rule={rule} busy={busy} run={run} onChanged={onChanged} />
       )}
 
       {busy && (

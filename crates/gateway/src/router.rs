@@ -40,6 +40,10 @@ pub struct GatewayState {
     /// Sealed credentials, read by id and opened with this gateway's key. See
     /// docs/sealed-credentials.md.
     pub(crate) sealed: egress::sealed::Credentials,
+    /// What signs the on-behalf-of header, from `OUTTURN_ASSERTION_KEY`. None
+    /// refuses a rule that asks for the header rather than sending it without.
+    /// See `outturn_core::egress::assertion`.
+    pub(crate) assertion: Option<Arc<outturn_core::egress::assertion::Signer>>,
 }
 
 /// One thing to try: a provider, and the model to ask it for.
@@ -73,6 +77,7 @@ impl GatewayState {
             // Read once, like the internal hosts, and for the same reason.
             bindings: outturn_core::egress::bindings::Bindings::from_env(),
             sealed: egress::sealed::Credentials::from_env(),
+            assertion: outturn_core::egress::assertion::Signer::from_env().map(Arc::new),
         }
     }
 
@@ -80,6 +85,12 @@ impl GatewayState {
     /// that has one. `with_health` does this too.
     pub fn with_sealed(mut self, sealed: egress::sealed::Credentials) -> Self {
         self.sealed = sealed;
+        self
+    }
+
+    /// The key the on-behalf-of header is signed with, for a test.
+    pub fn with_assertion(mut self, signer: outturn_core::egress::assertion::Signer) -> Self {
+        self.assertion = Some(Arc::new(signer));
         self
     }
 

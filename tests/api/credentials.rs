@@ -396,6 +396,7 @@ async fn a_persons_credential_goes_only_with_their_turns() {
         client: None,
         credential,
         asker,
+        on_behalf_of: false,
     };
 
     let (status, body) = fetch(Some(dana), rule(Some(dana), Some(id))).await;
@@ -1033,4 +1034,117 @@ async fn a_machine_user_holds_the_keys_for_turns_nobody_sent() {
         .await
         .unwrap();
     assert_eq!(gone, 0, "its key outlived it");
+}
+
+/// A rule says who is asking only beside a key of the agent's own -- the key
+/// is what tells the backend the statement came from here -- and never on a
+/// host whose key is each person's, which says more already. Once it does,
+/// the turn's rule carries it, and a held request for the host waits for its
+/// asker's turn as a person's key would. The keys it is verified with are
+/// public. docs/user-credentials.md, *A signed on-behalf-of header, instead*.
+#[tokio::test]
+async fn a_rule_says_who_is_asking_only_beside_the_agents_own_key() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let rule_for = |host: &'static str| {
+        let h = &h;
+        let admin = &admin;
+        async move {
+            let (status, body) = h
+                .post(
+                    "/v1/egress-rules",
+                    Some(admin),
+                    &serde_json::json!({ "host": host }).to_string(),
+                )
+                .await;
+            assert_eq!(status, StatusCode::CREATED, "{body}");
+            serde_json::from_str::<Value>(&body).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let say = |rule_id: String, on: bool| {
+        let request = Request::put(format!("/v1/egress-rules/{rule_id}/on-behalf-of"))
+            .header("authorization", format!("Bearer {admin}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "on_behalf_of": on }).to_string(),
+            ))
+            .unwrap();
+        let h = &h;
+        async move { h.send(request).await }
+    };
+
+    let books = rule_for("books.example.com").await;
+    let (status, body) = say(books.clone(), true).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "no key of the agent's: {body}"
+    );
+
+    // The agent's key, as an operator's variable: written here rather than
+    // through a binding the harness does not have.
+    sqlx::query(
+        "update egress_rules set header = 'authorization', \
+             credential_env = 'OUTTURN_EGRESS_BOOKS' where id = $1::uuid",
+    )
+    .bind(&books)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+    let (status, body) = say(books.clone(), true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["on_behalf_of"],
+        true
+    );
+
+    let dana = Uuid::now_v7();
+    let rules = outturn::api::egress::rules_for_turn(&h.db.pool, acme, Some(dana))
+        .await
+        .unwrap();
+    let rule = rules
+        .iter()
+        .find(|r| r.host == "books.example.com")
+        .unwrap();
+    assert!(rule.on_behalf_of && rule.asker.is_none(), "{rule:?}");
+    assert_eq!(
+        outturn::api::egress::asker_hosts(&h.db.pool, acme)
+            .await
+            .unwrap(),
+        vec!["books.example.com".to_string()],
+        "a held request for it waits for its own asker"
+    );
+
+    let mail = rule_for("mail.example.com").await;
+    let request = Request::put(format!("/v1/egress-rules/{mail}/owner"))
+        .header("authorization", format!("Bearer {admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "owner": "asker", "header": "authorization" }).to_string(),
+        ))
+        .unwrap();
+    assert_eq!(h.send(request).await.0, StatusCode::OK);
+    let (status, body) = say(mail, true).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a person's own key: {body}"
+    );
+
+    let (status, body) = say(books, false).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["on_behalf_of"],
+        false
+    );
+
+    let (status, body) = h.get(outturn::egress::assertion::JWKS_PATH, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(serde_json::from_str::<Value>(&body).unwrap()["keys"].is_array());
 }

@@ -14,6 +14,8 @@ export type EgressRule = {
   header: string | null
   credential_env: string | null
   credential: string | null
+  /** Beside the agent's key, a statement the gateway signs of who is asking. */
+  on_behalf_of: boolean
   enabled: boolean
   /** The header the skill that opened this host says its key travels in. */
   suggested_header?: string
@@ -189,6 +191,27 @@ export const setOwner = (rule: EgressRule, owner: Owner, header?: string) =>
     method: 'PUT',
     body: JSON.stringify({ owner, ...(header ? { header } : {}) }),
   })
+
+/** Has a rule's requests say who is asking, beside the agent's own key. See
+ *  docs/user-credentials.md, *A signed on-behalf-of header, instead*. */
+export const setOnBehalfOf = (rule: EgressRule, on: boolean) =>
+  api<EgressRule>(`/v1/egress-rules/${rule.id}/on-behalf-of`, {
+    method: 'PUT',
+    body: JSON.stringify({ on_behalf_of: on }),
+  })
+
+/** Where a backend finds the keys the statement is verified with: public, on
+ *  this origin, outside `/v1`. */
+export const JWKS_PATH = '/.well-known/jwks.json'
+
+/** How many keys the deployment publishes; none means the gateway has no key
+ *  to sign with, and such a host is refused rather than sent the key alone. */
+export async function assertionKeys(): Promise<number> {
+  const response = await fetch(JWKS_PATH)
+  if (!response.ok) return 0
+  const jwks = (await response.json()) as { keys?: unknown[] }
+  return jwks.keys?.length ?? 0
+}
 
 /** A host whose connection is each person's own, and the caller's key for it. */
 export type OwnConnection = {

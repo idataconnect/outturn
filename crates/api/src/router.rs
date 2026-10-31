@@ -689,6 +689,40 @@ async fn set_rule_owner(
     Ok(Json(rule))
 }
 
+/// Has a rule's requests say who is asking, beside the agent's own key. A
+/// statement about people that a backend will act on, so a credential
+/// decision as well as a settings one, as the owner is.
+async fn set_rule_on_behalf_of(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<super::egress::SetOnBehalfOf>,
+) -> Result<Json<super::egress::Rule>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SettingsUpdate).await?;
+    authorize(&state, &headers, Authority::CredentialsWrite).await?;
+    let rule =
+        super::egress::set_on_behalf_of(&state.pool, claims.workspace_id, id, input.on_behalf_of)
+            .await?;
+    tracing::info!(
+        actor = %claims.subject,
+        workspace_id = %claims.workspace_id,
+        host = %rule.host,
+        on_behalf_of = rule.on_behalf_of,
+        "egress rule on-behalf-of set"
+    );
+    Ok(Json(rule))
+}
+
+/// The keys the gateway signs on-behalf-of assertions with, for a backend to
+/// verify them. Public, unauthenticated and the same for every workspace: a
+/// backend has no token, and a public key is safe with anybody.
+async fn jwks() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CACHE_CONTROL, "public, max-age=300")],
+        Json(outturn_core::egress::assertion::Jwks::from_env()),
+    )
+}
+
 async fn delete_egress_rule(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
@@ -2202,6 +2236,11 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             "/v1/egress-rules/{id}/owner",
             axum::routing::put(set_rule_owner),
         )
+        .route(
+            "/v1/egress-rules/{id}/on-behalf-of",
+            axum::routing::put(set_rule_on_behalf_of),
+        )
+        .route(outturn_core::egress::assertion::JWKS_PATH, get(jwks))
         // Runtimes ask here for work and report back what it produced. Both
         // require GatewayInvoke, which is the platform's own tier rather than
         // a workspace's.

@@ -6,6 +6,7 @@
 //! set, and the proof a request carries to show a rule is one it vouched for.
 
 pub mod amount;
+pub mod assertion;
 pub mod bindings;
 pub mod commit;
 pub mod gate;

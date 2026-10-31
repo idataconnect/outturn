@@ -58,6 +58,19 @@ OUTTURN_SEAL_PUBLIC_KEY=$seal_public
 EOF
     echo "added seal keys to $file" >&2
   fi
+  # Likewise for the on-behalf-of signing key, which came later still.
+  if ! grep -q '^OUTTURN_ASSERTION_KEY=' "$file"; then
+    assertion=$(outturn_token_secret)
+    assertion_public=$(outturn_public_key_of "$assertion")
+    cat >>"$file" <<EOF
+
+# The gateway signs on-behalf-of tokens with this; the API publishes its public
+# half at /.well-known/jwks.json. See docs/user-credentials.md.
+OUTTURN_ASSERTION_KEY=$assertion
+OUTTURN_ASSERTION_PUBLIC_KEY=$assertion_public
+EOF
+    echo "added assertion keys to $file" >&2
+  fi
   # Quiet on the common path: this runs before every `skaffold dev`, and a
   # line saying nothing happened is a line nobody reads.
   exit 0
@@ -73,6 +86,8 @@ runtime=$(outturn_runtime_key)
 password=$(outturn_dev_password)
 seal=$(outturn_seal_key)
 seal_public=$(outturn_seal_public_key_of "$seal")
+assertion=$(outturn_token_secret)
+assertion_public=$(outturn_public_key_of "$assertion")
 
 umask 077
 cat >"$file" <<EOF
@@ -94,6 +109,11 @@ OUTTURN_RUNTIME_KEY=$runtime
 # to whoever seals one. See docs/sealed-credentials.md.
 OUTTURN_SEAL_KEY=$seal
 OUTTURN_SEAL_PUBLIC_KEY=$seal_public
+
+# The gateway signs on-behalf-of tokens with this; the API publishes its public
+# half at /.well-known/jwks.json. See docs/user-credentials.md.
+OUTTURN_ASSERTION_KEY=$assertion
+OUTTURN_ASSERTION_PUBLIC_KEY=$assertion_public
 
 # Who OUTTURN_DEV_SEED creates on an empty database, for signing in locally.
 OUTTURN_DEV_ADMIN_EMAIL=admin@outturn.local

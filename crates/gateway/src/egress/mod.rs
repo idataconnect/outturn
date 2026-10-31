@@ -262,6 +262,46 @@ async fn vet_and_send(
         }
     }
 
+    // The statement of who is asking, for a rule that sends one: signed here,
+    // for this host and this minute, and only beside the rule's own
+    // credential, which is what tells the backend the statement came from
+    // outturn. A turn with nobody behind it sends none -- never one with the
+    // person left out, which a backend could read as the integration itself.
+    // A gateway with no key refuses rather than sending the credential alone,
+    // which the backend would take for the agent acting as nobody in
+    // particular. See docs/user-credentials.md.
+    let on_behalf_of = match (rule.on_behalf_of, claims.asker) {
+        (false, _) | (true, None) => None,
+        (true, Some(asker)) => {
+            let carries =
+                rule.credential_env.is_some() || rule.client.is_some() || rule.credential.is_some();
+            if rule.asker.is_some() || !carries {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "{host}'s rule says who is asking without a credential of the agent's \
+                         to vouch for it; nothing was sent"
+                    ),
+                ));
+            }
+            let signer = state.assertion.as_ref().ok_or_else(|| {
+                (
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "{host} expects to be told who is asking, and this deployment has no \
+                         key to sign that with. An operator sets OUTTURN_ASSERTION_KEY; \
+                         nothing was sent"
+                    ),
+                )
+            })?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or_default();
+            Some(signer.sign(&host, claims.workspace_id, asker, now))
+        }
+    };
+
     // Whether this request is one somebody has to approve first.
     //
     // The gate set is checked against the commitment in the token before it is
@@ -599,6 +639,16 @@ async fn vet_and_send(
         outgoing.insert(reqwest::header::AUTHORIZATION, value);
     }
 
+    if let Some(assertion) = on_behalf_of {
+        let mut value = reqwest::header::HeaderValue::from_str(&assertion)
+            .expect("a compact JWS is base64url and dots");
+        value.set_sensitive(true);
+        outgoing.insert(
+            reqwest::header::HeaderName::from_static(outturn_core::egress::assertion::HEADER),
+            value,
+        );
+    }
+
     // The record of each automatic yes, written before the request goes out and
     // only while each policy still stands: the insert is the check, so a policy
     // revoked a moment ago stops this request whatever the token says. No
@@ -772,6 +822,7 @@ mod tests {
             client: None,
             credential: Some(uuid::Uuid::now_v7()),
             asker: None,
+            on_behalf_of: false,
         };
         assert!(may_carry_credential(&keyed, "https", false));
         assert!(
@@ -803,6 +854,7 @@ mod tests {
             client: None,
             credential: None,
             asker: None,
+            on_behalf_of: false,
         }
     }
 
@@ -814,6 +866,7 @@ mod tests {
             client: None,
             credential: None,
             asker: None,
+            on_behalf_of: false,
         }
     }
 
@@ -889,6 +942,7 @@ mod tests {
             "COOKIE",
             "Host",
             "x-api-key",
+            "Outturn-On-Behalf-Of",
         ] {
             assert!(rules::check_header(header).is_err(), "{header} was allowed");
         }
@@ -1191,6 +1245,7 @@ mod client_credentials {
             }),
             credential: None,
             asker: None,
+            on_behalf_of: false,
         };
 
         let seed = [9u8; 32];
@@ -1260,6 +1315,162 @@ mod client_credentials {
             "held for the second request, exchanged afresh after the 401"
         );
         assert_eq!(*world.exchanges.lock().unwrap(), 2);
+    }
+
+    /// A rule that says who is asking sends the agent's credential and,
+    /// beside it, an assertion signed here for the asker and this host. A turn
+    /// nobody sent says nobody rather than leaving the person out, and a
+    /// gateway with no key to sign with sends nothing at all.
+    #[tokio::test]
+    async fn a_rule_that_says_who_is_asking_signs_it_for_the_host() {
+        use outturn_core::egress::assertion;
+        use std::sync::Mutex;
+        use transport::{TransportResponse, VettedRequest};
+
+        #[derive(Default)]
+        struct Seen(Mutex<Vec<(String, Option<String>)>>);
+
+        #[async_trait::async_trait]
+        impl transport::EgressTransport for Seen {
+            fn name(&self) -> &'static str {
+                "test"
+            }
+
+            async fn send(
+                &self,
+                request: VettedRequest,
+            ) -> Result<TransportResponse, TransportError> {
+                let header = |name: &str| {
+                    request
+                        .headers
+                        .get(name)
+                        .map(|v| v.to_str().unwrap().to_string())
+                };
+                self.0.lock().unwrap().push((
+                    header("authorization").unwrap_or_default(),
+                    header(assertion::HEADER),
+                ));
+                Ok(TransportResponse {
+                    status: 200,
+                    headers: Vec::new(),
+                    body: "{}".into(),
+                    truncated: false,
+                })
+            }
+        }
+
+        // SAFETY: a name no other test uses.
+        unsafe { std::env::set_var("OUTTURN_EGRESS_TEST_ON_BEHALF", "Bearer the-agents") };
+        let rule = EgressRule {
+            host: "93.184.215.14".into(),
+            header: Some("authorization".into()),
+            credential_env: Some("OUTTURN_EGRESS_TEST_ON_BEHALF".into()),
+            client: None,
+            credential: None,
+            asker: None,
+            on_behalf_of: true,
+        };
+        let seed = [9u8; 32];
+        let minter = outturn_core::auth::TokenMinter::new(&seed).expect("minter");
+        let signer = || {
+            assertion::Signer::parse(&"42".repeat(32), "https://outturn.example.com")
+                .expect("signer")
+        };
+        let published = assertion::Jwks {
+            keys: vec![assertion::Jwk::of(&signer().public_key())],
+        };
+        let seen = Arc::new(Seen::default());
+        let gateway = |signs: bool| {
+            let validator = outturn_core::auth::TokenValidator::new(
+                &outturn_core::auth::TokenMinter::public_key_of(&seed),
+                outturn_core::auth::AUDIENCE_GATEWAY,
+            )
+            .expect("validator");
+            let state = super::super::GatewayState::new(Vec::new(), validator)
+                .with_egress_transport(seen.clone())
+                .with_bindings(
+                    outturn_core::egress::bindings::Bindings::parse(
+                        r#"{"OUTTURN_EGRESS_TEST_ON_BEHALF":
+                            {"workspaces": ["*"], "hosts": ["93.184.215.14"]}}"#,
+                    )
+                    .expect("readable"),
+                );
+            Arc::new(if signs {
+                state.with_assertion(signer())
+            } else {
+                state
+            })
+        };
+
+        let workspace = uuid::Uuid::now_v7();
+        let rules = vec![rule.clone()];
+        let send = |state: Arc<super::super::GatewayState>, asker: Option<uuid::Uuid>| {
+            let token = minter
+                .mint_turn(
+                    uuid::Uuid::now_v7(),
+                    workspace,
+                    commit::root(workspace, &rules),
+                    outturn_core::egress::gate::Gates::none().root(workspace),
+                    asker,
+                )
+                .expect("turn token");
+            let mut headers = HeaderMap::new();
+            headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+            let request = EgressRequest {
+                method: "GET".into(),
+                url: "https://93.184.215.14/invoices".into(),
+                gates: outturn_core::egress::gate::Gates::none(),
+                headers: Vec::new(),
+                body: None,
+                proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
+            };
+            vet_and_send(State(state), headers, Json(request))
+        };
+
+        let dana = uuid::Uuid::now_v7();
+        send(gateway(true), Some(dana))
+            .await
+            .map_err(|(s, m)| format!("{s}: {m}"))
+            .expect("allowed")
+            .expect("sent");
+        send(gateway(true), None)
+            .await
+            .map_err(|(s, m)| format!("{s}: {m}"))
+            .expect("allowed")
+            .expect("sent");
+        let (status, said) = send(gateway(false), Some(dana))
+            .await
+            .expect_err("refused without a key to sign with");
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(said.contains("OUTTURN_ASSERTION_KEY"), "{said}");
+
+        let seen = seen.0.lock().unwrap().clone();
+        assert_eq!(
+            seen.len(),
+            2,
+            "nothing went out from the gateway with no key"
+        );
+        assert_eq!(
+            seen[0].0, "Bearer the-agents",
+            "the agent's own credential beside it"
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims = assertion::verify(
+            seen[0].1.as_deref().expect("an assertion on Dana's turn"),
+            &published,
+            "93.184.215.14",
+            now,
+        )
+        .expect("verifies for this host");
+        assert_eq!((claims.sub, claims.workspace), (dana, workspace));
+        assert_eq!(
+            seen[1],
+            ("Bearer the-agents".into(), None),
+            "nobody's turn says nobody"
+        );
     }
 
     /// The leak bindings close: a workspace writing a rule that names a
@@ -1366,6 +1577,7 @@ mod client_credentials {
             client: None,
             credential: None,
             asker: None,
+            on_behalf_of: false,
         };
         let client = |host: &str, token_url: &str| EgressRule {
             host: host.into(),
@@ -1380,6 +1592,7 @@ mod client_credentials {
             }),
             credential: None,
             asker: None,
+            on_behalf_of: false,
         };
 
         // The thief's own host, ACME's variable.
@@ -1494,6 +1707,7 @@ mod client_credentials {
             client: None,
             credential: None,
             asker: None,
+            on_behalf_of: false,
         };
         let charge = outturn_core::egress::gate::Gate {
             requires: "charge".into(),

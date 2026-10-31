@@ -184,6 +184,13 @@ fn leaf(workspace_id: Uuid, rule: &EgressRule) -> Hash {
             ],
         );
     }
+    // Last, and only when set, so a rule without it hashes as it always did.
+    // Every leaf under one tag has a fixed field list before this, and the
+    // fields are length-prefixed, so one more field cannot be read as any
+    // other rule's.
+    if rule.on_behalf_of {
+        hash_fields(&mut h, [Some("on-behalf-of")]);
+    }
     Hash(h.finalize().into())
 }
 
@@ -490,6 +497,7 @@ mod tests {
             client: None,
             credential: None,
             asker: None,
+            on_behalf_of: false,
         }
     }
 
@@ -560,6 +568,20 @@ mod tests {
         );
     }
 
+    /// Whether a rule sends the on-behalf-of header is the API's word, so a
+    /// runtime can neither add one to a backend that would trust it nor drop
+    /// one a backend relies on.
+    #[test]
+    fn a_rule_commits_to_whether_it_says_who_is_asking() {
+        let ws = Uuid::from_bytes([3; 16]);
+        let plain = with_credential("books.example.com", "authorization", "OUTTURN_EGRESS_BOOKS");
+        let signed = EgressRule {
+            on_behalf_of: true,
+            ..plain.clone()
+        };
+        assert_ne!(root(ws, &[plain]), root(ws, &[signed]));
+    }
+
     fn with_credential(host: &str, header: &str, env: &str) -> EgressRule {
         EgressRule {
             host: host.into(),
@@ -568,6 +590,7 @@ mod tests {
             client: None,
             credential: None,
             asker: None,
+            on_behalf_of: false,
         }
     }
 
@@ -655,6 +678,7 @@ mod tests {
             }),
             credential: None,
             asker: None,
+            on_behalf_of: false,
         }
     }
 
@@ -816,6 +840,7 @@ mod tests {
             client: None,
             credential: None,
             asker: None,
+            on_behalf_of: false,
         };
         let forged = Proof::Inclusion {
             rule: interior,

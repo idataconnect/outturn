@@ -624,6 +624,7 @@ mod tests {
             client: Some(client.clone()),
             credential: None,
             asker: None,
+            on_behalf_of: false,
         }
     }
 
@@ -986,6 +987,7 @@ mod tests {
                 client: None,
                 credential: Some(Uuid::nil()),
                 asker: None,
+                on_behalf_of: false,
             }
         }
 

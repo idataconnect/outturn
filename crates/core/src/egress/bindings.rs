@@ -417,6 +417,7 @@ mod tests {
             client: None,
             credential: None,
             asker: None,
+            on_behalf_of: false,
         };
         let b = bindings();
         assert!(b.check_rule(acme(), &rule("*.stripe.com")).is_ok());

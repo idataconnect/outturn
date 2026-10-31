@@ -40,7 +40,7 @@ expected to work.
 
 ## Secrets to generate
 
-Five keys, generated once per deployment and never shared with another:
+Seven keys, generated once per deployment and never shared with another:
 
 | Key | Tier | What it is |
 |---|---|---|
@@ -49,8 +49,10 @@ Five keys, generated once per deployment and never shared with another:
 | `OUTTURN_RUNTIME_KEY` | api, runtime | What a runtime presents to take work; 32+ bytes of anything unguessable |
 | `OUTTURN_SEAL_KEY` | gateway | X25519 private key, 64 hex. Opens sealed credentials |
 | `OUTTURN_SEAL_PUBLIC_KEY` | api | Its public half, handed to the browser to seal to |
+| `OUTTURN_ASSERTION_KEY` | gateway | Ed25519 seed, 64 hex. Signs the on-behalf-of header; set `OUTTURN_ASSERTION_ISSUER` beside it |
+| `OUTTURN_ASSERTION_PUBLIC_KEY` | api | Its public half, served at `/.well-known/jwks.json` |
 
-`scripts/deploy-prod.sh` generates all five, asks for the database and object
+`scripts/deploy-prod.sh` generates all seven, asks for the database and object
 store, and writes a `secret.yaml` with exactly the keys `k8s/deploy` reads. It
 derives the public halves with OpenSSL (`scripts/lib/keys.sh` shows how; there
 is no OpenSSL command that takes a bare seed, so the script wraps it in a

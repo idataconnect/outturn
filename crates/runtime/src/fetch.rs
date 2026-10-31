@@ -172,6 +172,7 @@ mod tests {
                 client: None,
                 credential: None,
                 asker: None,
+                on_behalf_of: false,
             })
             .collect();
         let proof = commit::prove(workspace, &rules, &rules[0]).expect("in the set");

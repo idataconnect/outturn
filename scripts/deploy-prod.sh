@@ -173,6 +173,8 @@ public=$(outturn_public_key_of "$secret")
 runtime=$(outturn_runtime_key)
 seal=$(outturn_seal_key)
 seal_public=$(outturn_seal_public_key_of "$seal")
+assertion=$(outturn_token_secret)
+assertion_public=$(outturn_public_key_of "$assertion")
 
 mkdir -p "$dir"
 umask 077
@@ -201,6 +203,12 @@ stringData:
   # every stored credential unopenable -- see docs/sealed-credentials.md.
   OUTTURN_SEAL_KEY: "$seal"
   OUTTURN_SEAL_PUBLIC_KEY: "$seal_public"
+  # The gateway signs on-behalf-of tokens with the first; the API publishes
+  # the second at /.well-known/jwks.json. Unused until a rule asks for the
+  # header, and a rotation publishes both public halves for a while -- see
+  # docs/user-credentials.md.
+  OUTTURN_ASSERTION_KEY: "$assertion"
+  OUTTURN_ASSERTION_PUBLIC_KEY: "$assertion_public"
   DATABASE_URL: "$database_url"
   OUTTURN_S3_ENDPOINT: "$s3_endpoint"
   OUTTURN_S3_BUCKET: "$s3_bucket"

@@ -69,6 +69,17 @@ pub struct EgressRule {
     /// `asker` and the seal's `user`. Left out of the encoding when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asker: Option<uuid::Uuid>,
+
+    /// Beside the rule's own credential, the gateway sends a statement it
+    /// signs of whose turn it is, for a backend that takes the platform's word
+    /// for who is asking. See `egress::assertion`. Only on an agent's rule
+    /// with a credential: the credential says *this is outturn*, the header
+    /// *for this person*, and the second means nothing without the first.
+    ///
+    /// In the rule's leaf, so a runtime cannot add it or drop it. Left out of
+    /// the encoding when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub on_behalf_of: bool,
 }
 
 /// Where a rule's access token comes from. See docs/client-credentials.md.
@@ -182,6 +193,9 @@ const RESERVED_HEADERS: &[&str] = &[
     "cookie",
     "host",
     "x-api-key",
+    // The gateway's statement of who is asking: a backend that trusts it must
+    // know nobody else could have written it.
+    super::assertion::HEADER,
 ];
 
 /// Whether a host matches a rule.
@@ -481,10 +495,11 @@ pub fn check_header(name: &str) -> Result<(), Refused> {
 ///
 /// Not `check_header`: `authorization` is what a credential usually travels
 /// in. But `host` decides which site a request reaches, independently of the
-/// URL that was checked, and a rule must not set it.
+/// URL that was checked, and a rule must not set it. Nor the on-behalf-of
+/// header, which the gateway writes and nothing else may.
 pub fn check_rule_header(name: &str) -> Result<(), Refused> {
     let lowered = name.trim().to_ascii_lowercase();
-    if lowered == "host" {
+    if lowered == "host" || lowered == super::assertion::HEADER {
         return Err(Refused::Header(lowered));
     }
     Ok(())
@@ -648,6 +663,7 @@ mod tests {
             client: None,
             credential: None,
             asker: None,
+            on_behalf_of: false,
         }
     }
 
@@ -659,6 +675,7 @@ mod tests {
             client: None,
             credential: None,
             asker: None,
+            on_behalf_of: false,
         }
     }
 
@@ -734,6 +751,7 @@ mod tests {
                 client: None,
                 credential: None,
                 asker: None,
+                on_behalf_of: false,
             },
         ];
         let found = rule_for(&rules, "api.example.com").expect("matched");

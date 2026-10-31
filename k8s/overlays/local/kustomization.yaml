@@ -66,6 +66,14 @@ patches:
                 name: outturn-dev-secrets
                 key: OUTTURN_SEAL_PUBLIC_KEY
                 optional: true
+          # The public half of the gateway's assertion key, served at
+          # /.well-known/jwks.json. Optional for the same reason.
+          - name: OUTTURN_ASSERTION_PUBLIC_KEY
+            valueFrom:
+              secretKeyRef:
+                name: outturn-dev-secrets
+                key: OUTTURN_ASSERTION_PUBLIC_KEY
+                optional: true
           # The API is the only tier that signs anything. Generated per clone
           # by scripts/dev-secrets.sh, never committed: a key in the repository
           # is one every clone shares. A real deployment uses its own Secret --
@@ -165,6 +173,17 @@ patches:
                 name: outturn-dev-secrets
                 key: OUTTURN_SEAL_KEY
                 optional: true
+          # What on-behalf-of tokens are signed with, and the name they are
+          # signed as: the UI's origin, where the keys are published. See
+          # docs/user-credentials.md.
+          - name: OUTTURN_ASSERTION_KEY
+            valueFrom:
+              secretKeyRef:
+                name: outturn-dev-secrets
+                key: OUTTURN_ASSERTION_KEY
+                optional: true
+          - name: OUTTURN_ASSERTION_ISSUER
+            value: http://localhost:3000
           # The circuit breaker is shared across replicas, so it lives in the
           # database. Absent, the gateway simply calls every provider.
           - name: DATABASE_URL

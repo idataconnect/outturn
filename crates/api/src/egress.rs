@@ -16,7 +16,7 @@ use outturn_core::egress::rule::{ClientAuth, ClientCredentials, EgressRule};
 macro_rules! rule_columns {
     () => {
         "host, header, credential_env, credential_id, \
-     token_url, scope, client_id_env, client_secret_env, client_auth, owner"
+     token_url, scope, client_id_env, client_secret_env, client_auth, owner, on_behalf_of"
     };
 }
 
@@ -30,11 +30,14 @@ pub async fn rules_for(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<EgressRu
     rules_for_turn(pool, workspace_id, None).await
 }
 
-/// The hosts whose connection is each person's own: what a held request is
-/// checked against before it is sent on somebody's turn.
+/// The hosts whose requests say who asked -- with each person's own key, or
+/// with the agent's and a statement of whose turn it is: what a held request
+/// is checked against before it is sent on somebody's turn, since sent on
+/// another's it would say the wrong person.
 pub async fn asker_hosts(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<String>, sqlx::Error> {
     sqlx::query_scalar(
-        "select host from egress_rules where workspace_id = $1 and owner = 'asker' and enabled",
+        "select host from egress_rules \
+         where workspace_id = $1 and (owner = 'asker' or on_behalf_of) and enabled",
     )
     .bind(workspace_id)
     .fetch_all(pool)
@@ -85,6 +88,7 @@ pub async fn rules_for_turn(
                 client: read_client(r),
                 credential: r.get("credential_id"),
                 asker: None,
+                on_behalf_of: r.get("on_behalf_of"),
             };
             match (Owner::read(r), asker) {
                 (Owner::Agent, _) => Some(rule),
@@ -190,6 +194,9 @@ pub struct Rule {
     /// A sealed credential, by id: safe for the same reason, since what the
     /// row holds is a ciphertext only the gateway can open.
     pub credential: Option<Uuid>,
+    /// Beside the credential, a statement the gateway signs of who is
+    /// asking. See `outturn_core::egress::assertion`.
+    pub on_behalf_of: bool,
     pub enabled: bool,
     /// Its credential is not bound to this workspace and host, so the gateway
     /// will refuse every request it matches. Said here because a rule written
@@ -213,6 +220,7 @@ impl Rule {
             client: self.client.clone(),
             credential: self.credential,
             asker: None,
+            on_behalf_of: self.on_behalf_of,
         }
     }
 }
@@ -429,6 +437,7 @@ pub async fn create(
                 client: input.client.clone(),
                 credential: input.credential,
                 asker: None,
+                on_behalf_of: false,
             },
         )
         .map_err(RuleError::Invalid)?;
@@ -551,7 +560,8 @@ pub async fn set_credential(
         }
     }
     let row = sqlx::query(concat!(
-        "update egress_rules set header = $3, credential_id = $4 \
+        "update egress_rules set header = $3, credential_id = $4, \
+             on_behalf_of = on_behalf_of and $4 is not null \
          where id = $1 and workspace_id = $2 returning id, ",
         rule_columns!(),
         ", enabled"
@@ -643,7 +653,7 @@ pub async fn set_owner(
                 }
             }
             sqlx::query(concat!(
-                "update egress_rules set owner = 'asker', header = $3 \
+                "update egress_rules set owner = 'asker', header = $3, on_behalf_of = false \
                  where id = $1 and workspace_id = $2 returning id, ",
                 rule_columns!(),
                 ", enabled"
@@ -685,6 +695,60 @@ pub async fn set_owner(
     Ok(read_rule(&updated))
 }
 
+/// Has a rule's requests say who is asking, or stop.
+///
+/// The constraint refuses it on an asker's rule or one with no credential;
+/// asked first here, so the refusal can say why.
+pub async fn set_on_behalf_of(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    id: Uuid,
+    on: bool,
+) -> Result<Rule, RuleError> {
+    let row = sqlx::query(concat!(
+        "select id, ",
+        rule_columns!(),
+        ", enabled from egress_rules where id = $1 and workspace_id = $2"
+    ))
+    .bind(id)
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| RuleError::Database(e.to_string()))?
+    .ok_or_else(|| RuleError::Invalid("no such rule".into()))?;
+    let rule = read_rule(&row);
+    if on && rule.owner == Owner::Asker {
+        return Err(RuleError::Invalid(
+            "each person's own key already says who is asking".into(),
+        ));
+    }
+    if on && rule.credential_env.is_none() && rule.client.is_none() && rule.credential.is_none() {
+        return Err(RuleError::Invalid(
+            "saying who is asking needs the agent's own key beside it, so the host knows the \
+             statement came from here; connect one first"
+                .into(),
+        ));
+    }
+    let row = sqlx::query(concat!(
+        "update egress_rules set on_behalf_of = $3 \
+         where id = $1 and workspace_id = $2 returning id, ",
+        rule_columns!(),
+        ", enabled"
+    ))
+    .bind(id)
+    .bind(workspace_id)
+    .bind(on)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| RuleError::Database(e.to_string()))?;
+    Ok(read_rule(&row))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SetOnBehalfOf {
+    pub on_behalf_of: bool,
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct SetOwner {
     pub owner: Owner,
@@ -722,6 +786,7 @@ fn read_rule(row: &sqlx::postgres::PgRow) -> Rule {
         credential_env: row.get("credential_env"),
         credential: row.get("credential_id"),
         client: read_client(row),
+        on_behalf_of: row.get("on_behalf_of"),
         enabled: row.get("enabled"),
         unbound: false,
         suggested_header: None,

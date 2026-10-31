@@ -376,7 +376,7 @@ gateway, so the three tiers deploy together, as they did for sealed rules.
 
 ## As built
 
-Steps 1 to 5 but for the one-time notice in a shared session.
+Steps 1 to 6 but for the one-time notice in a shared session.
 
 - `egress::seal`: the binding's `user`, refused on any kind but `static` and
   with any `workspaces` but one id; `Binding::belongs_to`, which the gateway
@@ -458,6 +458,30 @@ Steps 1 to 5 but for the one-time notice in a shared session.
   `tests/api/work.rs`, `a_reply_says_whose_connection_it_used`;
   `tests/agent_component_fake.rs`, `a_persons_key_going_out_is_reported_by_the_host`.
 
+- On-behalf-of (`egress::assertion`, migration `0076_on_behalf_of.sql`):
+  `EgressRule::on_behalf_of`, in the leaf as one more field when set, so a
+  rule without it hashes as before. The gateway signs an EdDSA JWT with
+  `OUTTURN_ASSERTION_KEY`, as `OUTTURN_ASSERTION_ISSUER`, for the token's
+  `asker` and the request's host, a minute long, with a `kid` that is the
+  key's RFC 7638 thumbprint, and sends it in `Outturn-On-Behalf-Of` beside the
+  agent's credential. A turn with no asker sends the credential alone; a
+  gateway with no key refuses rather than do the same on a turn that has one.
+  The header is reserved: a guest cannot set it and a rule cannot attach a
+  credential in it. The API serves `OUTTURN_ASSERTION_PUBLIC_KEY`, one key or
+  two during a rotation, at `/.well-known/jwks.json`, unauthenticated, and
+  the UI's server carries that path through as it does `/v1`.
+  `PUT /v1/egress-rules/{id}/on-behalf-of` sets it, under `settings:update`
+  and `credentials:write`, refusing an asker's rule or one with no
+  credential, as the table's constraint does; removing the credential or
+  making the rule an asker's turns it off. A held request for such a host
+  waits for its asker's turn, as one for an asker's host does, since sent on
+  another's it would name them. The page: *Tell it who is asking* on a
+  connected host, with where the keys are published, and a warning when
+  none are. Tests: `egress::assertion`'s own, the leaf's in `egress::commit`,
+  `a_rule_that_says_who_is_asking_signs_it_for_the_host` in the gateway, and
+  `a_rule_says_who_is_asking_only_beside_the_agents_own_key` in
+  `tests/api/credentials.rs`.
+
 Two things the build decided that the design left open. On a turn nobody sent,
 an asker's rule naming no workspace credential is left out of the turn's rules
 rather than committed as *nothing connected*: there is no asker for that leaf
@@ -468,7 +492,9 @@ under that turn's rules, which are already resolved for them. The cost is that
 next one.
 
 Not built: the notice before a person's key is first used in a shared
-session, and the on-behalf-of header. A reply cut off partway, and
+session. A reply sent on another's behalf does not carry the *Used Dana's
+connection* line, since the runtime does not know whose turn it is -- the
+token does, and the gateway is what reads it. A reply cut off partway, and
 rebuilt from its events rather than finished, does not yet carry the line.
 
 ## Not settled

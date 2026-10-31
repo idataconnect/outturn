@@ -34,6 +34,13 @@
 		}
 	}
 
+	# The keys the gateway signs on-behalf-of tokens with, published by the
+	# API for backends to check them against. Public, and outside /v1 where
+	# a JWT library looks for them. See docs/user-credentials.md.
+	handle /.well-known/jwks.json {
+		reverse_proxy {$OUTTURN_API_UPSTREAM:outturn-api:8080}
+	}
+
 	# Who this deployment says it is, written from the environment on each
 	# request. Through the template's JSON encoding rather than pasted into a
 	# string, so a name with a quote in it is a name and not a broken file.

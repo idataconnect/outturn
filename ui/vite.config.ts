@@ -65,6 +65,11 @@ export default defineConfig({
       '/v1': {
         target: `http://localhost:${process.env.VITE_API_PORT ?? 18080}`,
       },
+      // The keys a backend checks an on-behalf-of token with, on the same
+      // origin as production serves them.
+      '/.well-known/jwks.json': {
+        target: `http://localhost:${process.env.VITE_API_PORT ?? 18080}`,
+      },
       '/gateway': {
         target: `http://localhost:${process.env.VITE_GATEWAY_PORT ?? 18081}`,
         rewrite: (path) => path.replace(/^\/gateway/, ''),
