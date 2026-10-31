@@ -623,6 +623,7 @@ mod tests {
             credential_env: None,
             client: Some(client.clone()),
             credential: None,
+            asker: None,
         }
     }
 
@@ -970,6 +971,7 @@ mod tests {
                     token_url: Some(TOKEN_URL.into()),
                     account: Some(ACCOUNT.into()),
                     scope: Some(SCOPE.into()),
+                    user: None,
                 },
                 secret: zeroize::Zeroizing::new(secret),
                 fingerprint: fingerprint.into(),
@@ -983,6 +985,7 @@ mod tests {
                 credential_env: None,
                 client: None,
                 credential: Some(Uuid::nil()),
+                asker: None,
             }
         }
 

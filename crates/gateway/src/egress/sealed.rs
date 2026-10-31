@@ -235,6 +235,7 @@ mod tests {
                 token_url: None,
                 account: None,
                 scope: None,
+                user: None,
             },
             secret: zeroize::Zeroizing::new(b"k".to_vec()),
             fingerprint: String::new(),

@@ -236,6 +236,7 @@ async fn run_one(
         // every turn. Naming reaches the model and nothing else, so there is
         // nothing here to gate.
         outturn_core::egress::gate::Gates::none().root(job.workspace_id),
+        None,
     )?;
     let request = ChatCompletionRequest {
         model: model.to_string(),

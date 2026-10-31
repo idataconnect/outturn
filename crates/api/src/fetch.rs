@@ -78,6 +78,7 @@ pub async fn get(
         credential_env: None,
         client: None,
         credential: None,
+        asker: None,
     }];
     let gates = outturn_core::egress::gate::Gates::none();
     let token = minter

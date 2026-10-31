@@ -250,6 +250,7 @@ pub async fn take(
                         payload.workspace_id,
                         request.egress_commitment,
                         request.gate_commitment,
+                        asker_of(&payload),
                     ) {
                         Ok(token) => token,
                         Err(e) => {
@@ -282,6 +283,12 @@ pub async fn take(
                                     payload.workspace_id,
                                     request.egress_commitment,
                                     gates.root(payload.workspace_id),
+                                    // A held request is sent with the
+                                    // credential it was refused with, which
+                                    // is its own and not this turn's asker's
+                                    // (docs/user-credentials.md); until a
+                                    // held request records one, it has none.
+                                    None,
                                 )
                             }) {
                             Ok(token) => Some(token),
@@ -429,17 +436,39 @@ impl Drop for Unanswered {
 /// runtime happens to hold. `egress_commitment` comes from the same
 /// `ExecuteRequest` this token is minted for, so the claim and the rules
 /// traveling beside it are always the API's word about the same turn.
+///
+/// `asker` is whose credentials the turn carries, decided with the rules it
+/// commits to; see docs/user-credentials.md.
 pub fn mint_for(
     state: &ApiState,
     session_id: Uuid,
     workspace_id: Uuid,
     egress_commitment: outturn_core::egress::commit::Hash,
     gate_commitment: outturn_core::egress::commit::Hash,
+    asker: Option<Uuid>,
 ) -> Result<String, ApiError> {
     state
         .minter
-        .mint_turn(session_id, workspace_id, egress_commitment, gate_commitment)
+        .mint_turn(
+            session_id,
+            workspace_id,
+            egress_commitment,
+            gate_commitment,
+            asker,
+        )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+/// Whose credentials a turn carries: the one answer both the mint and a
+/// trade-in ask, so a token can only ever be renewed for the turn it was
+/// minted for.
+///
+/// None for every turn until the API resolves rules for an asker -- then the
+/// person who sent the prompt, or the machine user a rule names for a turn
+/// nobody sent, as resolved and recorded with the job. See
+/// docs/user-credentials.md.
+fn asker_of(_payload: &super::worker::ChatTurnPayload) -> Option<Uuid> {
+    None
 }
 
 /// When a token minted now will stop being good, erring early.
@@ -503,6 +532,17 @@ pub async fn refresh_token(
             "that token is not for this turn".to_string(),
         ));
     }
+    // Nor for another turn in the same session. Session and workspace say
+    // which conversation; they do not say whose turn, and a person's token
+    // kept past their turn and traded in under the next one's lease would
+    // carry their credentials into somebody else's turn, renewed every
+    // quarter hour. The asker is copied below, so it must be this job's.
+    if claims.asker != asker_of(&payload) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "that token is for somebody else's turn".to_string(),
+        ));
+    }
 
     // Both required. A turn token without them is refused by the gateway
     // anyway, and reissuing one would be minting a claim nobody made.
@@ -560,6 +600,10 @@ pub async fn refresh_token(
         payload.workspace_id,
         egress,
         gates,
+        // Copied, as the commitments are, and checked above to be this
+        // job's: whose credentials the rules carry was decided when the turn
+        // started, and the rules have not changed.
+        claims.asker,
     )?;
     Ok(Json(outturn_core::protocol::work::TokenRefreshed {
         gateway_token,

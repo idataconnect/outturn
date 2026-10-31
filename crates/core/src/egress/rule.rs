@@ -56,6 +56,19 @@ pub struct EgressRule {
     /// `client` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<uuid::Uuid>,
+
+    /// The person whose credential this rule carries, for a rule whose
+    /// connection is the asker's rather than the agent's: resolved by the API
+    /// when it minted the turn, from the prompt the turn answers. `credential`
+    /// is then that person's own, or absent when they have connected none --
+    /// which the gateway refuses and says so, rather than sending the request
+    /// bare. See docs/user-credentials.md.
+    ///
+    /// In the rule's leaf, so a runtime cannot move one person's credential
+    /// onto another's turn, and compared by the gateway with the token's
+    /// `asker` and the seal's `user`. Left out of the encoding when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asker: Option<uuid::Uuid>,
 }
 
 /// Where a rule's access token comes from. See docs/client-credentials.md.
@@ -634,6 +647,7 @@ mod tests {
             credential_env: None,
             client: None,
             credential: None,
+            asker: None,
         }
     }
 
@@ -644,6 +658,7 @@ mod tests {
             credential_env: Some(env.into()),
             client: None,
             credential: None,
+            asker: None,
         }
     }
 
@@ -718,6 +733,7 @@ mod tests {
                 credential_env: Some("EXAMPLE_KEY".into()),
                 client: None,
                 credential: None,
+                asker: None,
             },
         ];
         let found = rule_for(&rules, "api.example.com").expect("matched");

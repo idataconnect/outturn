@@ -231,6 +231,37 @@ async fn vet_and_send(
     let (host, rule) =
         rules::check_url(&vouched, &url).map_err(|e| (StatusCode::FORBIDDEN, e.to_string()))?;
 
+    // A rule whose connection is the asker's names the person the API resolved
+    // it for, and that has to be whose turn this is: the leaf says which
+    // person, the token says whose turn, and both are the API's word. Then the
+    // person must have a credential to send. Refused before anything else is
+    // asked, and never sent bare -- a request its author expected to carry
+    // somebody's access, going out without it, is a puzzle rather than an
+    // answer. See docs/user-credentials.md.
+    if let Some(asker) = rule.asker {
+        if claims.asker != Some(asker) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("{host}'s connection was resolved for somebody else's turn"),
+            ));
+        }
+        if rule.credential_env.is_some() || rule.client.is_some() {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("{host}'s connection is the asker's, so only their own credential is sent"),
+            ));
+        }
+        if rule.credential.is_none() {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!(
+                    "the person asking has not connected {host}. They can connect it under \
+                     Account, Connections; nothing was sent"
+                ),
+            ));
+        }
+    }
+
     // Whether this request is one somebody has to approve first.
     //
     // The gate set is checked against the commitment in the token before it is
@@ -477,7 +508,7 @@ async fn vet_and_send(
         let kind = opened.binding.kind.on_a_request();
         opened
             .binding
-            .allows(claims.workspace_id, &host, Some(header), kind)
+            .attaches(claims.workspace_id, &host, Some(header), kind, rule.asker)
             .map_err(|why| (StatusCode::FORBIDDEN, why))?;
         let name: reqwest::header::HeaderName = header.parse().map_err(|_| {
             (
@@ -740,6 +771,7 @@ mod tests {
             credential_env: None,
             client: None,
             credential: Some(uuid::Uuid::now_v7()),
+            asker: None,
         };
         assert!(may_carry_credential(&keyed, "https", false));
         assert!(
@@ -770,6 +802,7 @@ mod tests {
             credential_env: None,
             client: None,
             credential: None,
+            asker: None,
         }
     }
 
@@ -780,6 +813,7 @@ mod tests {
             credential_env: Some(env.into()),
             client: None,
             credential: None,
+            asker: None,
         }
     }
 
@@ -1156,6 +1190,7 @@ mod client_credentials {
                 client_auth: outturn_core::egress::rule::ClientAuth::Basic,
             }),
             credential: None,
+            asker: None,
         };
 
         let seed = [9u8; 32];
@@ -1194,6 +1229,7 @@ mod client_credentials {
                 workspace,
                 commit::root(workspace, &rules),
                 outturn_core::egress::gate::Gates::none().root(workspace),
+                None,
             )
             .expect("turn token");
         let mut headers = HeaderMap::new();
@@ -1301,6 +1337,7 @@ mod client_credentials {
                     workspace,
                     commit::root(workspace, &rules),
                     outturn_core::egress::gate::Gates::none().root(workspace),
+                    None,
                 )
                 .expect("turn token");
             let mut headers = HeaderMap::new();
@@ -1328,6 +1365,7 @@ mod client_credentials {
             credential_env: Some("OUTTURN_EGRESS_TEST_ACME_STRIPE".into()),
             client: None,
             credential: None,
+            asker: None,
         };
         let client = |host: &str, token_url: &str| EgressRule {
             host: host.into(),
@@ -1341,6 +1379,7 @@ mod client_credentials {
                 client_auth: outturn_core::egress::rule::ClientAuth::Basic,
             }),
             credential: None,
+            asker: None,
         };
 
         // The thief's own host, ACME's variable.
@@ -1454,6 +1493,7 @@ mod client_credentials {
             credential_env: None,
             client: None,
             credential: None,
+            asker: None,
         };
         let charge = outturn_core::egress::gate::Gate {
             requires: "charge".into(),
@@ -1494,6 +1534,7 @@ mod client_credentials {
                 workspace,
                 commit::root(workspace, &rules),
                 gates.root(workspace),
+                None,
             )
             .expect("turn token");
         let mut headers = HeaderMap::new();
@@ -1528,6 +1569,7 @@ mod client_credentials {
                 workspace,
                 commit::root(workspace, &rules),
                 committed.root(workspace),
+                None,
             )
             .expect("turn token");
         let mut headers = HeaderMap::new();

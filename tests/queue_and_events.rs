@@ -3580,6 +3580,7 @@ async fn stop_a_silent_stream(after_first_chunk: bool) -> String {
             workspace_id,
             outturn::egress::commit::empty_root(),
             outturn::egress::gate::Gates::none().root(workspace_id),
+            None,
         )
         .expect("token");
     let state = outturn::gateway::GatewayState::new(
@@ -4224,6 +4225,7 @@ async fn a_retired_model_falls_over_to_the_next_route_and_is_then_skipped() {
             workspace_id,
             outturn::egress::commit::empty_root(),
             outturn::egress::gate::Gates::none().root(workspace_id),
+            None,
         )
         .expect("token");
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -4313,6 +4315,7 @@ async fn only_a_request_that_never_arrived_goes_to_the_next_route() {
             workspace_id,
             outturn::egress::commit::empty_root(),
             outturn::egress::gate::Gates::none().root(workspace_id),
+            None,
         )
         .expect("token");
 
@@ -4661,6 +4664,7 @@ async fn ask_gateway_for(
             workspace,
             outturn::egress::commit::empty_root(),
             outturn::egress::gate::Gates::none().root(workspace),
+            None,
         )
         .expect("token");
     let state = outturn::gateway::GatewayState::new(Vec::new(), validator)

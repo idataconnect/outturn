@@ -338,6 +338,7 @@ async fn only_the_runtime_key_takes_work() {
             acme,
             outturn::egress::commit::empty_root(),
             outturn::egress::gate::Gates::none().root(acme),
+            None,
         )
         .expect("token");
     let (status, body) = h.post("/v1/work", Some(&turn), "{}").await;
@@ -468,10 +469,27 @@ async fn a_running_turn_can_refresh_its_gateway_token() {
             acme,
             before.egress_commitment.expect("egress"),
             before.gate_commitment.expect("gates"),
+            None,
         )
         .expect("mint");
     let (status, _) = refresh(lease.clone(), other).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // This conversation's token, but somebody else's turn in it: kept past
+    // their own turn and traded in under this one's lease, it would carry
+    // their credentials into a turn that is not theirs.
+    let theirs = h
+        .minter
+        .mint_turn(
+            session_id,
+            acme,
+            before.egress_commitment.expect("egress"),
+            before.gate_commitment.expect("gates"),
+            Some(Uuid::now_v7()),
+        )
+        .expect("mint");
+    let (status, body) = refresh(lease.clone(), theirs).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 
     // An expired token is refused rather than read. A path honoring expired
     // credentials is the exception that outlives its reason.

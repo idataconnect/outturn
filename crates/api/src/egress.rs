@@ -46,6 +46,7 @@ pub async fn rules_for(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<EgressRu
             credential_env: r.get("credential_env"),
             client: read_client(r),
             credential: r.get("credential_id"),
+            asker: None,
         })
         .collect())
 }
@@ -134,6 +135,7 @@ impl Rule {
             credential_env: self.credential_env.clone(),
             client: self.client.clone(),
             credential: self.credential,
+            asker: None,
         }
     }
 }
@@ -293,11 +295,14 @@ pub async fn create(
                 RuleError::Invalid("no such credential in this workspace, or it is revoked".into())
             })?;
         binding
-            .allows(
+            .attaches(
                 workspace_id,
                 &host,
                 input.header.as_deref(),
                 binding.kind.on_a_request(),
+                // A rule written here is the agent's; a person's own key
+                // is never one.
+                None,
             )
             .map_err(RuleError::Invalid)?;
     }
@@ -313,6 +318,7 @@ pub async fn create(
                 credential_env: input.credential_env.clone(),
                 client: input.client.clone(),
                 credential: input.credential,
+                asker: None,
             },
         )
         .map_err(RuleError::Invalid)?;
@@ -403,11 +409,14 @@ pub async fn set_credential(
                     )
                 })?;
             binding
-                .allows(
+                .attaches(
                     workspace_id,
                     &host,
                     Some(header),
                     binding.kind.on_a_request(),
+                    // A rule written here is the agent's; a person's own key
+                    // is never one.
+                    None,
                 )
                 .map_err(RuleError::Invalid)?;
         }
