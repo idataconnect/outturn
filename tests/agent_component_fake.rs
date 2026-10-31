@@ -1950,6 +1950,73 @@ async fn a_large_file_is_read_from_both_ends() {
     );
 }
 
+/// A file that is not text can still be looked at, as its bytes.
+///
+/// A plain read refuses it and says how to look; a hex read shows the header
+/// that says what it is, with the offsets beside it, and where to continue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_that_is_not_text_is_read_as_hex() {
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
+
+    let read = async |arguments: &str| {
+        let store = Arc::new(MemoryStorage::new());
+        let gateway = FakeGateway::start(Behavior::ToolThenReply {
+            name: "read_object".into(),
+            arguments: arguments.into(),
+            reply: "Looked.".into(),
+        })
+        .await;
+        let mut options = options(&gateway, None);
+        options.storage = Some(store.clone());
+        let space = scope::Space {
+            workspace_id: options.workspace_id,
+            agent_id: options.agent_id,
+            session_id: options.session_id,
+        };
+        // The start of a HEIC photo, then enough of nothing to need a second read.
+        let mut photo = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic".to_vec();
+        photo.resize(10_000, 0xff);
+        store
+            .write(&scope::resolve(&space, "session/IMG.HEIC").unwrap(), &photo)
+            .await
+            .expect("seed");
+        runner()
+            .run(&component(), user("What is it?"), String::new(), options)
+            .await
+            .expect("run");
+        let requests = gateway.requests();
+        requests[1]["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .find(|m| m["role"] == "tool")
+            .expect("the read came back")["content"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    let plain = read(r#"{"path":"session/IMG.HEIC","action":"Reading it"}"#).await;
+    assert!(
+        plain.contains("format \\\"hex\\\""),
+        "a refusal should say how to look anyway: {plain}"
+    );
+
+    let hex = read(r#"{"path":"session/IMG.HEIC","format":"hex","action":"Looking at its bytes"}"#).await;
+    let dump: serde_json::Value = serde_json::from_str(&hex).expect("json");
+    let content = dump["content"].as_str().unwrap_or_default();
+    assert!(
+        content.starts_with("00000000: 0000 0018 6674 7970 6865 6963 0000 0000  ....ftypheic...."),
+        "the header should read as xxd lays it out: {content:.200}"
+    );
+    assert_eq!(dump["next_offset"], 4096, "where to continue: {hex:.300}");
+
+    let tail = read(r#"{"path":"session/IMG.HEIC","format":"hex","from_end":true,"action":"Looking at its end"}"#).await;
+    let tail: serde_json::Value = serde_json::from_str(&tail).expect("json");
+    assert_eq!(tail["offset"], 10_000 - 4096);
+    assert!(tail.get("next_offset").is_none(), "nothing follows the end");
+}
+
 // -- Egress -------------------------------------------------------------------
 
 /// Runs one scripted tool call and returns what the tool produced.

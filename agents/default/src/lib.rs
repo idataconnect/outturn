@@ -301,6 +301,20 @@ const READ_BUDGET: u64 = 32 * 1024;
 /// ratio can afford to be a guess.
 const HEAD_SHARE: u64 = 70;
 
+/// How much of a file one hex read shows.
+///
+/// Small next to `READ_BUDGET` because a dump costs about four characters a
+/// byte -- the hex, the gap and the printable column -- and what it is for is
+/// looking at a header, a trailer or a corrupt stretch, not reading a file.
+const HEX_BUDGET: u64 = 4 * 1024;
+
+/// What a file that is not text answers a plain read with.
+///
+/// Says how to look anyway, since this is the moment the model needs it and
+/// the one place it is sure to see it.
+const NOT_TEXT: &str = "this file is not text and cannot be shown as text; \
+                        read it again with format \"hex\" to see its bytes";
+
 /// The argument every tool carries so the user can see what is happening.
 ///
 /// Asked of the model rather than inferred: only the model knows what it is
@@ -334,11 +348,13 @@ fn builtin_tools() -> Vec<ToolDefinition> {
              for files the whole workspace shares. There is nothing above \
              those to reach, so do not try. At most {} lines or {}KB comes \
              back at once; a file larger than that returns its start and its \
-             end, and says at what offset to read again for the middle.",
+             end, and says at what offset to read again for the middle. With \
+             format \"hex\", {}KB of the file's bytes come back at once.",
             MAX_TOOL_LINES,
-            MAX_TOOL_BYTES / 1024
+            MAX_TOOL_BYTES / 1024,
+            HEX_BUDGET / 1024
         ),
-        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path, e.g. session/upload.pdf, agent/notes.md or workspace/reports/q3.csv"},"offset":{"type":"integer","description":"Byte to start from. Omit for the beginning.","default":0},"from_end":{"type":"boolean","description":"Read the end of the file instead of the start. Use this for logs, where what went wrong is at the bottom.","default":false},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Reading last quarter's figures."}},"required":["path","action"]}"#
+        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path, e.g. session/upload.pdf, agent/notes.md or workspace/reports/q3.csv"},"offset":{"type":"integer","description":"Byte to start from. Omit for the beginning.","default":0},"from_end":{"type":"boolean","description":"Read the end of the file instead of the start. Use this for logs, where what went wrong is at the bottom.","default":false},"format":{"type":"string","enum":["text","hex"],"description":"hex shows the file's bytes as stored, for a file that is not text or one that will not open.","default":"text"},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Reading last quarter's figures."}},"required":["path","action"]}"#
             .to_string(),
     },
     ToolDefinition {
@@ -961,7 +977,15 @@ fn for_the_model(full: &str) -> String {
 /// characters: a model told "42KB of binary" can decide what to do, where a
 /// model shown mojibake will try to read it.
 fn slice(path: &str, offset: u64, len: u64) -> Result<String, String> {
-    let bytes = host::read_object(path, offset, len.min(u32::MAX as u64) as u32)?;
+    // The host names what a binary file is when it refuses one; how to look
+    // at it anyway is this agent's to add, since the tool is this agent's.
+    let bytes = host::read_object(path, offset, len.min(u32::MAX as u64) as u32).map_err(|e| {
+        if e.contains(" is not text: ") {
+            format!("{e}; read it again with format \"hex\" to see its bytes")
+        } else {
+            e
+        }
+    })?;
 
     // A range is named in bytes, so its start can land inside a character
     // rather than before one. That is not a file which is "not text" -- it is
@@ -1001,11 +1025,11 @@ fn slice(path: &str, offset: u64, len: u64) -> Result<String, String> {
             let end = e.valid_up_to();
             if end == 0 {
                 // Nothing decoded from either end: this is not text.
-                return Err("this file is not text and cannot be shown".to_string());
+                return Err(NOT_TEXT.to_string());
             }
             std::str::from_utf8(&bytes[..end])
                 .map(|text| text.to_string())
-                .map_err(|_| "this file is not text and cannot be shown".to_string())
+                .map_err(|_| NOT_TEXT.to_string())
         }
     }
 }
@@ -1057,15 +1081,87 @@ fn describe_image(args: &serde_json::Value) -> String {
     }
 }
 
+/// Shows a range of a file as its bytes.
+///
+/// Through `read_bytes` rather than `read_object`: the latter hands over what
+/// a reader wants, which for a document is its extracted text, and the point
+/// here is the file as stored.
+fn read_hex(path: &str, size: u64, offset: u64, from_end: bool) -> String {
+    let start = if from_end {
+        size.saturating_sub(HEX_BUDGET)
+    } else {
+        offset.min(size)
+    };
+    let len = (size - start).min(HEX_BUDGET);
+    let bytes = if len == 0 {
+        Vec::new()
+    } else {
+        match host::read_bytes(path, start, len as u32) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return serde_json::json!({ "path": path, "size": size, "error": e }).to_string();
+            }
+        }
+    };
+    let end = start + bytes.len() as u64;
+    let mut result = serde_json::json!({
+        "path": path, "size": size, "format": "hex",
+        "offset": start, "content": hex_dump(&bytes, start),
+    });
+    if end < size {
+        result["next_offset"] = end.into();
+    }
+    result.to_string()
+}
+
+/// Sixteen bytes a line, as `xxd` lays them out: the offset, the bytes in
+/// hex, and the printable ones as characters, with a dot for the rest.
+fn hex_dump(bytes: &[u8], base: u64) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    for (i, line) in bytes.chunks(16).enumerate() {
+        let _ = write!(out, "{:08x}:", base + (i * 16) as u64);
+        for pair in line.chunks(2) {
+            out.push(' ');
+            for b in pair {
+                let _ = write!(out, "{b:02x}");
+            }
+        }
+        // Short last lines are padded, so the characters stay in their column.
+        let width = line.len() * 2 + line.len().div_ceil(2);
+        out.push_str(&" ".repeat(40 - width + 2));
+        for &b in line {
+            out.push(if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' });
+        }
+        out.push('\n');
+    }
+    out
+}
+
 fn read_object(args: &serde_json::Value) -> String {
     let path = arg(args, "path");
     let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
     let from_end = args.get("from_end").and_then(|v| v.as_bool()).unwrap_or(false);
+    let hex = match args.get("format").and_then(|v| v.as_str()).unwrap_or("text") {
+        "text" => false,
+        "hex" => true,
+        other => {
+            return serde_json::json!({
+                "path": path,
+                "error": format!("format is \"text\" or \"hex\", not \"{other}\""),
+            })
+            .to_string();
+        }
+    };
 
     let size = match host::stat_object(path) {
         Ok(info) => info.size,
         Err(e) => return serde_json::json!({ "path": path, "error": e }).to_string(),
     };
+
+    if hex {
+        return read_hex(path, size, offset, from_end);
+    }
 
     // The end, asked for directly. Possible only because the size is known
     // here -- a caller cannot name an offset it would have to have measured.
