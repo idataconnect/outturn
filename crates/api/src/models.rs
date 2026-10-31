@@ -1096,6 +1096,7 @@ pub async fn test_call(
             PLATFORM_WORKSPACE,
             outturn_core::egress::commit::empty_root(),
             outturn_core::egress::gate::Gates::none().root(PLATFORM_WORKSPACE),
+            None,
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let request = ChatCompletionRequest {

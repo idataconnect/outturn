@@ -96,6 +96,14 @@ pub struct Binding {
     /// otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// The person this credential belongs to, for a connection that is the
+    /// asker's rather than the agent's (docs/user-credentials.md). Sealed, so
+    /// a database writer cannot move somebody's key onto somebody else; the
+    /// gateway attaches it only on a turn whose asker is this person. Absent
+    /// on a credential the agent holds, which is then never attached as
+    /// anybody's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<Uuid>,
 }
 
 impl Binding {
@@ -140,6 +148,18 @@ impl Binding {
                 return Err(format!(
                     "{host} is not a plain host name: lower case, no wildcard, port or scheme"
                 ));
+            }
+        }
+        if self.user.is_some() {
+            // A person's key is theirs in one workspace: their membership of
+            // another is a separate fact with its own connection. And only a
+            // static key -- a service account exists to not be a person, and a
+            // client pair is the platform authenticating as itself.
+            if self.kind != Kind::Static {
+                return Err("only a static credential belongs to a person".into());
+            }
+            if !matches!(self.workspaces.as_slice(), [only] if only != "*") {
+                return Err("a person's credential is bound to exactly one workspace".into());
             }
         }
         if self.kind != Kind::ServiceAccount && (self.account.is_some() || self.scope.is_some()) {
@@ -213,6 +233,25 @@ impl Binding {
             }
         }
         Ok(())
+    }
+}
+
+impl Binding {
+    /// Whether this may be attached for `asker`: a person's credential only
+    /// for that person, and the agent's only on a rule that is the agent's.
+    ///
+    /// Asked beside `allows`, never instead of it. `asker` is the rule's,
+    /// which the gateway has already compared with the token's.
+    pub fn belongs_to(&self, asker: Option<Uuid>) -> Result<(), String> {
+        match (self.user, asker) {
+            (None, None) => Ok(()),
+            (Some(user), Some(asker)) if user == asker => Ok(()),
+            (Some(_), Some(_)) => Err("this credential belongs to somebody else".into()),
+            (Some(_), None) => Err(
+                "this credential belongs to a person, and is attached only on their turns".into(),
+            ),
+            (None, Some(_)) => Err("this credential is the agent's, not the asker's".into()),
+        }
     }
 }
 
@@ -517,6 +556,80 @@ mod tests {
         assert!(
             b.allows(acme, "books.example.com", None, Kind::ClientSecret)
                 .is_err()
+        );
+    }
+
+    fn persons(user: Uuid) -> Binding {
+        Binding::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "credential": Uuid::nil(), "kind": "static",
+                "workspaces": [ACME], "hosts": ["books.example.com"],
+                "header": "Authorization", "user": user,
+            }))
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_persons_credential_is_attached_only_as_them() {
+        let dana = Uuid::from_bytes([4; 16]);
+        let sam = Uuid::from_bytes([5; 16]);
+        let theirs = persons(dana);
+        assert!(theirs.belongs_to(Some(dana)).is_ok());
+        assert!(theirs.belongs_to(Some(sam)).is_err());
+        assert!(
+            theirs.belongs_to(None).is_err(),
+            "a person's key is never the agent's on a turn nobody asked"
+        );
+        let agents = Binding::parse(&binding(Uuid::nil())).unwrap();
+        assert!(agents.belongs_to(None).is_ok());
+        assert!(
+            agents.belongs_to(Some(dana)).is_err(),
+            "the agent's key is never somebody's own"
+        );
+    }
+
+    /// Who a key belongs to is sealed like where it goes: moved onto
+    /// somebody else, it does not open.
+    #[test]
+    fn a_persons_credential_moved_onto_somebody_else_does_not_open() {
+        let (keys, public, id) = keys();
+        let ad = |user: u8| {
+            serde_json::to_vec(&serde_json::json!({
+                "credential": Uuid::nil(), "kind": "static",
+                "workspaces": [ACME], "hosts": ["books.example.com"],
+                "header": "Authorization", "user": Uuid::from_bytes([user; 16]),
+            }))
+            .unwrap()
+        };
+        let sealed = seal(&public, &ad(4), b"Bearer dana").unwrap();
+        assert!(keys.open(&id, &sealed, &ad(4)).is_ok());
+        assert!(keys.open(&id, &sealed, &ad(5)).is_err());
+    }
+
+    #[test]
+    fn a_persons_credential_is_static_and_in_one_workspace() {
+        let refused = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = serde_json::json!({
+                "credential": Uuid::nil(), "kind": "static",
+                "workspaces": [ACME], "hosts": ["books.example.com"],
+                "header": "Authorization", "user": Uuid::from_bytes([4; 16]),
+            });
+            edit(&mut v);
+            Binding::parse(&serde_json::to_vec(&v).unwrap()).is_err()
+        };
+        assert!(!refused(&|_| {}));
+        assert!(refused(&|v| v["workspaces"] = serde_json::json!(["*"])));
+        assert!(refused(
+            &|v| v["workspaces"] = serde_json::json!([ACME, OTHER])
+        ));
+        assert!(refused(&|v| v["user"] = serde_json::json!("dana")));
+        let mut sa = service_account();
+        sa["user"] = serde_json::json!(Uuid::from_bytes([4; 16]));
+        assert!(
+            Binding::parse(&serde_json::to_vec(&sa).unwrap()).is_err(),
+            "a service account is nobody's own"
         );
     }
 

@@ -250,6 +250,9 @@ pub async fn take(
                         payload.workspace_id,
                         request.egress_commitment,
                         request.gate_commitment,
+                        // Nothing resolves a rule for the asker yet, so no
+                        // turn carries one; the claim follows the rules.
+                        None,
                     ) {
                         Ok(token) => token,
                         Err(e) => {
@@ -282,6 +285,7 @@ pub async fn take(
                                     payload.workspace_id,
                                     request.egress_commitment,
                                     gates.root(payload.workspace_id),
+                                    None,
                                 )
                             }) {
                             Ok(token) => Some(token),
@@ -429,16 +433,26 @@ impl Drop for Unanswered {
 /// runtime happens to hold. `egress_commitment` comes from the same
 /// `ExecuteRequest` this token is minted for, so the claim and the rules
 /// traveling beside it are always the API's word about the same turn.
+///
+/// `asker` is whose credentials the turn carries, decided with the rules it
+/// commits to; see docs/user-credentials.md.
 pub fn mint_for(
     state: &ApiState,
     session_id: Uuid,
     workspace_id: Uuid,
     egress_commitment: outturn_core::egress::commit::Hash,
     gate_commitment: outturn_core::egress::commit::Hash,
+    asker: Option<Uuid>,
 ) -> Result<String, ApiError> {
     state
         .minter
-        .mint_turn(session_id, workspace_id, egress_commitment, gate_commitment)
+        .mint_turn(
+            session_id,
+            workspace_id,
+            egress_commitment,
+            gate_commitment,
+            asker,
+        )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
@@ -560,6 +574,9 @@ pub async fn refresh_token(
         payload.workspace_id,
         egress,
         gates,
+        // Copied, as the commitments are: whose credentials the rules carry
+        // was decided when the turn started, and the rules have not changed.
+        claims.asker,
     )?;
     Ok(Json(outturn_core::protocol::work::TokenRefreshed {
         gateway_token,

@@ -338,6 +338,7 @@ async fn only_the_runtime_key_takes_work() {
             acme,
             outturn::egress::commit::empty_root(),
             outturn::egress::gate::Gates::none().root(acme),
+            None,
         )
         .expect("token");
     let (status, body) = h.post("/v1/work", Some(&turn), "{}").await;
@@ -468,6 +469,7 @@ async fn a_running_turn_can_refresh_its_gateway_token() {
             acme,
             before.egress_commitment.expect("egress"),
             before.gate_commitment.expect("gates"),
+            None,
         )
         .expect("mint");
     let (status, _) = refresh(lease.clone(), other).await;

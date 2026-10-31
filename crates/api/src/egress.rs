@@ -46,6 +46,7 @@ pub async fn rules_for(pool: &PgPool, workspace_id: Uuid) -> Result<Vec<EgressRu
             credential_env: r.get("credential_env"),
             client: read_client(r),
             credential: r.get("credential_id"),
+            asker: None,
         })
         .collect())
 }
@@ -134,6 +135,7 @@ impl Rule {
             credential_env: self.credential_env.clone(),
             client: self.client.clone(),
             credential: self.credential,
+            asker: None,
         }
     }
 }
@@ -313,6 +315,7 @@ pub async fn create(
                 credential_env: input.credential_env.clone(),
                 client: input.client.clone(),
                 credential: input.credential,
+                asker: None,
             },
         )
         .map_err(RuleError::Invalid)?;

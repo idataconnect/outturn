@@ -81,6 +81,11 @@ const TAG_LEAF_CLIENT: &[u8] = b"outturn:egress:leaf-client:v1\0";
 /// A rule whose credential is sealed. Its own tag for the same reason, and
 /// because the credential's id is the one thing a runtime would want to swap.
 const TAG_LEAF_SEALED: &[u8] = b"outturn:egress:leaf-sealed:v1\0";
+/// A rule whose credential is the asker's: the person, and the credential the
+/// API resolved for them, or none. Its own tag so that "this person has
+/// nothing connected" can never hash like a rule that carries no credential at
+/// all, which the gateway would send bare.
+const TAG_LEAF_ASKER: &[u8] = b"outturn:egress:leaf-asker:v1\0";
 const TAG_NODE: &[u8] = b"outturn:egress:node:v1\0";
 const TAG_EMPTY: &[u8] = b"outturn:egress:empty:v1\0";
 
@@ -135,7 +140,9 @@ const MAX_PATH: usize = 32;
 /// borrowing another rule's.
 fn leaf(workspace_id: Uuid, rule: &EgressRule) -> Hash {
     let mut h = Sha256::new();
-    h.update(if rule.client.is_some() {
+    h.update(if rule.asker.is_some() {
+        TAG_LEAF_ASKER
+    } else if rule.client.is_some() {
         TAG_LEAF_CLIENT
     } else if rule.credential.is_some() {
         TAG_LEAF_SEALED
@@ -151,7 +158,18 @@ fn leaf(workspace_id: Uuid, rule: &EgressRule) -> Hash {
             rule.credential_env.as_deref(),
         ],
     );
-    if let Some(credential) = rule.credential {
+    if let Some(asker) = rule.asker {
+        // Both always present in the hash, the credential as absent when the
+        // person has none, so moving a credential id into or out of the rule
+        // changes the leaf.
+        hash_fields(
+            &mut h,
+            [
+                Some(asker.to_string().as_str()),
+                rule.credential.map(|c| c.to_string()).as_deref(),
+            ],
+        );
+    } else if let Some(credential) = rule.credential {
         hash_fields(&mut h, [Some(credential.to_string().as_str())]);
     }
     if let Some(client) = &rule.client {
@@ -316,8 +334,12 @@ pub struct Step {
 /// and spends nothing thinking about it; one with hundreds sends a rule and a
 /// path that grows with the logarithm of the list. The verifier treats them the
 /// same way, so neither can be the lenient one.
+///
+/// One travels with each request, so the gap between the two shapes' sizes
+/// costs nothing worth a box at every place one is built.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 pub enum Proof {
     /// Every rule the turn was given.
     WholeSet { rules: Vec<EgressRule> },
@@ -467,6 +489,7 @@ mod tests {
             credential_env: None,
             client: None,
             credential: None,
+            asker: None,
         }
     }
 
@@ -495,6 +518,48 @@ mod tests {
         );
     }
 
+    /// An asker's rule commits to the person and to the credential resolved
+    /// for them, so a runtime cannot move Sam's credential onto Dana's turn,
+    /// and "Dana has none" cannot be rewritten into a rule sent bare.
+    #[test]
+    fn an_askers_rule_commits_to_whose_credential_it_carries() {
+        let ws = Uuid::from_bytes([3; 16]);
+        let dana = Uuid::from_bytes([4; 16]);
+        let sam = Uuid::from_bytes([5; 16]);
+        let askers = |asker: Uuid, id: Option<u8>| EgressRule {
+            header: Some("authorization".into()),
+            credential: id.map(|id| Uuid::from_bytes([id; 16])),
+            asker: Some(asker),
+            ..rule("books.example.com")
+        };
+        let committed = root(ws, &[askers(dana, Some(1))]);
+        assert_ne!(committed, root(ws, &[askers(dana, Some(2))]));
+        assert_ne!(committed, root(ws, &[askers(sam, Some(1))]));
+        assert_ne!(
+            committed,
+            root(
+                ws,
+                &[EgressRule {
+                    asker: None,
+                    ..askers(dana, Some(1))
+                }]
+            ),
+            "a person's credential must not hash as the agent's"
+        );
+        let unconnected = askers(dana, None);
+        assert_ne!(
+            root(ws, std::slice::from_ref(&unconnected)),
+            root(
+                ws,
+                &[EgressRule {
+                    asker: None,
+                    ..unconnected
+                }]
+            ),
+            "nothing connected must not hash as a rule that carries no credential"
+        );
+    }
+
     fn with_credential(host: &str, header: &str, env: &str) -> EgressRule {
         EgressRule {
             host: host.into(),
@@ -502,6 +567,7 @@ mod tests {
             credential_env: Some(env.into()),
             client: None,
             credential: None,
+            asker: None,
         }
     }
 
@@ -588,6 +654,7 @@ mod tests {
                 client_auth: crate::egress::rule::ClientAuth::Basic,
             }),
             credential: None,
+            asker: None,
         }
     }
 
@@ -748,6 +815,7 @@ mod tests {
             credential_env: None,
             client: None,
             credential: None,
+            asker: None,
         };
         let forged = Proof::Inclusion {
             rule: interior,

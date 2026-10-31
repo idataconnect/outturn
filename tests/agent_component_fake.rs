@@ -2039,6 +2039,7 @@ async fn a_fetch_is_asked_of_the_gateway_rather_than_decided_here() {
         credential_env: None,
         client: None,
         credential: None,
+        asker: None,
     }];
 
     runner()
@@ -2070,6 +2071,7 @@ async fn the_node_metadata_service_is_not_reachable() {
             credential_env: None,
             client: None,
             credential: None,
+            asker: None,
         }],
     )
     .await;
@@ -2091,6 +2093,7 @@ async fn a_url_cannot_name_a_scheme_that_is_not_the_web() {
             credential_env: None,
             client: None,
             credential: None,
+            asker: None,
         }],
     )
     .await;
@@ -3209,6 +3212,7 @@ async fn with_booking(behavior: Behavior, eager: Vec<String>) -> (FakeGateway, V
         credential_env: None,
         client: None,
         credential: None,
+        asker: None,
     }];
 
     runner()
@@ -3419,6 +3423,7 @@ async fn a_list_argument_is_repeated_in_the_query() {
         credential_env: None,
         client: None,
         credential: None,
+        asker: None,
     }];
     runner()
         .run(&component(), user("Quiet rooms?"), String::new(), options)
@@ -3463,6 +3468,7 @@ async fn a_repeated_failure_is_pointed_out() {
         credential_env: None,
         client: None,
         credential: None,
+        asker: None,
     }];
     runner()
         .run(&component(), user("Book it."), String::new(), options)
@@ -3577,6 +3583,7 @@ async fn book_repeatedly(
         credential_env: None,
         client: None,
         credential: None,
+        asker: None,
     }];
     runner()
         .run(&component(), user("Book it."), String::new(), options)
@@ -3663,6 +3670,7 @@ async fn a_write_with_no_answer_is_not_sent_again() {
         credential_env: None,
         client: None,
         credential: None,
+        asker: None,
     }];
     runner()
         .run(&component(), user("Book it."), String::new(), options)
@@ -3696,6 +3704,7 @@ async fn one_booking(
         credential_env: None,
         client: None,
         credential: None,
+        asker: None,
     }];
     runner()
         .run(&component(), user("Book it."), String::new(), options)
@@ -3816,6 +3825,7 @@ fn pay_rule() -> Vec<outturn::egress::rule::EgressRule> {
         credential_env: None,
         client: None,
         credential: None,
+        asker: None,
     }]
 }
 
@@ -4102,6 +4112,7 @@ async fn a_banded_policy_reaches_the_gateway_as_committed() {
         credential_env: None,
         client: None,
         credential: None,
+        asker: None,
     }];
     runner()
         .run(

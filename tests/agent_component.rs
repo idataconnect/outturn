@@ -54,6 +54,7 @@ fn dev_token(session_id: Uuid, workspace_id: Uuid) -> String {
             workspace_id,
             outturn::egress::commit::empty_root(),
             outturn::egress::gate::Gates::none().root(workspace_id),
+            None,
         )
         .expect("mint")
 }

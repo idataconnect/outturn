@@ -2,7 +2,8 @@
 
 A connection that is the asking person's rather than the agent's, so that a
 backend with permissions of its own sees who is asking and applies them.
-Designed, not built. It rests on [sealed-credentials.md](sealed-credentials.md)
+Designed; the enforcement is built (*As built*, at the end), and nothing
+resolves a rule for an asker yet, so no turn carries one. It rests on [sealed-credentials.md](sealed-credentials.md)
 and the commitment ([invariants.md](invariants.md), *The commitment is what
 makes a rule a rule*), both built, and generalizes the ownership rules that
 [integrations.md](integrations.md#whose-token-it-is) wrote for OAuth grants to
@@ -361,6 +362,29 @@ second for one where the operator is on both sides.
 
 A rule gains a leaf tag that travels from the API through the runtime to the
 gateway, so the three tiers deploy together, as they did for sealed rules.
+
+## As built
+
+Steps 1 and 4, and the API's refusal of a person's binding on the workspace
+routes:
+
+- `egress::seal`: the binding's `user`, refused on any kind but `static` and
+  with any `workspaces` but one id; `Binding::belongs_to`, which the gateway
+  asks beside `allows`.
+- `egress::rule`: `EgressRule::asker`, and in `egress::commit` its own leaf
+  tag over the person and the credential or its absence.
+- `auth::token`: the `asker` claim (`ask`), taken by `mint_turn` and copied
+  on a trade-in at `POST /v1/work/{job_id}/token`.
+- `gateway::egress`: a rule's `asker` compared with the token's, nothing
+  connected refused and said, a person's seal refused anywhere but on their
+  own turn.
+- `api::credentials`: a binding naming a person is refused, since nothing but
+  their own connection may store one and that route is not built.
+- `tests/api/credentials.rs`, `a_persons_credential_goes_only_with_their_turns`.
+
+Not built: everything from step 2 on but the gateway's check -- the columns,
+resolution at mint time, the Account page, machine users, held requests and
+the on-behalf-of header.
 
 ## Not settled
 

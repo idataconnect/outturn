@@ -142,6 +142,15 @@ fn check(
             "a credential is bound to this workspace and no other".into(),
         ));
     }
+    // Storing a key as somebody is acting as them, so a person's own is
+    // stored by them alone, never through these routes by whoever holds
+    // `credentials:write`. See docs/user-credentials.md.
+    if parsed.user.is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "a person's own credential is connected by them, not stored for them".into(),
+        ));
+    }
     Ok((binding, sealed))
 }
 

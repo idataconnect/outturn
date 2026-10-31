@@ -393,6 +393,7 @@ impl Worker {
                 // As in `naming`: said rather than absent, and empty because
                 // summarizing reaches nothing but the model.
                 outturn_core::egress::gate::Gates::none().root(workspace_id),
+                None,
             )
             .ok()?;
 

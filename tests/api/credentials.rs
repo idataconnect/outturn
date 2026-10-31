@@ -187,6 +187,7 @@ async fn a_sealed_credential_goes_where_it_was_bound_and_nowhere_else() {
                 workspace,
                 outturn::egress::commit::root(workspace, &rules),
                 outturn::egress::gate::Gates::none().root(workspace),
+                None,
             )
             .unwrap();
         let body = serde_json::json!({
@@ -254,6 +255,184 @@ async fn a_sealed_credential_goes_where_it_was_bound_and_nowhere_else() {
     let after = sent.0.lock().unwrap().len();
     assert_eq!(fetch(acme, rule).await, StatusCode::FORBIDDEN);
     assert_eq!(sent.0.lock().unwrap().len(), after, "and stays refused");
+}
+
+/// A person's own credential is attached on their turns and nobody else's,
+/// through the gateway's real handler: not on another person's turn, not as
+/// the agent's on a turn nobody asked, and a person with nothing connected is
+/// refused and nothing is sent. docs/user-credentials.md.
+#[tokio::test]
+async fn a_persons_credential_goes_only_with_their_turns() {
+    use outturn::egress::rule::EgressRule;
+    use outturn::egress::seal;
+    use outturn::gateway::egress::transport::{
+        EgressTransport, TransportError, TransportResponse, VettedRequest,
+    };
+    use std::sync::Mutex;
+    use tower::ServiceExt as _;
+
+    struct Recorder(Mutex<Vec<Option<String>>>);
+    #[async_trait::async_trait]
+    impl EgressTransport for Recorder {
+        fn name(&self) -> &'static str {
+            "test"
+        }
+        async fn send(&self, request: VettedRequest) -> Result<TransportResponse, TransportError> {
+            let auth = request
+                .headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            self.0.lock().unwrap().push(auth);
+            Ok(TransportResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: "{}".into(),
+                truncated: false,
+            })
+        }
+    }
+
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let (status, body) = h.get("/v1/credentials/seal-key", Some(&admin)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let key: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let public = hex::decode(key["public_key"].as_str().unwrap()).unwrap();
+    let key_id = key["key_id"].as_str().unwrap().to_string();
+
+    let host = "93.184.215.14";
+    let dana = Uuid::now_v7();
+    let sam = Uuid::now_v7();
+    let id = Uuid::now_v7();
+    let binding = serde_json::to_vec(&serde_json::json!({
+        "credential": id, "kind": "static", "workspaces": [acme],
+        "hosts": [host], "header": "authorization", "user": dana,
+    }))
+    .unwrap();
+    let sealed = seal::seal(&public, &binding, b"Bearer dana").unwrap();
+
+    // An administrator cannot store it for her: that is acting as her.
+    let b64 = |b: &[u8]| {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(b)
+    };
+    let (status, _) = h
+        .post(
+            "/v1/credentials",
+            Some(&admin),
+            &serde_json::json!({
+                "id": id, "name": "Books", "binding": b64(&binding),
+                "sealed": b64(&sealed), "key_id": key_id,
+            })
+            .to_string(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "stored for a person");
+
+    // Stored as her own connection would store it.
+    sqlx::query(
+        "insert into credentials (id, workspace_id, name, binding, sealed, key_id, created_by)
+         values ($1, $2, 'Books', $3, $4, $5, $6)",
+    )
+    .bind(id)
+    .bind(acme)
+    .bind(&binding)
+    .bind(&sealed)
+    .bind(&key_id)
+    .bind(dana)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+
+    let seed = [13u8; 32];
+    let minter = TokenMinter::new(&seed).unwrap();
+    let validator = TokenValidator::new(
+        &TokenMinter::public_key_of(&seed),
+        outturn::auth::AUDIENCE_GATEWAY,
+    )
+    .unwrap();
+    let sent = Arc::new(Recorder(Mutex::new(Vec::new())));
+    let gateway = outturn::gateway::routes(Arc::new(
+        outturn::gateway::GatewayState::new(Vec::new(), validator)
+            .with_egress_transport(sent.clone())
+            .with_sealed(
+                outturn::gateway::egress::sealed::Credentials::default()
+                    .with_keys(seal::Keys::parse(SEAL_KEY).unwrap())
+                    .with_pool(h.db.pool.clone()),
+            ),
+    ));
+    let fetch = |asker: Option<Uuid>, rule: EgressRule| {
+        let rules = vec![rule.clone()];
+        let token = minter
+            .mint_turn(
+                Uuid::now_v7(),
+                acme,
+                outturn::egress::commit::root(acme, &rules),
+                outturn::egress::gate::Gates::none().root(acme),
+                asker,
+            )
+            .unwrap();
+        let body = serde_json::json!({
+            "method": "GET",
+            "url": format!("https://{host}/api/invoices"),
+            "proof": outturn::egress::commit::prove(acme, &rules, &rule).unwrap(),
+        });
+        let gateway = gateway.clone();
+        async move {
+            let response = gateway
+                .oneshot(
+                    Request::post("/v1/egress")
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, String::from_utf8_lossy(&body).into_owned())
+        }
+    };
+    let rule = |asker: Option<Uuid>, credential: Option<Uuid>| EgressRule {
+        host: host.into(),
+        header: Some("authorization".into()),
+        credential_env: None,
+        client: None,
+        credential,
+        asker,
+    };
+
+    let (status, body) = fetch(Some(dana), rule(Some(dana), Some(id))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        sent.0.lock().unwrap().last().cloned(),
+        Some(Some("Bearer dana".to_string())),
+        "her key went with her turn"
+    );
+    let before = sent.0.lock().unwrap().len();
+
+    // Each honestly committed by the API, and each refused.
+    let (status, _) = fetch(Some(sam), rule(Some(dana), Some(id))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "her rule on his turn");
+    let (status, _) = fetch(Some(sam), rule(Some(sam), Some(id))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "her key resolved for him");
+    let (status, _) = fetch(None, rule(None, Some(id))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "her key as the agent's");
+    let (status, body) = fetch(Some(sam), rule(Some(sam), None)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "nothing connected");
+    assert!(body.contains("has not connected"), "and says so: {body}");
+    assert_eq!(
+        sent.0.lock().unwrap().len(),
+        before,
+        "nothing was sent, bare or otherwise"
+    );
 }
 
 /// A service account key is stored sealed through the API, and the gateway's
@@ -402,6 +581,7 @@ async fn a_service_account_key_buys_a_token_and_is_never_sent() {
                 workspace,
                 outturn::egress::commit::root(workspace, &rules),
                 outturn::egress::gate::Gates::none().root(workspace),
+                None,
             )
             .unwrap();
         let body = serde_json::json!({

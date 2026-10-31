@@ -110,6 +110,16 @@ pub struct SessionClaims {
     /// sends only to the refresh route, never to logout or a workspace switch.
     /// `None` on every token that is not a browser session's.
     pub family_id: Option<Uuid>,
+    /// Whose credentials a turn carries: the person who sent the prompt it
+    /// answers, or the machine user a rule names for a turn nobody sent.
+    /// `None` on a turn with no asker, and on every token that is not a
+    /// turn's.
+    ///
+    /// Not how the gateway picks a credential -- the rule's leaf names that --
+    /// but the second statement that has to agree with it: a person's sealed
+    /// credential is attached only on a turn whose asker is that person. See
+    /// docs/user-credentials.md.
+    pub asker: Option<Uuid>,
 }
 
 impl SessionClaims {
@@ -153,6 +163,8 @@ const EGRESS: &str = "egr";
 const GATES: &str = "gat";
 /// The refresh-token family a browser session token belongs to.
 const FAMILY: &str = "fam";
+/// Whose credentials a turn carries.
+const ASKER: &str = "ask";
 /// Footer claim naming which public key signed the token, so verifiers can
 /// hold more than one during a rotation.
 const KEY_ID: &str = "kid";
@@ -233,6 +245,7 @@ impl TokenMinter {
             None,
             None,
             Some(family_id),
+            None,
             Duration::from_secs(SESSION_TOKEN_LIFETIME_SECS),
         )
     }
@@ -246,20 +259,26 @@ impl TokenMinter {
     /// alongside them rather than trusted from whoever asks, since the runtime
     /// that will eventually present a rule for enforcement is the tier running
     /// workspace code and cannot be the one vouching for what it was allowed.
+    ///
+    /// `asker` is whose credentials the turn carries, decided by the API from
+    /// the prompt the turn answers and never by the runtime.
     pub fn mint_turn(
         &self,
         chat_session_id: Uuid,
         workspace_id: Uuid,
         egress_commitment: commit::Hash,
         gate_commitment: commit::Hash,
+        asker: Option<Uuid>,
     ) -> Result<String, AuthError> {
-        self.mint_with_lifetime(
+        self.mint_claims(
             AUDIENCE_GATEWAY,
             chat_session_id,
             workspace_id,
             &[Role::Turn.to_string()],
             Some(egress_commitment),
             Some(gate_commitment),
+            None,
+            asker,
             Duration::from_secs(SERVICE_TOKEN_LIFETIME_SECS),
         )
     }
@@ -307,6 +326,7 @@ impl TokenMinter {
             egress_commitment,
             gate_commitment,
             None,
+            None,
             lifetime,
         )
     }
@@ -321,6 +341,7 @@ impl TokenMinter {
         egress_commitment: Option<commit::Hash>,
         gate_commitment: Option<commit::Hash>,
         family_id: Option<Uuid>,
+        asker: Option<Uuid>,
         lifetime: Duration,
     ) -> Result<String, AuthError> {
         use chrono::SecondsFormat;
@@ -367,6 +388,11 @@ impl TokenMinter {
         if let Some(family_id) = family_id {
             claims
                 .add_additional(FAMILY, family_id.to_string())
+                .map_err(internal)?;
+        }
+        if let Some(asker) = asker {
+            claims
+                .add_additional(ASKER, asker.to_string())
                 .map_err(internal)?;
         }
 
@@ -525,6 +551,18 @@ impl TokenValidator {
             ),
         };
 
+        // Malformed is refused rather than read as absent: absent means a turn
+        // nobody asked, and a person's credential is never attached on one.
+        let asker = match parsed.get(ASKER) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .ok_or(AuthError::Invalid)?,
+            ),
+        };
+
         Ok(SessionClaims {
             subject,
             workspace_id,
@@ -532,6 +570,7 @@ impl TokenValidator {
             egress_commitment,
             gate_commitment,
             family_id,
+            asker,
         })
     }
 }
@@ -589,6 +628,7 @@ impl RuntimeKey {
             egress_commitment: None,
             gate_commitment: None,
             family_id: None,
+            asker: None,
         }
     }
 }
@@ -715,6 +755,7 @@ mod tests {
                 Uuid::now_v7(),
                 commit::empty_root(),
                 crate::egress::gate::Gates::none().root(Uuid::nil()),
+                None,
             )
             .expect("mint");
         assert!(gateway.validate(&turn).is_ok());
@@ -736,6 +777,7 @@ mod tests {
                         Uuid::now_v7(),
                         commit::empty_root(),
                         crate::egress::gate::Gates::none().root(Uuid::nil()),
+                        None,
                     )
                     .expect("mint"),
             )
@@ -832,6 +874,7 @@ mod tests {
                 credential_env: None,
                 client: None,
                 credential: None,
+                asker: None,
             }],
         );
 
@@ -841,10 +884,34 @@ mod tests {
                 Uuid::now_v7(),
                 committed,
                 crate::egress::gate::Gates::none().root(Uuid::nil()),
+                None,
             )
             .expect("mint");
         let claims = gateway.validate(&turn).expect("valid");
         assert_eq!(claims.egress_commitment().expect("committed"), committed);
+    }
+
+    #[test]
+    fn a_turn_token_says_whose_turn_it_is() {
+        let (minter, public) = pair();
+        let gateway = TokenValidator::new(&public, AUDIENCE_GATEWAY).expect("validator");
+        let mint = |asker| {
+            minter
+                .mint_turn(
+                    Uuid::now_v7(),
+                    Uuid::now_v7(),
+                    commit::empty_root(),
+                    crate::egress::gate::Gates::none().root(Uuid::nil()),
+                    asker,
+                )
+                .expect("mint")
+        };
+        let dana = Uuid::now_v7();
+        assert_eq!(
+            gateway.validate(&mint(Some(dana))).unwrap().asker,
+            Some(dana)
+        );
+        assert_eq!(gateway.validate(&mint(None)).unwrap().asker, None);
     }
 
     #[test]
@@ -862,6 +929,7 @@ mod tests {
                 Uuid::now_v7(),
                 commit::empty_root(),
                 crate::egress::gate::Gates::none().root(Uuid::nil()),
+                None,
             )
             .expect("mint");
         let claims = gateway.validate(&turn).expect("valid");
