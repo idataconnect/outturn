@@ -426,6 +426,14 @@ been handed a secret.
 
 ### What a turn's token commits to
 
+[user-credentials.md](user-credentials.md) generalizes this to every
+credential a person owns, and the two are meant to be one mechanism rather
+than two: a grant-backed rule a person owns is a rule whose `asker` the API
+resolved, under the asker leaf that already exists (`egress::commit`), with
+the grant's owner checked against the token's `asker` as a sealed key's `user`
+is (`Binding::attaches`). What follows is the design as first written; build
+it on that, not beside it.
+
 The commitment already says which rules a turn may use; a grant-backed rule
 gets its own leaf tag, as client credentials did, and the leaf adds the
 integration and **the grant id the API resolved for this turn**. So the

@@ -508,8 +508,7 @@ async fn vet_and_send(
         let kind = opened.binding.kind.on_a_request();
         opened
             .binding
-            .allows(claims.workspace_id, &host, Some(header), kind)
-            .and_then(|()| opened.binding.belongs_to(rule.asker))
+            .attaches(claims.workspace_id, &host, Some(header), kind, rule.asker)
             .map_err(|why| (StatusCode::FORBIDDEN, why))?;
         let name: reqwest::header::HeaderName = header.parse().map_err(|_| {
             (

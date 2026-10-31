@@ -295,11 +295,14 @@ pub async fn create(
                 RuleError::Invalid("no such credential in this workspace, or it is revoked".into())
             })?;
         binding
-            .allows(
+            .attaches(
                 workspace_id,
                 &host,
                 input.header.as_deref(),
                 binding.kind.on_a_request(),
+                // A rule written here is the agent's; a person's own key
+                // is never one.
+                None,
             )
             .map_err(RuleError::Invalid)?;
     }
@@ -406,11 +409,14 @@ pub async fn set_credential(
                     )
                 })?;
             binding
-                .allows(
+                .attaches(
                     workspace_id,
                     &host,
                     Some(header),
                     binding.kind.on_a_request(),
+                    // A rule written here is the agent's; a person's own key
+                    // is never one.
+                    None,
                 )
                 .map_err(RuleError::Invalid)?;
         }

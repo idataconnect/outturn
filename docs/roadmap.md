@@ -39,7 +39,9 @@ committed and verified, and new work goes in where it belongs, not at the end.
    a connection the agent holds or one each person connects, so a backend
    applies its own per-user permissions; the asker's credential threaded
    through the turn by the platform, and a signed on-behalf-of header for
-   backends that trust it. Designed, not built.
+   backends that trust it. The gateway's enforcement is built; next, the API
+   resolving a rule for the asker when it mints a turn, then the page where a
+   person connects their own.
 6. **Service accounts** ([service-accounts.md](service-accounts.md)): a
    workspace's own Google service account key, sealed, exchanged by the
    gateway for a token whose scope the binding fixes, and a Sheets skill whose
@@ -214,6 +216,17 @@ RFC 7523. Reaches what people shared with the account, through the APIs the
 scope names, with nothing registered with Google by the deployment. Needs
 sealed credentials, which are built; the exchange reuses the client-credentials
 transport and cache. Unbuilt.
+
+### User credentials
+
+[user-credentials.md](user-credentials.md).
+
+A connection that is the asker's rather than the agent's, so a backend applies
+its own per-user permissions. Needs sealed credentials, which are built. The
+gateway's enforcement is built; resolving a rule for the asker, the page where
+a person connects their own, machine users and held requests are not. Per-user
+OAuth grants (*Integrations*, below) are the same mechanism with another
+source of credential, and should be built on it.
 
 ### Derived skills
 

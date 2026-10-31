@@ -374,10 +374,14 @@ routes:
 - `egress::rule`: `EgressRule::asker`, and in `egress::commit` its own leaf
   tag over the person and the credential or its absence.
 - `auth::token`: the `asker` claim (`ask`), taken by `mint_turn` and copied
-  on a trade-in at `POST /v1/work/{job_id}/token`.
+  on a trade-in at `POST /v1/work/{job_id}/token` -- only after it is checked
+  to be the leased job's own (`work::asker_of`, the one answer the mint asks
+  too), so a person's token kept past their turn cannot be renewed under
+  somebody else's.
 - `gateway::egress`: a rule's `asker` compared with the token's, nothing
   connected refused and said, a person's seal refused anywhere but on their
-  own turn.
+  own turn -- by `Binding::attaches`, the same check the API runs when a rule
+  is written, so an agent's rule naming a person's key is refused there too.
 - `api::credentials`: a binding naming a person is refused, since nothing but
   their own connection may store one and that route is not built.
 - `tests/api/credentials.rs`, `a_persons_credential_goes_only_with_their_turns`.

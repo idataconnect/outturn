@@ -219,6 +219,11 @@ every request. So removing a host does not reach into a turn already running.
 The one change made is a subtraction: the runtime sends its gates too, and an
 auto-approval policy revoked, expired or edited since is taken out of them, the
 new set handed back with the token committing to it.
+The `asker` claim -- whose credentials the turn carries -- is copied too, and
+only after it is checked to be the leased job's own. Session and workspace say
+which conversation, not whose turn: without the check, a person's token kept
+past their turn and traded in under the next one's lease would carry their
+credentials into somebody else's turn, renewed every quarter hour.
 Only a still-good token is accepted; there is no path that reads an expired one.
 Not a heartbeat, deliberately: a check tied to calls means a stopped or parked
 turn simply never asks.
@@ -237,7 +242,11 @@ built for static headers): a secret sealed in the browser to the gateway's
 public key, its binding as associated data, stored in a table only the gateway
 can open, with no restart to add one. Or, the older path, it carries the name of an
 environment variable; the host reads it and attaches the header on the way out.
-The guest cannot read it and cannot set the headers it travels in. Nothing that
+The guest cannot read it and cannot set the headers it travels in. A sealed
+credential may also belong to a person ([docs/user-credentials.md](user-credentials.md)):
+the seal names them, the rule's leaf names who it was resolved for, and the
+token says whose turn it is, and the gateway attaches it only where all three
+agree. Nothing that
 reads `egress_rules` can leak a secret by reading it, which is why the table is
 safe to return to a browser. Writing one is the other half: a workspace writes its own rules,
 so a rule may name only a variable under `OUTTURN_EGRESS_`, never one of the

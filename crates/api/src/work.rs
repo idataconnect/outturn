@@ -250,9 +250,7 @@ pub async fn take(
                         payload.workspace_id,
                         request.egress_commitment,
                         request.gate_commitment,
-                        // Nothing resolves a rule for the asker yet, so no
-                        // turn carries one; the claim follows the rules.
-                        None,
+                        asker_of(&payload),
                     ) {
                         Ok(token) => token,
                         Err(e) => {
@@ -285,6 +283,11 @@ pub async fn take(
                                     payload.workspace_id,
                                     request.egress_commitment,
                                     gates.root(payload.workspace_id),
+                                    // A held request is sent with the
+                                    // credential it was refused with, which
+                                    // is its own and not this turn's asker's
+                                    // (docs/user-credentials.md); until a
+                                    // held request records one, it has none.
                                     None,
                                 )
                             }) {
@@ -456,6 +459,18 @@ pub fn mint_for(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
+/// Whose credentials a turn carries: the one answer both the mint and a
+/// trade-in ask, so a token can only ever be renewed for the turn it was
+/// minted for.
+///
+/// None for every turn until the API resolves rules for an asker -- then the
+/// person who sent the prompt, or the machine user a rule names for a turn
+/// nobody sent, as resolved and recorded with the job. See
+/// docs/user-credentials.md.
+fn asker_of(_payload: &super::worker::ChatTurnPayload) -> Option<Uuid> {
+    None
+}
+
 /// When a token minted now will stop being good, erring early.
 ///
 /// Read before minting, so the runtime is told a moment no later than the
@@ -517,6 +532,17 @@ pub async fn refresh_token(
             "that token is not for this turn".to_string(),
         ));
     }
+    // Nor for another turn in the same session. Session and workspace say
+    // which conversation; they do not say whose turn, and a person's token
+    // kept past their turn and traded in under the next one's lease would
+    // carry their credentials into somebody else's turn, renewed every
+    // quarter hour. The asker is copied below, so it must be this job's.
+    if claims.asker != asker_of(&payload) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "that token is for somebody else's turn".to_string(),
+        ));
+    }
 
     // Both required. A turn token without them is refused by the gateway
     // anyway, and reissuing one would be minting a claim nobody made.
@@ -574,8 +600,9 @@ pub async fn refresh_token(
         payload.workspace_id,
         egress,
         gates,
-        // Copied, as the commitments are: whose credentials the rules carry
-        // was decided when the turn started, and the rules have not changed.
+        // Copied, as the commitments are, and checked above to be this
+        // job's: whose credentials the rules carry was decided when the turn
+        // started, and the rules have not changed.
         claims.asker,
     )?;
     Ok(Json(outturn_core::protocol::work::TokenRefreshed {

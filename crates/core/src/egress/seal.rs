@@ -240,8 +240,7 @@ impl Binding {
     /// Whether this may be attached for `asker`: a person's credential only
     /// for that person, and the agent's only on a rule that is the agent's.
     ///
-    /// Asked beside `allows`, never instead of it. `asker` is the rule's,
-    /// which the gateway has already compared with the token's.
+    /// Asked beside `allows`, never instead of it -- `attaches` asks both.
     pub fn belongs_to(&self, asker: Option<Uuid>) -> Result<(), String> {
         match (self.user, asker) {
             (None, None) => Ok(()),
@@ -252,6 +251,21 @@ impl Binding {
             ),
             (None, Some(_)) => Err("this credential is the agent's, not the asker's".into()),
         }
+    }
+    /// Whether a rule may attach this to an agent's request: `allows` and
+    /// `belongs_to` together, for the rule's `asker`. One method so the
+    /// gateway, which enforces it, and the API, which says so while somebody
+    /// is writing the rule, cannot drift into asking different questions.
+    pub fn attaches(
+        &self,
+        workspace: Uuid,
+        host: &str,
+        header: Option<&str>,
+        kind: Kind,
+        asker: Option<Uuid>,
+    ) -> Result<(), String> {
+        self.allows(workspace, host, header, kind)?;
+        self.belongs_to(asker)
     }
 }
 
