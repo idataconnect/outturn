@@ -34,6 +34,9 @@ export type Binding =
       workspaces: string[]
       hosts: string[]
       header: string
+      /** The person a key belongs to, when it is their own connection rather
+       *  than the workspace's. See docs/user-credentials.md. */
+      user?: string
     }
   | {
       /** A service account's private key: exchanged by the gateway for a

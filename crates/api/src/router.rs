@@ -661,6 +661,34 @@ async fn set_rule_credential(
     Ok(Json(rule))
 }
 
+/// Makes a rule's connection each person's own, or one for everyone. Whose
+/// key goes with a request is a credential decision as well as a settings one.
+async fn set_rule_owner(
+    State(state): State<Arc<ApiState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(input): Json<super::egress::SetOwner>,
+) -> Result<Json<super::egress::Rule>, ApiError> {
+    let claims = authorize(&state, &headers, Authority::SettingsUpdate).await?;
+    authorize(&state, &headers, Authority::CredentialsWrite).await?;
+    let rule = super::egress::set_owner(
+        &state.pool,
+        claims.workspace_id,
+        id,
+        input.owner,
+        input.header.map(|h| h.trim().to_ascii_lowercase()),
+    )
+    .await?;
+    tracing::info!(
+        actor = %claims.subject,
+        workspace_id = %claims.workspace_id,
+        host = %rule.host,
+        owner = ?rule.owner,
+        "egress rule owner set"
+    );
+    Ok(Json(rule))
+}
+
 async fn delete_egress_rule(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
@@ -2152,6 +2180,10 @@ pub fn routes(state: Arc<ApiState>) -> Router {
         .route(
             "/v1/egress-rules/{id}",
             axum::routing::delete(delete_egress_rule).patch(set_rule_credential),
+        )
+        .route(
+            "/v1/egress-rules/{id}/owner",
+            axum::routing::put(set_rule_owner),
         )
         // Runtimes ask here for work and report back what it produced. Both
         // require GatewayInvoke, which is the platform's own tier rather than

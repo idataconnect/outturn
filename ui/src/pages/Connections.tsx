@@ -66,7 +66,10 @@ export default function Connections() {
   }
 
   const used = new Set((rules ?? []).flatMap((r) => (r.credential ? [r.credential] : [])))
-  const unused = credentials.filter((c) => !used.has(c.id) && c.revoked_at === null)
+  // A person's own key is never on a rule; it is theirs, listed on their account.
+  const unused = credentials.filter(
+    (c) => !used.has(c.id) && c.revoked_at === null && !c.binding.user,
+  )
 
   return (
     <div className="p-6 max-w-3xl">

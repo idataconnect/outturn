@@ -754,3 +754,85 @@ async fn a_person_connects_their_own_key_and_their_turns_carry_it() {
     );
     drop(sam_token);
 }
+
+/// A host's connection made each person's own, and back to one key for
+/// everyone, which revokes the keys people connected for it.
+#[tokio::test]
+async fn a_hosts_connection_switches_between_one_key_and_each_persons_own() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let host = "93.184.215.14";
+    let (status, body) = h
+        .post(
+            "/v1/egress-rules",
+            Some(&admin),
+            &serde_json::json!({ "host": host }).to_string(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let rule: Value = serde_json::from_str(&body).unwrap();
+    let rule_id = rule["id"].as_str().unwrap().to_string();
+    assert_eq!(rule["owner"], "agent");
+
+    let owner = |body: serde_json::Value| {
+        let request = Request::put(format!("/v1/egress-rules/{rule_id}/owner"))
+            .header("authorization", format!("Bearer {admin}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let h = &h;
+        async move { h.send(request).await }
+    };
+    let (status, _) = owner(serde_json::json!({ "owner": "asker" })).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "no header for people's keys"
+    );
+    let (status, body) =
+        owner(serde_json::json!({ "owner": "asker", "header": "Authorization" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rule: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        (&rule["owner"], &rule["header"]),
+        (&"asker".into(), &"authorization".into())
+    );
+
+    // Somebody's own key for it, as their connection stores one.
+    let dana = Uuid::now_v7();
+    sqlx::query("insert into users (id, display_name) values ($1, 'Dana')")
+        .bind(dana)
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    let theirs = Uuid::now_v7();
+    sqlx::query(
+        "insert into credentials \
+             (id, workspace_id, name, binding, sealed, key_id, user_id, rule_id) \
+         values ($1, $2, $3, '\\x7b7d', '\\x00', 'k', $4, $5::uuid)",
+    )
+    .bind(theirs)
+    .bind(acme)
+    .bind(host)
+    .bind(dana)
+    .bind(&rule_id)
+    .execute(&h.db.pool)
+    .await
+    .unwrap();
+
+    let (status, body) = owner(serde_json::json!({ "owner": "agent" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rule: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(rule["owner"], "agent");
+    assert!(rule["header"].is_null(), "no key, so no header: {rule}");
+    let revoked: bool =
+        sqlx::query_scalar("select revoked_at is not null from credentials where id = $1")
+            .bind(theirs)
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert!(revoked, "the keys people connected go with it");
+}

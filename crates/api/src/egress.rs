@@ -566,6 +566,133 @@ pub async fn set_credential(
     Ok(read_rule(&row))
 }
 
+/// Makes a rule's connection each person's own, or one for everyone.
+///
+/// To the asker: the rule keeps or gains a header for people's keys to travel
+/// in, and whatever credential it names becomes the one used on a turn nobody
+/// sent. To the agent: the keys people connected for it are revoked, since
+/// nothing would use them again, and a rule left naming no credential stops
+/// naming a header too, as an agent's rule with no key does.
+pub async fn set_owner(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    id: Uuid,
+    owner: Owner,
+    header: Option<String>,
+) -> Result<Rule, RuleError> {
+    let row = sqlx::query(
+        "select host, header, credential_env, token_url, credential_id from egress_rules \
+         where id = $1 and workspace_id = $2",
+    )
+    .bind(id)
+    .bind(workspace_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| RuleError::Database(e.to_string()))?
+    .ok_or_else(|| RuleError::Invalid("no such rule".into()))?;
+    let host: String = row.get("host");
+    let credential: Option<Uuid> = row.get("credential_id");
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| RuleError::Database(e.to_string()))?;
+    let updated = match owner {
+        Owner::Asker => {
+            if row.get::<Option<String>, _>("credential_env").is_some()
+                || row.get::<Option<String>, _>("token_url").is_some()
+            {
+                return Err(RuleError::Invalid(
+                    "this rule's key comes from the gateway's environment or an exchange, which \
+                     is nobody's own; remove it and add the host again"
+                        .into(),
+                ));
+            }
+            if host.contains('*') {
+                return Err(RuleError::Invalid(
+                    "a connection each person makes names one host, not a wildcard".into(),
+                ));
+            }
+            let header = header.or_else(|| row.get("header")).ok_or_else(|| {
+                RuleError::Invalid(
+                    "a connection each person makes needs a header for their key to travel \
+                         in, such as authorization"
+                        .into(),
+                )
+            })?;
+            if header.parse::<reqwest::header::HeaderName>().is_err() {
+                return Err(RuleError::Invalid(format!("{header} is not a header name")));
+            }
+            outturn_core::egress::rule::check_rule_header(&header)
+                .map_err(|e| RuleError::Invalid(e.to_string()))?;
+            // The workspace's key stays, for turns nobody sent, only if it
+            // travels in the header people's keys will.
+            if let Some(credential) = credential {
+                let binding = super::credentials::binding_of(pool, workspace_id, credential)
+                    .await
+                    .map_err(|e| RuleError::Database(e.to_string()))?;
+                if let Some(binding) = binding {
+                    binding
+                        .attaches(
+                            workspace_id,
+                            &host,
+                            Some(&header),
+                            binding.kind.on_a_request(),
+                            None,
+                        )
+                        .map_err(RuleError::Invalid)?;
+                }
+            }
+            sqlx::query(concat!(
+                "update egress_rules set owner = 'asker', header = $3 \
+                 where id = $1 and workspace_id = $2 returning id, ",
+                rule_columns!(),
+                ", enabled"
+            ))
+            .bind(id)
+            .bind(workspace_id)
+            .bind(&header)
+            .fetch_one(&mut *tx)
+            .await
+        }
+        Owner::Agent => {
+            sqlx::query(
+                "update credentials set sealed = null, revoked_at = now(), \
+                     generation = generation + 1, updated_at = now() \
+                 where rule_id = $1 and workspace_id = $2 and revoked_at is null",
+            )
+            .bind(id)
+            .bind(workspace_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| RuleError::Database(e.to_string()))?;
+            sqlx::query(concat!(
+                "update egress_rules set owner = 'agent', \
+                     header = case when credential_id is null then null else header end \
+                 where id = $1 and workspace_id = $2 returning id, ",
+                rule_columns!(),
+                ", enabled"
+            ))
+            .bind(id)
+            .bind(workspace_id)
+            .fetch_one(&mut *tx)
+            .await
+        }
+    }
+    .map_err(|e| RuleError::Database(e.to_string()))?;
+    tx.commit()
+        .await
+        .map_err(|e| RuleError::Database(e.to_string()))?;
+    Ok(read_rule(&updated))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct SetOwner {
+    pub owner: Owner,
+    /// The header people's keys travel in, when the rule names none yet.
+    #[serde(default)]
+    pub header: Option<String>,
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct SetCredential {
     #[serde(default)]

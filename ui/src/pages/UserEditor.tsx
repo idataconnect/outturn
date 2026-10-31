@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { ArrowLeft, Check, Plus, Save, Shield, Trash2, X } from 'lucide-react'
 
+import OwnConnections from '../components/OwnConnections'
 import { ApiError, api, allPages } from '../lib/api'
 import { useSession } from '../lib/session'
 import { paths } from '../lib/paths'
@@ -610,6 +611,8 @@ function EditUser({ id, own = false }: { id: string; own?: boolean }) {
               </form>
             )}
           </section>
+
+          {own && workspaceId && <OwnConnections workspaceId={workspaceId} userId={id} />}
 
           <section className={card}>
             <h2 className="text-sm font-semibold text-surface-900 dark:text-surface-100">

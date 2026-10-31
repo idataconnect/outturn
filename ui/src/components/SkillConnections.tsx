@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { CheckCircle2, KeyRound, LoaderCircle, Plug, TriangleAlert } from 'lucide-react'
+import { CheckCircle2, KeyRound, LoaderCircle, Plug, TriangleAlert, Users } from 'lucide-react'
 
 import { ApiError } from '../lib/api'
 import {
@@ -9,6 +9,7 @@ import {
   listRules,
   readServiceAccount,
   replaceKey,
+  setOwner,
   testCredential,
   type Credential,
   type EgressRule,
@@ -168,6 +169,10 @@ export function Connection({
   origin?: string
 }) {
   const connected = rule.credential !== null
+  // Each person's own: people connect their keys on their account, and the
+  // key here, if any, is only for turns nobody started. Its header is fixed,
+  // since people's keys are sealed to it.
+  const asker = rule.owner === 'asker'
   // Closed until asked for: plenty of hosts take no key at all, and a form
   // open on each of them reads as something left undone.
   const [editing, setEditing] = useState(false)
@@ -217,6 +222,29 @@ export function Connection({
       if (rule.credential) setTested(await testCredential(rule.credential, path, origin))
     })
 
+  const toEveryone = () => {
+    if (
+      !window.confirm(
+        `Use one key for everyone on ${rule.host}? The keys people connected for it are revoked.`,
+      )
+    )
+      return
+    void run(async () => {
+      await setOwner(rule, 'agent')
+      setEditing(false)
+      setTested(null)
+      await onChanged()
+    })
+  }
+
+  const toEachPerson = () =>
+    void run(async () => {
+      await setOwner(rule, 'asker', rule.header ?? header)
+      setEditing(false)
+      setTested(null)
+      await onChanged()
+    })
+
   const remove = () => {
     if (!window.confirm(`Disconnect the key for ${rule.host}? The host stays allowed.`)) return
     void run(async () => {
@@ -233,7 +261,12 @@ export function Connection({
           phone, and the status goes under it when both will not fit. */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="min-w-0 break-all font-mono text-surface-900 dark:text-surface-100">{rule.host}</span>
-        {connected ? (
+        {asker ? (
+          <span className="ml-auto flex items-center gap-1 text-xs text-brand-700 dark:text-brand-400">
+            <Users size={12} aria-hidden />
+            Each person's own, in <span className="font-mono">{rule.header}</span>
+          </span>
+        ) : connected ? (
           <span className="ml-auto flex flex-wrap items-center gap-1 text-xs text-green-700 dark:text-green-400">
             <KeyRound size={12} aria-hidden />
             {signsInAs ? (
@@ -254,6 +287,14 @@ export function Connection({
         )}
       </div>
 
+      {asker && (
+        <p className="mt-1 text-xs text-surface-600 dark:text-surface-400">
+          People connect their own key under their account, and the service applies its own
+          permissions to what each of them asks for. A turn nobody started — a schedule, a webhook
+          — {connected ? 'uses the key below.' : 'cannot reach this host unless a key is connected below for it.'}
+        </p>
+      )}
+
       {editing ? (
         <form
           className="mt-3 space-y-2"
@@ -266,7 +307,8 @@ export function Connection({
           <label className="block text-xs text-surface-700 dark:text-surface-300">
             Header
             <input
-              value={header}
+              value={asker ? (rule.header ?? header) : header}
+              disabled={asker}
               onChange={(e) => setHeader(e.target.value.trim().toLowerCase())}
               className="mt-1 w-full rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 px-2 py-1 font-mono text-xs"
             />
@@ -339,13 +381,35 @@ export function Connection({
           </div>
         </form>
       ) : !connected ? (
-        <button
-          type="button"
-          onClick={() => setEditing(true)}
-          className="mt-2 rounded-md border border-surface-300 dark:border-surface-700 px-3 py-1.5 text-xs"
-        >
-          Connect a key
-        </button>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className="rounded-md border border-surface-300 dark:border-surface-700 px-3 py-1.5 text-xs"
+          >
+            {asker ? 'Connect a key for turns nobody started' : 'Connect a key'}
+          </button>
+          {asker ? (
+            <button
+              type="button"
+              onClick={toEveryone}
+              disabled={busy}
+              className="rounded-md border border-surface-300 dark:border-surface-700 px-3 py-1.5 text-xs"
+            >
+              Use one key for everyone
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={toEachPerson}
+              disabled={busy}
+              title="For a service that checks who is asking: each person connects their own key, and it goes only with their conversations."
+              className="rounded-md border border-surface-300 dark:border-surface-700 px-3 py-1.5 text-xs"
+            >
+              Each person connects their own
+            </button>
+          )}
+        </div>
       ) : (
         <div className="mt-3 space-y-2">
           <div className="flex items-center gap-2">
@@ -410,6 +474,14 @@ export function Connection({
               className="rounded-md border border-red-300 dark:border-red-900 px-3 py-1.5 text-xs text-red-700 dark:text-red-400"
             >
               Disconnect
+            </button>
+            <button
+              type="button"
+              onClick={asker ? toEveryone : toEachPerson}
+              disabled={busy}
+              className="rounded-md border border-surface-300 dark:border-surface-700 px-3 py-1.5 text-xs"
+            >
+              {asker ? 'Use one key for everyone' : 'Each person connects their own'}
             </button>
           </div>
         </div>

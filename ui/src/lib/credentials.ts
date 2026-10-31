@@ -1,10 +1,16 @@
 import { allPages, api } from './api'
 import { bindingBytes, seal, toBase64 } from './seal'
 
+/** Whose key a rule's requests carry: the one connected here, or each
+ *  person's own. See docs/user-credentials.md. */
+export type Owner = 'agent' | 'asker'
+
 /** An egress rule: a host this workspace's agents may reach, and what is sent there. */
 export type EgressRule = {
   id: string
   host: string
+  /** For `asker`, `credential` is the workspace's key for turns nobody sent. */
+  owner: Owner
   header: string | null
   credential_env: string | null
   credential: string | null
@@ -22,6 +28,8 @@ export type Credential = {
     hosts?: string[]
     header?: string
     workspaces?: string[]
+    /** Whose own key this is, when it is somebody's rather than the workspace's. */
+    user?: string
     /** For a service account: who it signs in as, and for what. */
     account?: string
     scope?: string
@@ -162,16 +170,79 @@ export async function replaceKey(
   })
 }
 
-/** Takes the key off the rule and revokes it. The host stays allowed. */
+/** Takes the key off the rule and revokes it. The host stays allowed -- and
+ *  an asker's rule keeps the header people's keys travel in. */
 export async function disconnect(rule: EgressRule): Promise<void> {
   await api<EgressRule>(`/v1/egress-rules/${rule.id}`, {
     method: 'PATCH',
-    body: JSON.stringify({}),
+    body: JSON.stringify(rule.owner === 'asker' ? { header: rule.header } : {}),
   })
   if (rule.credential) {
     await api<Credential>(`/v1/credentials/${rule.credential}`, { method: 'DELETE' })
   }
 }
+
+/** Makes a rule's connection each person's own, or one key for everyone.
+ *  Back to everyone revokes the keys people connected for it. */
+export const setOwner = (rule: EgressRule, owner: Owner, header?: string) =>
+  api<EgressRule>(`/v1/egress-rules/${rule.id}/owner`, {
+    method: 'PUT',
+    body: JSON.stringify({ owner, ...(header ? { header } : {}) }),
+  })
+
+/** A host whose connection is each person's own, and the caller's key for it. */
+export type OwnConnection = {
+  rule_id: string
+  host: string
+  header: string
+  connected: { credential_id: string; connected_at: string } | null
+}
+
+export type OwnConnections = {
+  connections: OwnConnection[]
+  /** What to seal to: public, and handed out with the list because connecting
+   *  one's own needs no authority over the workspace's keys. */
+  seal_key: { public_key: string; key_id: string } | null
+}
+
+export const listOwnConnections = () => api<OwnConnections>('/v1/connections')
+
+/**
+ * Connects the caller's own key for a host: sealed here as theirs, for this
+ * workspace, host and header, and stored. Replaces one connected before. The
+ * secret leaves this function only sealed.
+ */
+export async function connectOwn(
+  connection: OwnConnection,
+  workspace: string,
+  user: string,
+  key: { public_key: string; key_id: string },
+  secret: string,
+): Promise<void> {
+  const id = uuidv7()
+  const binding = bindingBytes({
+    credential: id,
+    kind: 'static',
+    workspaces: [workspace],
+    hosts: [connection.host],
+    header: connection.header,
+    user,
+  })
+  const sealed = await seal(key.public_key, binding, secret)
+  await api<unknown>(`/v1/connections/${connection.rule_id}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      id,
+      binding: toBase64(binding),
+      sealed: toBase64(sealed),
+      key_id: key.key_id,
+    }),
+  })
+}
+
+/** Disconnects the caller's own key for a host. */
+export const disconnectOwn = (ruleId: string) =>
+  api<void>(`/v1/connections/${ruleId}`, { method: 'DELETE' })
 
 /** Allows a host for this workspace's agents, with no key. */
 export const allowHost = (host: string) =>

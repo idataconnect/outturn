@@ -2,8 +2,8 @@
 
 A connection that is the asking person's rather than the agent's, so that a
 backend with permissions of its own sees who is asking and applies them.
-Built but for the page, machine users and the on-behalf-of header (*As
-built*, at the end). It rests on [sealed-credentials.md](sealed-credentials.md)
+Built but for machine users and the on-behalf-of header (*As built*, at the
+end). It rests on [sealed-credentials.md](sealed-credentials.md)
 and the commitment ([invariants.md](invariants.md), *The commitment is what
 makes a rule a rule*), both built, and generalizes the ownership rules that
 [integrations.md](integrations.md#whose-token-it-is) wrote for OAuth grants to
@@ -365,7 +365,8 @@ gateway, so the three tiers deploy together, as they did for sealed rules.
 
 ## As built
 
-Steps 1 to 4 but for the page and machine users.
+Steps 1 to 5 but for machine users and the one-time notice in a shared
+session.
 
 - `egress::seal`: the binding's `user`, refused on any kind but `static` and
   with any `workspaces` but one id; `Binding::belongs_to`, which the gateway
@@ -403,6 +404,19 @@ Steps 1 to 4 but for the page and machine users.
   as the caller's, for this workspace, host and header; `DELETE` disconnects
   it. Members only -- a role, not just a token -- so leaving reaches every key.
   An administrator revokes one through `DELETE /v1/credentials/{id}`.
+- `api::egress::set_owner`, `PUT /v1/egress-rules/{id}/owner`: a host's
+  connection made each person's own, keeping or gaining the header their keys
+  travel in, or one key for everyone again, which revokes the keys people
+  connected for it. `settings:update` and `credentials:write`, as connecting
+  the workspace's key is.
+- The page. Settings -> Connections and a skill's Connections say when a
+  host's connection is each person's own, switch it either way, and connect
+  the workspace's key for turns nobody started, in the header that is fixed.
+  The Account page lists *Your connections* -- only when the workspace has
+  such a host -- and connects, replaces and disconnects the person's own key,
+  sealed in the browser with their id in the binding
+  (`ui/src/components/OwnConnections.tsx`). People's own keys are left out of
+  *Keys no host uses*.
 - `held_requests.asker`, written from the refusing turn's `user_id`. A held
   request for a host whose rule is an asker's is handed only to a turn of that
   person, and any other turn in the session leaves it waiting -- every turn
@@ -421,8 +435,9 @@ under that turn's rules, which are already resolved for them. The cost is that
 *Send again* on such a request, being nobody's turn, leaves it for the asker's
 next one.
 
-Not built: Connections on the Account page, machine users and the
-on-behalf-of header.
+Not built: machine users, the transcript saying whose connection each call
+used and the notice before a person's key is first used in a shared session,
+and the on-behalf-of header.
 
 ## Not settled
 
