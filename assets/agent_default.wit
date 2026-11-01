@@ -239,6 +239,11 @@ interface host {
         /// workspace's key and cannot aim one somewhere it was not meant for.
         headers: list<tuple<string, string>>,
         body: option<string>,
+        /// A file to send as the body instead, by its path. Its bytes go from
+        /// storage to the recipient without passing through the guest, so a
+        /// file of any kind and any size the host allows can be sent. Refused
+        /// beside `body`, and on a request that would need approving.
+        body-file: option<string>,
         /// The skill operation this request is, by its tool's name, so the
         /// host can keep a declared write from being made twice. Absent for
         /// a request composed by hand. Naming none only costs the guest that

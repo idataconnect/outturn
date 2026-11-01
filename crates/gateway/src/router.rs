@@ -44,6 +44,10 @@ pub struct GatewayState {
     /// refuses a rule that asks for the header rather than sending it without.
     /// See `outturn_core::egress::assertion`.
     pub(crate) assertion: Option<Arc<outturn_core::egress::assertion::Signer>>,
+    /// The object store a file sent as a request body is read from, and the
+    /// only place such a link is followed. None refuses every file body. See
+    /// docs/file-bodies.md.
+    pub(crate) body_store: Option<outturn_core::egress::file_body::Store>,
 }
 
 /// One thing to try: a provider, and the model to ask it for.
@@ -78,7 +82,14 @@ impl GatewayState {
             bindings: outturn_core::egress::bindings::Bindings::from_env(),
             sealed: egress::sealed::Credentials::from_env(),
             assertion: outturn_core::egress::assertion::Signer::from_env().map(Arc::new),
+            body_store: outturn_core::egress::file_body::Store::from_env(),
         }
+    }
+
+    /// The store a file body may be read from, for a test.
+    pub fn with_body_store(mut self, store: outturn_core::egress::file_body::Store) -> Self {
+        self.body_store = Some(store);
+        self
     }
 
     /// Sealed credentials read from this database, for a test or a gateway

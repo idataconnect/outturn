@@ -245,6 +245,15 @@ impl StorageBackend for S3Storage {
         }))
     }
 
+    async fn presign_read(&self, path: &str, seconds: u32) -> Result<String, StorageError> {
+        // Signed here, offline: nothing is asked of the store until the URL is
+        // read, so a missing object is found then, by whoever reads it.
+        self.bucket
+            .presign_get(self.key(path), seconds, None)
+            .await
+            .map_err(classify)
+    }
+
     async fn stat(&self, path: &str) -> Result<FileMetadata, StorageError> {
         let key = self.key(path);
         let (head, _code) = self.bucket.head_object(&key).await.map_err(classify)?;

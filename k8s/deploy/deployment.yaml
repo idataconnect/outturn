@@ -265,6 +265,19 @@ spec:
                   name: outturn-config
                   key: OUTTURN_CREDENTIAL_BINDINGS
                   optional: true
+            # The store a file sent as a request body is read from, and the
+            # only place such a link is followed: its address, never its keys.
+            # See docs/file-bodies.md.
+            - name: OUTTURN_S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_S3_ENDPOINT
+            - name: OUTTURN_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: outturn-secrets
+                  key: OUTTURN_S3_BUCKET
             # A workspace credential named rather than sealed is an OUTTURN_EGRESS_*
             # variable here, added by the overlay from a Secret of its own.
           livenessProbe:

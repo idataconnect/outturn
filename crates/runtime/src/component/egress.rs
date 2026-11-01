@@ -11,6 +11,9 @@ struct Sent {
     path: String,
     headers: Vec<(String, String)>,
     body: Option<String>,
+    /// Whether the body was a file. Never held for approval: what would be held
+    /// is a link that lapses (docs/file-bodies.md).
+    file: bool,
     operation: Option<String>,
 }
 
@@ -34,7 +37,7 @@ impl AgentHost {
     /// the same rule.
     async fn dispatch(
         &mut self,
-        request: HttpRequest,
+        mut request: HttpRequest,
         token: String,
         gates: outturn_core::egress::gate::RawGates,
     ) -> Result<(Sent, Dispatched), String> {
@@ -75,9 +78,23 @@ impl AgentHost {
                 egress::Refused::Unproven(rule.host.clone()).to_string()
             })?;
 
+        // A file sent as the body, as a link the gateway reads it through. Read
+        // permission is checked here, as for any read: the link grants nothing
+        // this tier could not already read, and the gateway reads only the
+        // store with it.
+        let body_file = match request.body_file.take() {
+            None => None,
+            Some(_) if request.body.is_some() => {
+                return Err("send a body or a body_file, not both".to_string());
+            }
+            Some(_) if request.operation.is_some() => {
+                return Err("a skill operation cannot send a file as its body".to_string());
+            }
+            Some(path) => Some(self.body_file(&path).await?),
+        };
+
         // A declared write: keyed for a recipient that takes a key, or
         // checked against the record for one that does not.
-        let mut request = request;
         let identity = request
             .operation
             .as_deref()
@@ -120,6 +137,7 @@ impl AgentHost {
             path: url.path().to_string(),
             headers: request.headers.clone(),
             body: request.body.clone(),
+            file: body_file.is_some(),
             operation: request.operation.clone(),
         };
         if let Some(replay) = replay {
@@ -134,6 +152,7 @@ impl AgentHost {
                 url: request.url,
                 headers: request.headers,
                 body: request.body,
+                body_file,
                 proof,
                 gates,
             },
@@ -198,6 +217,7 @@ impl AgentHost {
             url: call.url.clone(),
             headers: call.headers.clone(),
             body: call.body.clone(),
+            body_file: None,
             operation: call.operation.clone(),
         };
         match self.dispatch(request, token, gates).await {
@@ -269,7 +289,8 @@ impl AgentHost {
                 // Gates this build cannot read -- a field added by a newer API --
                 // are relayed anyway: the API decides, and the alternative is an
                 // approval nobody is ever asked for.
-                if gates_cover(&self.gates, &sent)
+                if !sent.file
+                    && gates_cover(&self.gates, &sent)
                     && let Some(on_gated) = &self.on_gated
                 {
                     // The whole request, as it was about to go, so that what a
@@ -522,6 +543,7 @@ mod gates_cover_tests {
             path: path.into(),
             headers: Vec::new(),
             body: None,
+            file: false,
             operation: None,
         }
     }

@@ -268,7 +268,7 @@ fn call_operation(op: &SkillOperation, args: &serde_json::Value) -> String {
             Some(serde_json::Value::Object(body).to_string()),
         )
     };
-    fetch(op.method.clone(), url, headers, body, Some(op.name.clone()))
+    fetch(op.method.clone(), url, headers, body, None, Some(op.name.clone()))
 }
 
 /// Percent-encodes everything outside the unreserved set, so a value cannot
@@ -453,7 +453,7 @@ fn builtin_tools() -> Vec<ToolDefinition> {
                       not followed: a 3xx response means asking again for the \
                       new location."
             .to_string(),
-        parameters: r#"{"type":"object","properties":{"url":{"type":"string","description":"Absolute https URL."},"method":{"type":"string","description":"GET, POST, PUT, PATCH, DELETE or HEAD. Defaults to GET.","enum":["GET","POST","PUT","PATCH","DELETE","HEAD"]},"headers":{"type":"object","description":"Extra headers, as a flat object. Leave authorization out; it is added for you.","additionalProperties":{"type":"string"}},"body":{"type":"string","description":"Request body, for methods that take one."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Looking up the exchange rate."}},"required":["url","action"]}"#
+        parameters: r#"{"type":"object","properties":{"url":{"type":"string","description":"Absolute https URL."},"method":{"type":"string","description":"GET, POST, PUT, PATCH, DELETE or HEAD. Defaults to GET.","enum":["GET","POST","PUT","PATCH","DELETE","HEAD"]},"headers":{"type":"object","description":"Extra headers, as a flat object. Leave authorization out; it is added for you.","additionalProperties":{"type":"string"}},"body":{"type":"string","description":"Request body, for methods that take one."},"body_file":{"type":"string","description":"A file's path, such as session/photo.heic, to send as the body instead of body: its bytes as they are stored, of any kind. Set a content-type header where the API needs one."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Looking up the exchange rate."}},"required":["url","action"]}"#
             .to_string(),
     },
     ToolDefinition {
@@ -1454,6 +1454,11 @@ fn fetch_url(args: &serde_json::Value) -> String {
         .get("body")
         .and_then(|b| b.as_str())
         .map(str::to_string);
+    let body_file = args
+        .get("body_file")
+        .and_then(|b| b.as_str())
+        .filter(|b| !b.is_empty())
+        .map(str::to_string);
 
     // A JSON body sent without saying so. Models write the JSON and forget the
     // header -- one booking was refused 415 and retried until it took the room
@@ -1474,7 +1479,7 @@ fn fetch_url(args: &serde_json::Value) -> String {
         headers.push(("Content-Type".to_string(), "application/json".to_string()));
     }
 
-    fetch(method, url.to_string(), headers, body, None)
+    fetch(method, url.to_string(), headers, body, body_file, None)
 }
 
 /// Sends a request through the host and reports what came back, in the one
@@ -1484,6 +1489,7 @@ fn fetch(
     url: String,
     headers: Vec<(String, String)>,
     body: Option<String>,
+    body_file: Option<String>,
     operation: Option<String>,
 ) -> String {
     // Echoed in the result, so the reader can see what was asked for.
@@ -1493,6 +1499,7 @@ fn fetch(
         url: url.clone(),
         headers,
         body,
+        body_file,
         operation,
     }) {
         Ok(response) => serde_json::json!({

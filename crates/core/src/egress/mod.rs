@@ -9,6 +9,7 @@ pub mod amount;
 pub mod assertion;
 pub mod bindings;
 pub mod commit;
+pub mod file_body;
 pub mod gate;
 pub mod grant;
 pub mod held;

@@ -298,6 +298,7 @@ are near before changing it.
   [usage.md](docs/usage.md), [caching.md](docs/caching.md),
   [thinking.md](docs/thinking.md), [model-catalog.md](docs/model-catalog.md).
 - Reaching the outside: [egress.md](docs/egress.md),
+  [file-bodies.md](docs/file-bodies.md),
   [integrations.md](docs/integrations.md),
   [sealed-credentials.md](docs/sealed-credentials.md),
   [credential-bindings.md](docs/credential-bindings.md),

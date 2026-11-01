@@ -58,6 +58,21 @@ pub trait StorageBackend: Send + Sync {
     }
 
     async fn delete(&self, path: &str) -> Result<(), StorageError>;
+
+    /// A URL that reads this one object, and nothing else, for `seconds`.
+    ///
+    /// How a file leaves as a request body without passing through the tier
+    /// that asked: the runtime hands the gateway this rather than the bytes, and
+    /// the gateway reads it into the request it sends (docs/file-bodies.md). It
+    /// grants nothing its holder could not already read. A backend with no such
+    /// URL to give says so, and the request is refused rather than carried some
+    /// other way.
+    async fn presign_read(&self, path: &str, seconds: u32) -> Result<String, StorageError> {
+        let _ = (path, seconds);
+        Err(StorageError::Unavailable(
+            "this storage cannot hand out a link to a file".into(),
+        ))
+    }
 }
 
 /// An object being written. See `StorageBackend::open_writer`.

@@ -196,6 +196,14 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
+    # A file sent as a request body, read through a link the runtime signed.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
@@ -228,8 +236,9 @@ spec:
         - protocol: TCP
           port: 5432
 ---
-# Object storage hears from the API, which writes transcripts and files, and
-# from the runtime, which keeps a session's scratch files there.
+# Object storage hears from the API, which writes transcripts and files, from
+# the runtime, which keeps a session's scratch files there, and from the
+# gateway, which reads a file an agent sends as a request body.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -248,6 +257,9 @@ spec:
         - podSelector:
             matchLabels:
               app: outturn-runtime
+        - podSelector:
+            matchLabels:
+              app: outturn-gateway
       ports:
         - protocol: TCP
           port: 9000

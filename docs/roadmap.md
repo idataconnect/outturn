@@ -22,12 +22,10 @@ committed and verified, and new work goes in where it belongs, not at the end.
    ten fixes, the retention sweeps, the indexes and the migration lock, name uniqueness, the prompt
    and sandbox boundaries with the storage quota, and the gateway's findings are in; the rest goes in
    the order given there.
-2. **A request whose body is a session file.** `fetch_url` takes its body
-   as a string, so an agent cannot send a file to an API that accepts
-   uploads. A body naming a session path, streamed by the host through the
-   gateway and charged against the file's size, makes any such service a
-   skill: Tika's `/meta`, given an egress rule and the internal host, reads a
-   photo's EXIF, HEIC included, with nothing added to core.
+2. **A request whose body is a session file** ([file-bodies.md](file-bodies.md)):
+   built for requests nobody has to approve, read by the gateway from the
+   object store through a link the runtime signs. Next, holding one for
+   approval by its path and digest, then a file body for skill operations.
 3. **Text an operator can change, in any language.** Designed before built.
    Every user-facing block of text -- UI strings, refusals, the platform
    preamble, notices such as being over a storage quota -- named by key

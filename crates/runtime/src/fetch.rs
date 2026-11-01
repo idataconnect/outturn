@@ -22,6 +22,9 @@ pub struct GatewayFetch {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+    /// A stored file to send as the body instead, as a link the gateway reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_file: Option<outturn_core::egress::file_body::BodyFile>,
     /// The rule this turn is using, and the API's word that it is genuine.
     pub proof: commit::Proof,
     /// What the API said gates this turn, passed on unchanged.
@@ -183,6 +186,7 @@ mod tests {
             url: "https://host0.example.com/".into(),
             headers: Vec::new(),
             body: None,
+            body_file: None,
             proof,
         })
         .expect("serializes");

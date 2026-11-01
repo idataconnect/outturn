@@ -80,6 +80,9 @@ pub struct EgressRequest {
     pub headers: Vec<(String, String)>,
     #[serde(default)]
     pub body: Option<String>,
+    /// A stored file to send as the body instead. See docs/file-bodies.md.
+    #[serde(default)]
+    pub body_file: Option<outturn_core::egress::file_body::BodyFile>,
     /// The rule the caller matched, and the proof that the API vouched for it.
     pub proof: commit::Proof,
 }
@@ -170,7 +173,7 @@ fn needs_approval(
 async fn vet_and_send(
     State(state): State<Arc<super::GatewayState>>,
     headers: HeaderMap,
-    Json(request): Json<EgressRequest>,
+    Json(mut request): Json<EgressRequest>,
 ) -> Result<Result<EgressResponse, TransportError>, (StatusCode, String)> {
     // The token is the whole basis of this. It says which workspace is calling
     // and what its rules hashed to, and the caller cannot write either.
@@ -224,6 +227,40 @@ async fn vet_and_send(
 
     let url = reqwest::Url::parse(&request.url)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("that URL is not one: {e}")))?;
+
+    // A file for the body, read only from the object store. The link is the
+    // runtime's to choose, so this is what keeps it from naming anything else
+    // inside the network for this tier to read and send on.
+    let body_file = match request.body_file.take() {
+        None => None,
+        Some(_) if request.body.is_some() || document => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "send a body or a file, not both".to_string(),
+            ));
+        }
+        Some(file) => {
+            let store = state.body_store.as_ref().ok_or_else(|| {
+                (
+                    StatusCode::FORBIDDEN,
+                    "files cannot be sent from this deployment".to_string(),
+                )
+            })?;
+            let link = store
+                .admit(&file.url)
+                .map_err(|why| (StatusCode::FORBIDDEN, why))?;
+            if file.size > outturn_core::egress::file_body::LIMIT {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "that file is larger than can be sent".to_string(),
+                ));
+            }
+            Some(transport::StoredBody {
+                url: link,
+                size: file.size,
+            })
+        }
+    };
 
     // Matched against the vouched rules rather than the sent ones: the host
     // has to be allowed by a rule the API committed to, and the rule that
@@ -365,6 +402,18 @@ async fn vet_and_send(
         outturn_core::egress::policy::PolicyGrant,
         outturn_core::egress::policy::Admitted,
     )> = Vec::new();
+    if body_file.is_some() && request.gates.covering(&host, &method, url.path()).is_some() {
+        // What a person approves is what is sent, and a held file is a link
+        // that lapses and a path whose contents can change. Refused, not held,
+        // until approving one holds its digest (docs/file-bodies.md).
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "a file cannot be sent where {method} {} on {host} needs approving",
+                url.path()
+            ),
+        ));
+    }
     if request.gates.covering(&host, &method, url.path()).is_some() {
         // Unless every gate covering it is satisfied: by somebody having already
         // approved this particular request, or by a policy committed against
@@ -714,6 +763,7 @@ async fn vet_and_send(
         addrs,
         headers: outgoing,
         body,
+        body_file,
         timeout: FETCH_TIMEOUT,
         body_limit: if document {
             DOCUMENT_BODY_LIMIT
@@ -1291,6 +1341,7 @@ mod client_credentials {
                 gates: outturn_core::egress::gate::Gates::none(),
                 headers: Vec::new(),
                 body: None,
+                body_file: None,
                 proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
             };
             let got = vet_and_send(State(state.clone()), headers.clone(), Json(request))
@@ -1415,6 +1466,7 @@ mod client_credentials {
                 gates: outturn_core::egress::gate::Gates::none(),
                 headers: Vec::new(),
                 body: None,
+                body_file: None,
                 proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
             };
             vet_and_send(State(state), headers, Json(request))
@@ -1551,6 +1603,7 @@ mod client_credentials {
                 gates: outturn_core::egress::gate::Gates::none(),
                 headers: Vec::new(),
                 body: None,
+                body_file: None,
                 proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
             };
             async move {
@@ -1753,6 +1806,7 @@ mod client_credentials {
                 gates: gates.clone(),
                 headers: Vec::new(),
                 body: Some(body.into()),
+                body_file: None,
                 proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
             };
             let refused = vet_and_send(State(state.clone()), headers.clone(), Json(request))
@@ -1786,6 +1840,7 @@ mod client_credentials {
             gates,
             headers: Vec::new(),
             body: Some(r#"{"amount_pence":40}"#.into()),
+            body_file: None,
             proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
         };
         let refused = vet_and_send(State(state.clone()), headers, Json(request))
@@ -1796,5 +1851,182 @@ mod client_credentials {
             "{}",
             refused.1
         );
+    }
+}
+
+/// A file sent as a body: read from the object store and nowhere else, and
+/// never where a person would have to approve it.
+#[cfg(test)]
+mod file_bodies {
+    use std::sync::Mutex;
+
+    use super::transport::{EgressTransport, TransportError, TransportResponse, VettedRequest};
+    use super::*;
+    use outturn_core::egress::file_body::{BodyFile, Store};
+    use outturn_core::egress::gate::{Gate, Gates};
+    use outturn_core::egress::rule::EgressRule;
+
+    #[derive(Default)]
+    struct Recorder(Mutex<Vec<Option<String>>>);
+
+    #[async_trait::async_trait]
+    impl EgressTransport for Recorder {
+        fn name(&self) -> &'static str {
+            "recorder"
+        }
+        async fn send(&self, request: VettedRequest) -> Result<TransportResponse, TransportError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(request.body_file.map(|f| f.url.to_string()));
+            Ok(TransportResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: "{}".into(),
+                truncated: false,
+            })
+        }
+    }
+
+    const LINK: &str = "http://outturn-minio:9000/outturn/ws/session/a.heic?X-Amz-Signature=ab";
+
+    /// Sends a PUT of `file` to the one allowed host, under `gates`, and says
+    /// what the gateway made of it and what reached the transport.
+    async fn send(
+        store: Option<Store>,
+        gates: Vec<Gate>,
+        file: BodyFile,
+        body: Option<&str>,
+    ) -> (Result<(), String>, Vec<Option<String>>) {
+        let seed = [17u8; 32];
+        let minter = outturn_core::auth::TokenMinter::new(&seed).expect("minter");
+        let validator = outturn_core::auth::TokenValidator::new(
+            &outturn_core::auth::TokenMinter::public_key_of(&seed),
+            outturn_core::auth::AUDIENCE_GATEWAY,
+        )
+        .expect("validator");
+        let sent = Arc::new(Recorder::default());
+        let mut state = super::super::GatewayState::new(Vec::new(), validator)
+            .with_egress_transport(sent.clone());
+        state.body_store = store;
+        let state = Arc::new(state);
+
+        let workspace = uuid::Uuid::now_v7();
+        let rule = EgressRule {
+            host: "93.184.215.14".into(),
+            header: None,
+            credential_env: None,
+            client: None,
+            credential: None,
+            asker: None,
+            on_behalf_of: false,
+        };
+        let rules = vec![rule.clone()];
+        let gates = Gates::of(gates);
+        let token = minter
+            .mint_turn(
+                uuid::Uuid::now_v7(),
+                workspace,
+                commit::root(workspace, &rules),
+                gates.root(workspace),
+                None,
+            )
+            .expect("turn token");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        let request = EgressRequest {
+            method: "PUT".into(),
+            url: "https://93.184.215.14/meta".into(),
+            gates,
+            headers: Vec::new(),
+            body: body.map(str::to_string),
+            body_file: Some(file),
+            proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
+        };
+        let outcome = vet_and_send(State(state), headers, Json(request))
+            .await
+            .map(|_| ())
+            .map_err(|(_, why)| why);
+        let sent = sent.0.lock().unwrap().clone();
+        (outcome, sent)
+    }
+
+    fn store() -> Option<Store> {
+        Store::new("http://outturn-minio:9000", "outturn")
+    }
+
+    fn file(url: &str) -> BodyFile {
+        BodyFile {
+            url: url.into(),
+            size: 10,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_from_the_store_is_handed_to_the_transport() {
+        let (outcome, sent) = send(store(), Vec::new(), file(LINK), None).await;
+        assert_eq!(outcome, Ok(()));
+        assert_eq!(sent, vec![Some(LINK.to_string())]);
+    }
+
+    /// The link is the runtime's to write. Followed anywhere but the store, it
+    /// would have this tier read from inside the cluster on the runtime's say
+    /// and send the answer to a host an agent may reach.
+    #[tokio::test]
+    async fn a_link_anywhere_but_the_store_is_refused_before_anything_is_sent() {
+        let (outcome, sent) = send(
+            store(),
+            Vec::new(),
+            file("http://outturn-api:8080/v1/workspaces"),
+            None,
+        )
+        .await;
+        assert!(outcome.is_err());
+        assert!(sent.is_empty(), "nothing reached the transport");
+    }
+
+    #[tokio::test]
+    async fn a_deployment_with_no_store_sends_no_files() {
+        let (outcome, sent) = send(None, Vec::new(), file(LINK), None).await;
+        assert!(outcome.unwrap_err().contains("cannot be sent"));
+        assert!(sent.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_file_is_refused_beside_a_body() {
+        let (outcome, sent) = send(store(), Vec::new(), file(LINK), Some("{}")).await;
+        assert!(outcome.is_err());
+        assert!(sent.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_file_too_large_to_send_is_refused() {
+        let mut big = file(LINK);
+        big.size = outturn_core::egress::file_body::LIMIT + 1;
+        let (outcome, sent) = send(store(), Vec::new(), big, None).await;
+        assert!(outcome.is_err());
+        assert!(sent.is_empty());
+    }
+
+    /// Refused rather than held: what would be held is a link that lapses, to
+    /// a path whose contents can change before anybody answers.
+    #[tokio::test]
+    async fn a_file_where_sending_needs_approving_is_refused_not_held() {
+        let gate = Gate {
+            requires: "upload".into(),
+            host: "93.184.215.14".into(),
+            method: "PUT".into(),
+            path: "/meta".into(),
+            identified_by: None,
+            binds: Vec::new(),
+        };
+        let (outcome, sent) = send(store(), vec![gate], file(LINK), None).await;
+        let why = outcome.unwrap_err();
+        assert!(why.contains("needs approving"), "{why}");
+        assert!(
+            !why.contains("needs approval before it can go out"),
+            "not the refusal the runtime turns into an approval: {why}"
+        );
+        assert!(sent.is_empty());
     }
 }

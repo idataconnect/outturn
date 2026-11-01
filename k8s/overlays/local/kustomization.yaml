@@ -168,6 +168,13 @@ patches:
           # here -- see docs/credential-bindings.md. The API carries a copy.
           - name: OUTTURN_CREDENTIAL_BINDINGS
             value: ""
+          # The store a file sent as a request body is read from, and the only
+          # place such a link is followed. Its address, not its keys: the
+          # runtime signs the link. See docs/file-bodies.md.
+          - name: OUTTURN_S3_ENDPOINT
+            value: "http://minio:9000"
+          - name: OUTTURN_S3_BUCKET
+            value: "outturn"
           # What sealed credentials are opened with. Gateway only, as the token
           # secret is API only: nothing else may hold it. Optional for the
           # reason the API's public half is. See docs/sealed-credentials.md.

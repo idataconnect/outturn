@@ -422,6 +422,7 @@ async fn post(
         addrs,
         headers,
         body: Some(body),
+        body_file: None,
         timeout: EXCHANGE_TIMEOUT,
         body_limit: EXCHANGE_BODY_LIMIT,
     };
