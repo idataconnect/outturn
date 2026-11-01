@@ -946,6 +946,7 @@ async fn an_older_runtime_relays_gates_it_cannot_read() {
         url: format!("https://{CHARGE_HOST}/rooms"),
         headers: Vec::new(),
         body: None,
+        body_size: None,
         proof: outturn::egress::commit::prove(c.acme, &rules, &rule).unwrap(),
         gates: taken.gates,
     })
