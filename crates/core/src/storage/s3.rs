@@ -245,13 +245,39 @@ impl StorageBackend for S3Storage {
         }))
     }
 
-    async fn presign_read(&self, path: &str, seconds: u32) -> Result<String, StorageError> {
-        // Signed here, offline: nothing is asked of the store until the URL is
-        // read, so a missing object is found then, by whoever reads it.
-        self.bucket
-            .presign_get(self.key(path), seconds, None)
-            .await
-            .map_err(classify)
+    async fn open_reader_sized(
+        &self,
+        path: &str,
+    ) -> Result<(Box<dyn ObjectReader>, u64), StorageError> {
+        // The read itself does not say how long it is, so the length comes
+        // from a look first and the read is made conditional on that look:
+        // an object replaced in between fails here rather than arriving as a
+        // different file under the old file's length.
+        let key = self.key(path);
+        let (head, _code) = self.bucket.head_object(&key).await.map_err(classify)?;
+        let size = head.content_length.unwrap_or(0) as u64;
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(etag) = head.e_tag.as_deref()
+            && let Ok(value) = reqwest::header::HeaderValue::from_str(etag)
+        {
+            headers.insert(reqwest::header::IF_MATCH, value);
+        } else {
+            return Err(StorageError::Io("storage gave no version to read".into()));
+        }
+        let bucket = self.bucket.with_extra_headers(headers).map_err(classify)?;
+        let response = bucket.get_object_stream(&key).await.map_err(|e| match e {
+            S3Error::HttpFailWithBody(412, _) => {
+                StorageError::Io("it changed while it was being read".into())
+            }
+            other => classify(other),
+        })?;
+        Ok((
+            Box::new(S3Reader {
+                stream: response.bytes,
+                pending: bytes::Bytes::new(),
+            }),
+            size,
+        ))
     }
 
     async fn stat(&self, path: &str) -> Result<FileMetadata, StorageError> {

@@ -22,9 +22,10 @@ pub struct GatewayFetch {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
-    /// A stored file to send as the body instead, as a link the gateway reads.
+    /// How long the file that follows is, where the body is a file streamed
+    /// after this rather than `body` (docs/file-bodies.md).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub body_file: Option<outturn_core::egress::file_body::BodyFile>,
+    pub body_size: Option<u64>,
     /// The rule this turn is using, and the API's word that it is genuine.
     pub proof: commit::Proof,
     /// What the API said gates this turn, passed on unchanged.
@@ -37,6 +38,61 @@ pub struct GatewayFetch {
     /// here could usefully rewrite it. Nor does it by accident: these are the
     /// bytes the API wrote, never this build's types written out again.
     pub gates: outturn_core::egress::gate::RawGates,
+}
+
+/// A stored file on its way out as a request's body: read from storage a
+/// chunk at a time behind the request's head, never held whole.
+pub struct BodyFile {
+    pub reader: Box<dyn outturn_core::storage::ObjectReader>,
+    /// The length declared ahead of it. Storage handing back more or less than
+    /// this stops the stream, so the gateway never sends something other than
+    /// the file that was declared.
+    pub size: u64,
+}
+
+impl BodyFile {
+    fn stream(
+        self,
+        head: Vec<u8>,
+    ) -> impl futures::Stream<Item = Result<Vec<u8>, std::io::Error>> + Send + 'static {
+        use outturn_core::egress::file_body::{CHUNK, head as framed};
+        let first = futures::stream::once(async move { Ok(framed(&head)) });
+        let rest = futures::stream::unfold(
+            (self.reader, self.size, 0u64, false),
+            |(mut reader, size, sent, done)| async move {
+                if done {
+                    return None;
+                }
+                let failed = |why: &str| std::io::Error::other(format!("the file {why}"));
+                let chunk = match reader.read(CHUNK).await {
+                    Ok(chunk) => chunk,
+                    Err(e) => {
+                        return Some((
+                            Err(failed(&format!("could not be read: {e}"))),
+                            (reader, size, sent, true),
+                        ));
+                    }
+                };
+                if chunk.is_empty() {
+                    return (sent < size).then(|| {
+                        (
+                            Err(failed("ended before its length")),
+                            (reader, size, sent, true),
+                        )
+                    });
+                }
+                let sent = sent + chunk.len() as u64;
+                if sent > size {
+                    return Some((
+                        Err(failed("ran past its length")),
+                        (reader, size, sent, true),
+                    ));
+                }
+                Some((Ok(chunk), (reader, size, sent, false)))
+            },
+        );
+        futures::StreamExt::chain(first, rest)
+    }
 }
 
 /// What came back.
@@ -80,27 +136,41 @@ pub async fn through_gateway(
     gateway_url: &str,
     token: &str,
     request: GatewayFetch,
+    file: Option<BodyFile>,
 ) -> Result<GatewayFetched, Unanswered> {
     // The gateway holds the request open while it makes the outbound call, so
     // this waits on somebody else's upstream rather than on the gateway alone.
     let client =
         outturn_core::http_client::streaming_client(outturn_core::http_client::IDLE_TIMEOUT);
-    let response = client
+    let outgoing = client
         .post(format!("{}/v1/egress", gateway_url.trim_end_matches('/')))
-        .bearer_auth(token)
-        .json(&request)
-        .send()
-        .await
-        .map_err(|e| Unanswered {
-            // Stripped, because this text reaches a model and a transcript: a
-            // URL an agent composed can carry a credential in its query.
-            message: format!(
-                "the request did not complete: {}",
-                strip_url(&e.to_string())
-            ),
-            did_not_complete: true,
-            never_sent: false,
-        })?;
+        .bearer_auth(token);
+    let outgoing = match file {
+        None => outgoing.json(&request),
+        Some(file) => {
+            let head = serde_json::to_vec(&request).map_err(|e| Unanswered {
+                message: format!("the request could not be prepared: {e}"),
+                did_not_complete: false,
+                never_sent: true,
+            })?;
+            outgoing
+                .header(
+                    reqwest::header::CONTENT_TYPE,
+                    outturn_core::egress::file_body::CONTENT_TYPE,
+                )
+                .body(reqwest::Body::wrap_stream(file.stream(head)))
+        }
+    };
+    let response = outgoing.send().await.map_err(|e| Unanswered {
+        // Stripped, because this text reaches a model and a transcript: a
+        // URL an agent composed can carry a credential in its query.
+        message: format!(
+            "the request did not complete: {}",
+            strip_url(&e.to_string())
+        ),
+        did_not_complete: true,
+        never_sent: false,
+    })?;
 
     let status = response.status();
     if status.is_success() {
@@ -186,7 +256,7 @@ mod tests {
             url: "https://host0.example.com/".into(),
             headers: Vec::new(),
             body: None,
-            body_file: None,
+            body_size: None,
             proof,
         })
         .expect("serializes");

@@ -238,9 +238,8 @@ spec:
         - protocol: TCP
           port: 5432
 ---
-# Object storage, for the API, which writes uploads, the runtime, which keeps
-# a session's files there, and the gateway, which reads a file an agent sends
-# as a request body (docs/file-bodies.md). By address, unlike the database, because the
+# Object storage, for the API, which writes uploads, and the runtime, which
+# keeps a session's files there. By address, unlike the database, because the
 # runtime is in it: "anywhere on 443" would hand a compromised runtime every
 # HTTPS host on the internet, which is the path everything else here closes.
 #
@@ -256,7 +255,7 @@ spec:
     matchExpressions:
       - key: app
         operator: In
-        values: [outturn-api, outturn-runtime, outturn-gateway]
+        values: [outturn-api, outturn-runtime]
   policyTypes:
     - Egress
   egress:

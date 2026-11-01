@@ -307,31 +307,24 @@ impl AgentHost {
             .map_err(|e| self.storage_failed("read", e))
     }
 
-    /// A file to send as a request's body: a link the gateway reads it
-    /// through, and its size. The object as stored, like `read_bytes` -- a
-    /// document goes as the document, not as its extracted text.
-    pub(super) async fn body_file(
-        &mut self,
-        path: &str,
-    ) -> Result<outturn_core::egress::file_body::BodyFile, String> {
-        use outturn_core::egress::file_body::{BodyFile, LIMIT, LINK_SECONDS};
+    /// A file to send as a request's body, opened for reading with its
+    /// length. The object as stored, like `read_bytes` -- a document goes as
+    /// the document, not as its extracted text.
+    pub(super) async fn body_file(&mut self, path: &str) -> Result<crate::fetch::BodyFile, String> {
+        use outturn_core::egress::file_body::LIMIT;
         use outturn_core::storage::StorageError;
         let (storage, resolved) = self.object_at(path)?;
-        let size = match storage.stat(&resolved).await {
-            Ok(found) => found.size,
+        let (reader, size) = match storage.open_reader_sized(&resolved).await {
+            Ok(opened) => opened,
             Err(StorageError::NotFound) => return Err(format!("{path} does not exist")),
-            Err(e) => return Err(self.storage_failed("stat", e)),
+            Err(e) => return Err(self.storage_failed("read", e)),
         };
         if size > LIMIT {
             return Err(format!(
                 "{path} is {size} bytes, and the most that can be sent is {LIMIT}"
             ));
         }
-        let url = storage
-            .presign_read(&resolved, LINK_SECONDS)
-            .await
-            .map_err(|e| self.storage_failed("link", e))?;
-        Ok(BodyFile { url, size })
+        Ok(crate::fetch::BodyFile { reader, size })
     }
 
     pub(super) async fn stat_object(&mut self, path: String) -> Result<ObjectInfo, String> {

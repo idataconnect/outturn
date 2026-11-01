@@ -1951,6 +1951,60 @@ async fn a_large_file_is_read_from_both_ends() {
     );
 }
 
+/// A file named as a request's body goes to the gateway behind the request,
+/// as it is stored, with its length declared ahead of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_named_as_a_body_is_streamed_to_the_gateway() {
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
+
+    let store = Arc::new(MemoryStorage::new());
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "fetch_url".into(),
+        arguments: r#"{"url":"https://meta.example.com/meta","method":"PUT","body_file":"session/IMG.HEIC","headers":{"Accept":"application/json"},"action":"Asking about the photo"}"#.into(),
+        reply: "Taken in October.".into(),
+    })
+    .await;
+    gateway.answer_egress(200, r#"{"Content-Type":"image/heic"}"#);
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    options.egress = vec![outturn::egress::rule::EgressRule {
+        host: "meta.example.com".into(),
+        header: None,
+        credential_env: None,
+        client: None,
+        credential: None,
+        asker: None,
+        on_behalf_of: false,
+    }];
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+    // Larger than a chunk, so it arrives in several.
+    let photo: Vec<u8> = (0..=255u8).cycle().take(200_000).collect();
+    store
+        .write(&scope::resolve(&space, "session/IMG.HEIC").unwrap(), &photo)
+        .await
+        .expect("seed");
+    runner()
+        .run(
+            &component(),
+            user("When was it taken?"),
+            String::new(),
+            options,
+        )
+        .await
+        .expect("run");
+
+    let fetched = gateway.fetched();
+    assert_eq!(fetched.len(), 1, "{fetched:?}");
+    assert_eq!(fetched[0]["body_size"], 200_000);
+    assert!(fetched[0]["body"].is_null(), "no other body");
+    let sent: Vec<u8> = serde_json::from_value(fetched[0]["file"].clone()).expect("a file");
+    assert!(sent == photo, "the file went as it is stored");
+}
+
 /// A file that is not text can still be looked at, as its bytes.
 ///
 /// A plain read refuses it and says how to look; a hex read shows the header

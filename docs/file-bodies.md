@@ -18,57 +18,82 @@ naming the call.
 The agent names a path: `fetch_url` with `body_file: "session/IMG_4815.HEIC"`
 in place of `body`.
 
-The runtime checks the agent may read that path, exactly as for any read,
-stats it, and refuses one over `file_body::LIMIT` (32 MiB). It then signs a
-link that reads that one object for `LINK_SECONDS` (two minutes) and hands
-the gateway the link and the size, never the bytes.
+The runtime reads the file the way it reads any file: with its own storage
+client, after the same read check (`object_at`). It stats the object for its
+size and ETag, refuses one over `file_body::LIMIT` (32 MiB), and opens the
+read with `If-Match` on that ETag, so the size it declares and the bytes it
+sends are one object's: a file replaced in between fails the read before
+anything is sent. It then sends the egress request to the gateway as a stream
+rather than as JSON:
 
-The gateway admits the link only if it points into the object store it was
-configured with (`OUTTURN_S3_ENDPOINT` and `OUTTURN_S3_BUCKET`, its address
-only, never its keys): same scheme, host and port, a path inside the bucket,
-no user, no fragment, nothing percent-encoded that could walk out of the
-bucket once the store resolves it. Then it vets the request as it vets any
-other, opens the link, and streams the object into the outgoing request with
-the stated `Content-Length`. If the store answers with a different length,
-nothing is sent.
+```
+POST /v1/egress
+Content-Type: application/vnd.outturn.egress-stream
 
-So the bytes go from storage to the recipient through the gateway alone: not
-through the guest, not through the runtime's memory, and not base64-encoded
-along the way. The size bound is the request's time allowance, not a pod's
-memory.
+[4 bytes: n, big-endian] [n bytes: the request as JSON] [size bytes: the file]
+```
 
-## What it costs, and why it is safe
+The JSON is the ordinary egress request (method, URL, headers, gates,
+proof) with `body_size` in place of `body`. The handler reads the raw body:
+JSON as before, bounded as before, and the stream only under its own content
+type, with `n` checked against `file_body::HEAD_LIMIT` before anything is
+allocated. The gateway reads the head whole, then vets the request exactly as
+it vets any other -- rule, proof, address, credential, gates -- before it
+reads a byte of the file. A head carrying `body_size` without the stream, or
+the stream under the API's document-fetch token, is refused there.
 
-**The link is the runtime's to write.** That is the one thing here a
-compromised runtime chooses, and without the store check the gateway would
-read any URL it was handed from inside the cluster and send the answer to a
-host an agent may reach -- a way past every egress rule there is. `Store::admit`
-is that check, and `crates/gateway/src/egress/mod.rs`'s `file_bodies` tests
-refuse each way around it before anything reaches the transport.
+Allowed, the rest of the stream becomes the outgoing request's body, with
+`Content-Length: body_size`. The gateway passes on at most `body_size` bytes
+and fails the send if the stream ends short; the runtime counts too and stops
+if storage hands it more or less than it declared. Each chunk must arrive
+within `file_body::IDLE`, and the outgoing request gets
+`file_body::TIMEOUT` (ten minutes) in place of the ordinary thirty seconds,
+since thirty seconds is a sustained 9 Mbit/s for a file at the limit.
 
-**The runtime signs something.** *The runtime signs nothing* in
-[invariants.md](invariants.md) is about authority: it holds no key that could
-mint a token for anyone. A presigned link is the same SigV4 signature the
-runtime puts on every storage request it already makes, handed on for one
-object, for reading, for two minutes. It grants nothing the runtime could not
-already read, so a compromised one gains nothing by it.
+The runtime charges what it holds in flight -- a chunk or two -- rather than
+the file, since the file is never held.
 
-**The gateway reaches the object store.** One more line in each network
-policy (`k8s/base`, and `outturn-object-storage` in `k8s/deploy`). It holds no
-storage credential, so it can read only what a valid link names.
+So the bytes go from storage through the runtime and the gateway to the
+recipient a chunk at a time: neither tier holds the file, nothing is
+base64-encoded, and the gateway reaches nothing it did not reach before. The
+size bound is the request's time allowance, not a pod's memory.
+
+### A refusal before the file is read
+
+The gateway answers a refused request without wanting the file. Between
+these two tiers the connection is HTTP/1.1, and answering while the body is
+still arriving makes the gateway's close a reset that often loses the answer
+already sent -- a refusal the runtime would have to call did-not-complete. So
+it reads and discards the rest first: at most `body_size` bytes, each within
+`file_body::IDLE`. If the runtime stalls, it answers anyway and closes.
+
+### A file that fails partway
+
+The runtime stops the stream. The gateway's send fails mid-body, which the
+transport already reports as possibly landed; a recipient honoring
+`Content-Length` sees a short body and rejects it. Reported to the agent as
+did-not-complete, as any request cut off mid-write is.
+
+## Why not a link
+
+The first version had the runtime presign a storage URL and the gateway read
+it. It avoided the extra hop, but gave the gateway a path to the object store
+and made it follow a URL the runtime wrote -- an SSRF boundary that would
+have had to stay right forever. Streaming keeps both tiers inside what they
+already reach and trust.
 
 ## Approvals
 
 A file body on a request that needs approving is refused, not held. What a
 person approves is what is sent (see *The approval carries the call* in
-[approvals.md](approvals.md)), and a held file is a link that lapses to a path
-whose contents can change before anybody answers. The refusal is worded
+[approvals.md](approvals.md)), and a held file is a path whose contents can
+change before anybody answers. The refusal is worded
 unlike the one the runtime turns into an approval, so nobody is asked about
 something that could never be sent as they saw it.
 
-Holding one is the next step: keep the path and a SHA-256 of the bytes, sign
-a fresh link when the approval comes, and have the gateway hash as it streams
-and refuse a send whose digest has changed.
+Holding one is the next step: keep the path and a SHA-256 of the bytes,
+stream the file again when the approval comes, and have the gateway hash as
+it streams and fail a send whose digest has changed.
 
 ## Not yet
 

@@ -78,10 +78,8 @@ impl AgentHost {
                 egress::Refused::Unproven(rule.host.clone()).to_string()
             })?;
 
-        // A file sent as the body, as a link the gateway reads it through. Read
-        // permission is checked here, as for any read: the link grants nothing
-        // this tier could not already read, and the gateway reads only the
-        // store with it.
+        // A file sent as the body, streamed behind the request rather than
+        // held. Read permission is checked here, as for any read.
         let body_file = match request.body_file.take() {
             None => None,
             Some(_) if request.body.is_some() => {
@@ -152,10 +150,11 @@ impl AgentHost {
                 url: request.url,
                 headers: request.headers,
                 body: request.body,
-                body_file,
+                body_size: body_file.as_ref().map(|f| f.size),
                 proof,
                 gates,
             },
+            body_file,
         )
         .await;
 
@@ -261,7 +260,12 @@ impl AgentHost {
         // The body as the guest gave it and as it is sent on, held for the
         // call. What comes back is not charged: nothing yet bounds it (see
         // docs/roadmap.md).
-        let body = request.body.as_ref().map_or(0, |b| b.len() as u64);
+        // A file body is never held: what is in flight is a chunk read from
+        // storage and the one being written on, so that is what is charged.
+        let body = match &request.body_file {
+            Some(_) => 2 * outturn_core::egress::file_body::CHUNK as u64,
+            None => request.body.as_ref().map_or(0, |b| b.len() as u64),
+        };
         let _charge = self.charge(body.saturating_mul(2), "make a request")?;
         let token = self.current_token().await;
         let gates = self.gates.clone();

@@ -42,65 +42,12 @@ pub struct VettedRequest {
     pub addrs: Vec<SocketAddr>,
     pub headers: reqwest::header::HeaderMap,
     pub body: Option<String>,
-    /// A stored file to send as the body instead, already checked to be one.
-    pub body_file: Option<StoredBody>,
+    /// A file streaming in from the runtime, to send as the body instead.
+    pub body_file: Option<super::file::FileBody>,
     pub timeout: Duration,
     /// How much of the response to keep. A body is written by somebody else,
     /// and one that never ends is a way to exhaust whoever is reading it.
     pub body_limit: usize,
-}
-
-/// A file to send as a body: a link into the object store that the gateway
-/// has already admitted (`file_body::Store::admit`), and the size it was said
-/// to be.
-#[derive(Debug, Clone)]
-pub struct StoredBody {
-    pub url: reqwest::Url,
-    pub size: u64,
-}
-
-/// Opens a stored file for streaming into a request, as exactly `size` bytes.
-///
-/// From the store, not the internet: no pinning and no vetting, because the
-/// link was admitted for being the store and nothing else. Redirects are not
-/// followed, so the store cannot point it elsewhere either. Failing here is
-/// failing before anything was sent.
-async fn open_stored(
-    file: &StoredBody,
-    timeout: Duration,
-) -> Result<reqwest::Body, TransportError> {
-    static STORE: std::sync::LazyLock<Result<reqwest::Client, String>> =
-        std::sync::LazyLock::new(|| {
-            reqwest::Client::builder()
-                .connect_timeout(outturn_core::http_client::CONNECT_TIMEOUT)
-                .redirect(reqwest::redirect::Policy::none())
-                .no_proxy()
-                .build()
-                .map_err(|e| e.to_string())
-        });
-    let client = STORE
-        .as_ref()
-        .map_err(|e| TransportError::Malformed(e.clone()))?;
-    let unread =
-        |why: String| TransportError::NotSent(format!("the file could not be read: {why}"));
-    let response = client
-        .get(file.url.clone())
-        .timeout(timeout)
-        .send()
-        .await
-        .map_err(|e| unread(describe(&e)))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(unread("it is no longer there".into()));
-    }
-    if !response.status().is_success() {
-        return Err(unread(format!("storage answered {}", response.status())));
-    }
-    // The size the runtime said, or nothing: a body that differs from what
-    // was stat'd is not the file that was asked about.
-    if response.content_length() != Some(file.size) {
-        return Err(unread("it changed while it was being sent".into()));
-    }
-    Ok(reqwest::Body::wrap_stream(response.bytes_stream()))
 }
 
 /// What came back, already bounded.
@@ -187,7 +134,7 @@ impl EgressTransport for Direct {
         if let Some(file) = &request.body_file {
             outgoing = outgoing
                 .header(reqwest::header::CONTENT_LENGTH, file.size)
-                .body(open_stored(file, request.timeout).await?);
+                .body(reqwest::Body::wrap_stream(file.stream()));
         }
 
         // Told apart by the step that failed. A connect error is raised before
@@ -462,89 +409,49 @@ mod tests {
         assert_eq!(clients.len(), 2);
     }
 
-    /// Serves `router` on a local port and says where.
-    async fn serve(router: axum::Router) -> SocketAddr {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        addr
-    }
-
-    /// A stored file reaches the recipient as it was stored, every byte, with
-    /// the length it was said to have.
+    /// A file streamed in reaches the recipient as it came, every byte, under
+    /// the length it was declared with.
     #[tokio::test]
-    async fn a_stored_file_is_streamed_into_the_request() {
-        let stored: Vec<u8> = (0..=255u8).cycle().take(300_000).collect();
-        let served = stored.clone();
-        let store = serve(axum::Router::new().route(
-            "/outturn/a.heic",
-            axum::routing::get(move || {
-                let served = served.clone();
-                async move { served }
-            }),
-        ))
-        .await;
+    async fn a_streamed_file_is_sent_whole_under_its_length() {
+        let file: Vec<u8> = (0..=255u8).cycle().take(300_000).collect();
+        let mut framed = outturn_core::egress::file_body::head(b"{}");
+        framed.extend_from_slice(&file);
+        let pieces: Vec<Result<bytes::Bytes, std::io::Error>> = framed
+            .chunks(7_001)
+            .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+            .collect();
+        let (_, rest) = super::super::file::FileBody::read_head(futures::stream::iter(pieces))
+            .await
+            .unwrap();
+
         let received = std::sync::Arc::new(std::sync::Mutex::new(None));
         let into = received.clone();
-        let recipient = serve(axum::Router::new().route(
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new().route(
             "/charge",
             axum::routing::post(
                 move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
                     let into = into.clone();
                     async move {
-                        *into.lock().unwrap() = Some((
-                            headers
-                                .get("content-length")
-                                .map(|v| v.to_str().unwrap().to_string()),
-                            body.to_vec(),
-                        ));
+                        let length = headers
+                            .get("content-length")
+                            .map(|v| v.to_str().unwrap().to_string());
+                        *into.lock().unwrap() = Some((length, body.to_vec()));
                         "ok"
                     }
                 },
             ),
-        ))
-        .await;
+        );
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-        let mut request = vetted(recipient);
+        let mut request = vetted(addr);
         request.body = None;
-        request.body_file = Some(StoredBody {
-            url: format!("http://{store}/outturn/a.heic").parse().unwrap(),
-            size: stored.len() as u64,
-        });
+        request.body_file = Some(rest.declare(file.len() as u64));
         let answer = Direct.send(request).await.expect("sent");
         assert_eq!(answer.status, 200);
         let (length, body) = received.lock().unwrap().take().expect("received");
         assert_eq!(length.as_deref(), Some("300000"));
-        assert!(body == stored, "the bytes arrived as they were stored");
-    }
-
-    /// A file that is not the size it was said to be is not sent: it is not
-    /// the file anybody asked about, and nothing has gone yet to say otherwise.
-    #[tokio::test]
-    async fn a_stored_file_of_another_size_is_not_sent() {
-        let store = serve(axum::Router::new().route(
-            "/outturn/a.heic",
-            axum::routing::get(|| async { vec![1u8; 10] }),
-        ))
-        .await;
-        let reached = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mark = reached.clone();
-        let recipient = serve(axum::Router::new().route(
-            "/charge",
-            axum::routing::post(move || {
-                mark.store(true, std::sync::atomic::Ordering::SeqCst);
-                async { "ok" }
-            }),
-        ))
-        .await;
-        let mut request = vetted(recipient);
-        request.body = None;
-        request.body_file = Some(StoredBody {
-            url: format!("http://{store}/outturn/a.heic").parse().unwrap(),
-            size: 11,
-        });
-        let failed = Direct.send(request).await.expect_err("refused");
-        assert!(matches!(failed, TransportError::NotSent(_)), "{failed:?}");
-        assert!(!reached.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(body == file, "the bytes arrived as they were streamed");
     }
 }

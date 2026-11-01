@@ -27,6 +27,7 @@
 //! See `transport`.
 
 pub mod client;
+pub mod file;
 pub use outturn_core::egress::internal;
 pub mod sealed;
 pub mod transport;
@@ -80,9 +81,10 @@ pub struct EgressRequest {
     pub headers: Vec<(String, String)>,
     #[serde(default)]
     pub body: Option<String>,
-    /// A stored file to send as the body instead. See docs/file-bodies.md.
+    /// How long the file streamed after this request is, when it came as a
+    /// stream rather than as JSON. See docs/file-bodies.md.
     #[serde(default)]
-    pub body_file: Option<outturn_core::egress::file_body::BodyFile>,
+    pub body_size: Option<u64>,
     /// The rule the caller matched, and the proof that the API vouched for it.
     pub proof: commit::Proof,
 }
@@ -111,9 +113,71 @@ pub struct EgressResponse {
 pub async fn fetch(
     state: State<Arc<super::GatewayState>>,
     headers: HeaderMap,
-    request: Json<EgressRequest>,
+    body: axum::body::Body,
 ) -> Response {
-    match vet_and_send(state, headers, request).await {
+    use outturn_core::egress::file_body;
+    let streamed = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .is_some_and(|v| v == file_body::CONTENT_TYPE);
+    if !streamed {
+        // The JSON form, bounded as `Json` bounded it.
+        let bytes = match axum::body::to_bytes(body, file_body::HEAD_LIMIT as usize).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return (StatusCode::PAYLOAD_TOO_LARGE, "that request is too large")
+                    .into_response();
+            }
+        };
+        let request: EgressRequest = match serde_json::from_slice(&bytes) {
+            Ok(request) => request,
+            Err(e) => {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("that request is not one: {e}"),
+                )
+                    .into_response();
+            }
+        };
+        if request.body_size.is_some() {
+            return (StatusCode::BAD_REQUEST, "a file is sent as a stream").into_response();
+        }
+        return answer(vet_and_send(state, headers, Json(request), None).await);
+    }
+
+    // The streamed form: the head is read and vetted before any of the file.
+    let chunks = futures::StreamExt::map(body.into_data_stream(), |chunk| {
+        chunk.map_err(std::io::Error::other)
+    });
+    let (head, rest) = match file::FileBody::read_head(chunks).await {
+        Ok(read) => read,
+        Err(why) => return (StatusCode::BAD_REQUEST, why).into_response(),
+    };
+    let request: Result<EgressRequest, String> =
+        serde_json::from_slice(&head).map_err(|e| format!("that request is not one: {e}"));
+    let size = request.as_ref().ok().and_then(|r| r.body_size).unwrap_or(0);
+    let file = rest.declare(size.min(file_body::LIMIT));
+    let outcome = match request {
+        Err(why) => Err((StatusCode::UNPROCESSABLE_ENTITY, why)),
+        Ok(r) if r.body_size.is_none() || r.body.is_some() => Err((
+            StatusCode::BAD_REQUEST,
+            "a streamed request carries a file and no other body".to_string(),
+        )),
+        Ok(_) if size > file_body::LIMIT => Err((
+            StatusCode::BAD_REQUEST,
+            "that file is larger than can be sent".to_string(),
+        )),
+        Ok(r) => vet_and_send(state, headers, Json(r), Some(file.clone())).await,
+    };
+    // Whatever of the file was not sent is read off before anybody is
+    // answered, so the answer arrives rather than a reset (docs/file-bodies.md).
+    file.drain().await;
+    answer(outcome)
+}
+
+fn answer(
+    outcome: Result<Result<EgressResponse, TransportError>, (StatusCode, String)>,
+) -> Response {
+    match outcome {
         Ok(Ok(response)) => Json(response).into_response(),
         Err(refused) => refused.into_response(),
         // A failed request is not a refusal: the caller was allowed, and the
@@ -173,7 +237,8 @@ fn needs_approval(
 async fn vet_and_send(
     State(state): State<Arc<super::GatewayState>>,
     headers: HeaderMap,
-    Json(mut request): Json<EgressRequest>,
+    Json(request): Json<EgressRequest>,
+    body_file: Option<file::FileBody>,
 ) -> Result<Result<EgressResponse, TransportError>, (StatusCode, String)> {
     // The token is the whole basis of this. It says which workspace is calling
     // and what its rules hashed to, and the caller cannot write either.
@@ -228,39 +293,13 @@ async fn vet_and_send(
     let url = reqwest::Url::parse(&request.url)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("that URL is not one: {e}")))?;
 
-    // A file for the body, read only from the object store. The link is the
-    // runtime's to choose, so this is what keeps it from naming anything else
-    // inside the network for this tier to read and send on.
-    let body_file = match request.body_file.take() {
-        None => None,
-        Some(_) if request.body.is_some() || document => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "send a body or a file, not both".to_string(),
-            ));
-        }
-        Some(file) => {
-            let store = state.body_store.as_ref().ok_or_else(|| {
-                (
-                    StatusCode::FORBIDDEN,
-                    "files cannot be sent from this deployment".to_string(),
-                )
-            })?;
-            let link = store
-                .admit(&file.url)
-                .map_err(|why| (StatusCode::FORBIDDEN, why))?;
-            if file.size > outturn_core::egress::file_body::LIMIT {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    "that file is larger than can be sent".to_string(),
-                ));
-            }
-            Some(transport::StoredBody {
-                url: link,
-                size: file.size,
-            })
-        }
-    };
+    // A document is fetched, never sent to, and never with a file.
+    if body_file.is_some() && document {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "a document is fetched, never sent to".to_string(),
+        ));
+    }
 
     // Matched against the vouched rules rather than the sent ones: the host
     // has to be allowed by a rule the API committed to, and the rule that
@@ -763,8 +802,12 @@ async fn vet_and_send(
         addrs,
         headers: outgoing,
         body,
+        timeout: if body_file.is_some() {
+            outturn_core::egress::file_body::TIMEOUT
+        } else {
+            FETCH_TIMEOUT
+        },
         body_file,
-        timeout: FETCH_TIMEOUT,
         body_limit: if document {
             DOCUMENT_BODY_LIMIT
         } else {
@@ -1341,10 +1384,10 @@ mod client_credentials {
                 gates: outturn_core::egress::gate::Gates::none(),
                 headers: Vec::new(),
                 body: None,
-                body_file: None,
+                body_size: None,
                 proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
             };
-            let got = vet_and_send(State(state.clone()), headers.clone(), Json(request))
+            let got = vet_and_send(State(state.clone()), headers.clone(), Json(request), None)
                 .await
                 .map_err(|(s, m)| format!("{s}: {m}"))
                 .expect("allowed")
@@ -1466,10 +1509,10 @@ mod client_credentials {
                 gates: outturn_core::egress::gate::Gates::none(),
                 headers: Vec::new(),
                 body: None,
-                body_file: None,
+                body_size: None,
                 proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
             };
-            vet_and_send(State(state), headers, Json(request))
+            vet_and_send(State(state), headers, Json(request), None)
         };
 
         let dana = uuid::Uuid::now_v7();
@@ -1603,11 +1646,11 @@ mod client_credentials {
                 gates: outturn_core::egress::gate::Gates::none(),
                 headers: Vec::new(),
                 body: None,
-                body_file: None,
+                body_size: None,
                 proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
             };
             async move {
-                vet_and_send(State(state), headers, Json(request))
+                vet_and_send(State(state), headers, Json(request), None)
                     .await
                     .and_then(|sent| {
                         sent.map(|_| ())
@@ -1806,10 +1849,10 @@ mod client_credentials {
                 gates: gates.clone(),
                 headers: Vec::new(),
                 body: Some(body.into()),
-                body_file: None,
+                body_size: None,
                 proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
             };
-            let refused = vet_and_send(State(state.clone()), headers.clone(), Json(request))
+            let refused = vet_and_send(State(state.clone()), headers.clone(), Json(request), None)
                 .await
                 .expect_err("refused");
             assert_eq!(refused.0, StatusCode::FORBIDDEN);
@@ -1840,10 +1883,10 @@ mod client_credentials {
             gates,
             headers: Vec::new(),
             body: Some(r#"{"amount_pence":40}"#.into()),
-            body_file: None,
+            body_size: None,
             proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
         };
-        let refused = vet_and_send(State(state.clone()), headers, Json(request))
+        let refused = vet_and_send(State(state.clone()), headers, Json(request), None)
             .await
             .expect_err("refused");
         assert!(
@@ -1854,31 +1897,41 @@ mod client_credentials {
     }
 }
 
-/// A file sent as a body: read from the object store and nowhere else, and
-/// never where a person would have to approve it.
+/// A file streamed in as a body, through the handler as the runtime sends it:
+/// vetted before any of it is read, forwarded to its length, and drained on
+/// every refusal so the refusal is what the runtime hears.
 #[cfg(test)]
 mod file_bodies {
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::transport::{EgressTransport, TransportError, TransportResponse, VettedRequest};
     use super::*;
-    use outturn_core::egress::file_body::{BodyFile, Store};
+    use futures::StreamExt;
+    use outturn_core::egress::file_body::{CONTENT_TYPE, LIMIT, head};
     use outturn_core::egress::gate::{Gate, Gates};
     use outturn_core::egress::rule::EgressRule;
 
+    /// Reads the file it is handed, as a transport sending it would.
     #[derive(Default)]
-    struct Recorder(Mutex<Vec<Option<String>>>);
+    struct Recipient(Mutex<Vec<Vec<u8>>>);
 
     #[async_trait::async_trait]
-    impl EgressTransport for Recorder {
+    impl EgressTransport for Recipient {
         fn name(&self) -> &'static str {
-            "recorder"
+            "recipient"
         }
         async fn send(&self, request: VettedRequest) -> Result<TransportResponse, TransportError> {
-            self.0
-                .lock()
-                .unwrap()
-                .push(request.body_file.map(|f| f.url.to_string()));
+            let mut got = Vec::new();
+            if let Some(file) = &request.body_file {
+                let mut s = std::pin::pin!(file.stream());
+                while let Some(chunk) = s.next().await {
+                    got.extend_from_slice(
+                        &chunk.map_err(|e| TransportError::Unreachable(e.to_string()))?,
+                    );
+                }
+            }
+            self.0.lock().unwrap().push(got);
             Ok(TransportResponse {
                 status: 200,
                 headers: Vec::new(),
@@ -1888,16 +1941,34 @@ mod file_bodies {
         }
     }
 
-    const LINK: &str = "http://outturn-minio:9000/outturn/ws/session/a.heic?X-Amz-Signature=ab";
-
-    /// Sends a PUT of `file` to the one allowed host, under `gates`, and says
-    /// what the gateway made of it and what reached the transport.
-    async fn send(
-        store: Option<Store>,
+    struct Call {
+        method: &'static str,
         gates: Vec<Gate>,
-        file: BodyFile,
-        body: Option<&str>,
-    ) -> (Result<(), String>, Vec<Option<String>>) {
+        document: bool,
+        body: Option<&'static str>,
+        body_size: Option<u64>,
+        file: Vec<u8>,
+        /// Sent as JSON, with no stream, as a runtime predating files would.
+        json_form: bool,
+    }
+
+    impl Default for Call {
+        fn default() -> Self {
+            Self {
+                method: "PUT",
+                gates: Vec::new(),
+                document: false,
+                body: None,
+                body_size: Some(10),
+                file: b"0123456789".to_vec(),
+                json_form: false,
+            }
+        }
+    }
+
+    /// Streams `call` through `fetch`, and says what came back, what reached
+    /// the recipient, and how many of the file's chunks were read off.
+    async fn send(call: Call) -> (StatusCode, String, Vec<Vec<u8>>, usize, usize) {
         let seed = [17u8; 32];
         let minter = outturn_core::auth::TokenMinter::new(&seed).expect("minter");
         let validator = outturn_core::auth::TokenValidator::new(
@@ -1905,11 +1976,11 @@ mod file_bodies {
             outturn_core::auth::AUDIENCE_GATEWAY,
         )
         .expect("validator");
-        let sent = Arc::new(Recorder::default());
-        let mut state = super::super::GatewayState::new(Vec::new(), validator)
-            .with_egress_transport(sent.clone());
-        state.body_store = store;
-        let state = Arc::new(state);
+        let recipient = Arc::new(Recipient::default());
+        let state = Arc::new(
+            super::super::GatewayState::new(Vec::new(), validator)
+                .with_egress_transport(recipient.clone()),
+        );
 
         let workspace = uuid::Uuid::now_v7();
         let rule = EgressRule {
@@ -1922,97 +1993,81 @@ mod file_bodies {
             on_behalf_of: false,
         };
         let rules = vec![rule.clone()];
-        let gates = Gates::of(gates);
-        let token = minter
-            .mint_turn(
+        let gates = Gates::of(call.gates);
+        let token = if call.document {
+            minter.mint_document_fetch(
+                uuid::Uuid::now_v7(),
+                workspace,
+                commit::root(workspace, &rules),
+                gates.root(workspace),
+            )
+        } else {
+            minter.mint_turn(
                 uuid::Uuid::now_v7(),
                 workspace,
                 commit::root(workspace, &rules),
                 gates.root(workspace),
                 None,
             )
-            .expect("turn token");
+        }
+        .expect("token");
         let mut headers = HeaderMap::new();
         headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
-        let request = EgressRequest {
-            method: "PUT".into(),
-            url: "https://93.184.215.14/meta".into(),
-            gates,
-            headers: Vec::new(),
-            body: body.map(str::to_string),
-            body_file: Some(file),
-            proof: commit::prove(workspace, &rules, &rule).expect("in the set"),
-        };
-        let outcome = vet_and_send(State(state), headers, Json(request))
-            .await
-            .map(|_| ())
-            .map_err(|(_, why)| why);
-        let sent = sent.0.lock().unwrap().clone();
-        (outcome, sent)
-    }
-
-    fn store() -> Option<Store> {
-        Store::new("http://outturn-minio:9000", "outturn")
-    }
-
-    fn file(url: &str) -> BodyFile {
-        BodyFile {
-            url: url.into(),
-            size: 10,
+        if !call.json_form {
+            headers.insert("content-type", CONTENT_TYPE.parse().unwrap());
         }
-    }
+        let request = serde_json::json!({
+            "method": call.method,
+            "url": "https://93.184.215.14/meta",
+            "gates": gates,
+            "headers": [],
+            "body": call.body,
+            "body_size": call.body_size,
+            "proof": commit::prove(workspace, &rules, &rule).expect("in the set"),
+        });
 
-    #[tokio::test]
-    async fn a_file_from_the_store_is_handed_to_the_transport() {
-        let (outcome, sent) = send(store(), Vec::new(), file(LINK), None).await;
-        assert_eq!(outcome, Ok(()));
-        assert_eq!(sent, vec![Some(LINK.to_string())]);
-    }
+        // The file in small pieces, counted as they are read.
+        let read = Arc::new(AtomicUsize::new(0));
+        let counted = read.clone();
+        let mut pieces = vec![head(&serde_json::to_vec(&request).unwrap())];
+        pieces.extend(call.file.chunks(3).map(<[u8]>::to_vec));
+        let total = pieces.len();
+        let stream = futures::stream::iter(pieces).map(move |p| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Ok::<_, std::io::Error>(bytes::Bytes::from(p))
+        });
 
-    /// The link is the runtime's to write. Followed anywhere but the store, it
-    /// would have this tier read from inside the cluster on the runtime's say
-    /// and send the answer to a host an agent may reach.
-    #[tokio::test]
-    async fn a_link_anywhere_but_the_store_is_refused_before_anything_is_sent() {
-        let (outcome, sent) = send(
-            store(),
-            Vec::new(),
-            file("http://outturn-api:8080/v1/workspaces"),
-            None,
+        let body = if call.json_form {
+            axum::body::Body::from(request.to_string())
+        } else {
+            axum::body::Body::from_stream(stream)
+        };
+        let response = fetch(State(state), headers, body).await;
+        let status = response.status();
+        let text = String::from_utf8(
+            axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
         )
-        .await;
-        assert!(outcome.is_err());
-        assert!(sent.is_empty(), "nothing reached the transport");
+        .unwrap();
+        let sent = recipient.0.lock().unwrap().clone();
+        (status, text, sent, read.load(Ordering::SeqCst), total)
     }
 
     #[tokio::test]
-    async fn a_deployment_with_no_store_sends_no_files() {
-        let (outcome, sent) = send(None, Vec::new(), file(LINK), None).await;
-        assert!(outcome.unwrap_err().contains("cannot be sent"));
-        assert!(sent.is_empty());
+    async fn an_allowed_file_reaches_the_recipient_to_the_byte() {
+        let (status, _, sent, read, total) = send(Call::default()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(sent, vec![b"0123456789".to_vec()]);
+        assert_eq!(read, total);
     }
 
+    /// Every refusal, and each is answered only after the file has been read
+    /// off, so the runtime hears it rather than a reset.
     #[tokio::test]
-    async fn a_file_is_refused_beside_a_body() {
-        let (outcome, sent) = send(store(), Vec::new(), file(LINK), Some("{}")).await;
-        assert!(outcome.is_err());
-        assert!(sent.is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_file_too_large_to_send_is_refused() {
-        let mut big = file(LINK);
-        big.size = outturn_core::egress::file_body::LIMIT + 1;
-        let (outcome, sent) = send(store(), Vec::new(), big, None).await;
-        assert!(outcome.is_err());
-        assert!(sent.is_empty());
-    }
-
-    /// Refused rather than held: what would be held is a link that lapses, to
-    /// a path whose contents can change before anybody answers.
-    #[tokio::test]
-    async fn a_file_where_sending_needs_approving_is_refused_not_held() {
-        let gate = Gate {
+    async fn a_refused_file_is_drained_and_never_sent() {
+        let upload = Gate {
             requires: "upload".into(),
             host: "93.184.215.14".into(),
             method: "PUT".into(),
@@ -2020,13 +2075,97 @@ mod file_bodies {
             identified_by: None,
             binds: Vec::new(),
         };
-        let (outcome, sent) = send(store(), vec![gate], file(LINK), None).await;
-        let why = outcome.unwrap_err();
-        assert!(why.contains("needs approving"), "{why}");
+        for (why, call, says) in [
+            (
+                "gated",
+                Call {
+                    gates: vec![upload],
+                    ..Default::default()
+                },
+                "needs approving",
+            ),
+            (
+                "beside a body",
+                Call {
+                    body: Some("{}"),
+                    ..Default::default()
+                },
+                "no other body",
+            ),
+            (
+                "too large",
+                Call {
+                    body_size: Some(LIMIT + 1),
+                    ..Default::default()
+                },
+                "larger than",
+            ),
+            (
+                "by the document token",
+                Call {
+                    method: "GET",
+                    document: true,
+                    ..Default::default()
+                },
+                "never sent to",
+            ),
+        ] {
+            let (status, text, sent, read, total) = send(call).await;
+            assert!(!status.is_success(), "{why}: {status}");
+            assert!(text.contains(says), "{why}: {text}");
+            assert!(sent.is_empty(), "{why}: nothing reached the recipient");
+            assert_eq!(
+                read, total,
+                "{why}: the file was read off before the answer"
+            );
+        }
+    }
+
+    /// A gated file is refused in words unlike the refusal the runtime turns
+    /// into somebody being asked: nobody is asked about a send that could not
+    /// go as they saw it.
+    #[tokio::test]
+    async fn a_gated_file_is_not_put_to_anybody() {
+        let (_, text, ..) = send(Call {
+            gates: vec![Gate {
+                requires: "upload".into(),
+                host: "93.184.215.14".into(),
+                method: "PUT".into(),
+                path: "/meta".into(),
+                identified_by: None,
+                binds: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await;
         assert!(
-            !why.contains("needs approval before it can go out"),
-            "not the refusal the runtime turns into an approval: {why}"
+            !text.contains("needs approval before it can go out"),
+            "{text}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_file_that_ends_short_is_not_answered_as_sent() {
+        let (status, _, sent, ..) = send(Call {
+            body_size: Some(20),
+            ..Default::default()
+        })
+        .await;
+        assert!(!status.is_success(), "{status}");
+        assert!(sent.is_empty());
+    }
+
+    /// A size with no stream behind it is a request for a file that is not
+    /// there, so it is refused rather than sent with no body.
+    #[tokio::test]
+    async fn a_file_size_in_the_json_form_is_refused() {
+        let (status, text, sent, ..) = send(Call {
+            json_form: true,
+            ..Default::default()
+        })
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(text.contains("sent as a stream"), "{text}");
         assert!(sent.is_empty());
     }
 }

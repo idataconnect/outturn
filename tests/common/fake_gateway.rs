@@ -233,8 +233,23 @@ impl FakeGateway {
 
 async fn egress(
     State(state): State<Arc<GatewayInner>>,
-    Json(request): Json<serde_json::Value>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
 ) -> Response {
+    // Either form the runtime sends: JSON, or the streamed form with a file
+    // behind its head, recorded here with the file's bytes as `file`.
+    let streamed = headers
+        .get("content-type")
+        .is_some_and(|v| v == outturn::egress::file_body::CONTENT_TYPE);
+    let request: serde_json::Value = if streamed {
+        let n = u32::from_be_bytes(body[..4].try_into().expect("a head")) as usize;
+        let mut request: serde_json::Value =
+            serde_json::from_slice(&body[4..4 + n]).expect("the head is JSON");
+        request["file"] = serde_json::Value::from(body[4 + n..].to_vec());
+        request
+    } else {
+        serde_json::from_slice(&body).expect("JSON")
+    };
     let failure = state.egress_failure.lock().unwrap().clone();
     if let Some((mark, detail)) = failure {
         state.fetched.lock().unwrap().push(request);
