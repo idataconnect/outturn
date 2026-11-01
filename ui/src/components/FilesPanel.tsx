@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Building2, Check, ChevronDown, Clock, Download, FileText, MessagesSquare, Trash2, Upload } from 'lucide-react'
+import { Building2, Check, ChevronDown, Clock, Download, FileText, FolderUp, MessagesSquare, RotateCw, Trash2, Upload, X } from 'lucide-react'
 
 import { FULL, bytesLabel, getStorage } from '../lib/storage'
 import { ApiError } from '../lib/api'
@@ -7,11 +7,11 @@ import {
   deleteFile,
   fileUrl,
   listFiles,
-  uploadFile,
   type FilePage,
   type StoredFile,
 } from '../lib/chat'
 import FilePreview from './FilePreview'
+import { sendFile, type Progress } from '../lib/uploads'
 import { useSession } from '../lib/session'
 import { iconButton, iconButtonDanger } from '../lib/buttons'
 
@@ -51,6 +51,87 @@ const SCOPES: {
   },
 ]
 
+/** Files sent at once; each large one also sends a few pieces at once. */
+const FILES_AT_ONCE = 3
+
+/** One file on its way in, as the queue shows it. */
+interface Queued {
+  id: number
+  scope: Scope
+  /** Under the scope, with the folders it came from. */
+  path: string
+  file: File
+  state: 'waiting' | 'sending' | 'done' | 'failed' | 'present'
+  progress?: Progress
+  error?: string
+}
+
+/** A file and where under the scope it goes. */
+interface Picked {
+  file: File
+  path: string
+}
+
+/** Everything in what was dropped, folders walked, each file with the
+ *  folders it was in. */
+async function droppedFiles(items: DataTransferItemList): Promise<Picked[]> {
+  const out: Picked[] = []
+  const walk = async (entry: FileSystemEntry, prefix: string): Promise<void> => {
+    if (entry.isFile) {
+      const file = await new Promise<File>((ok, fail) =>
+        (entry as FileSystemFileEntry).file(ok, fail),
+      )
+      out.push({ file, path: prefix + file.name })
+    } else if (entry.isDirectory) {
+      const reader = (entry as FileSystemDirectoryEntry).createReader()
+      // A directory reader hands entries back in batches until an empty one.
+      for (;;) {
+        const batch = await new Promise<FileSystemEntry[]>((ok, fail) =>
+          reader.readEntries(ok, fail),
+        )
+        if (batch.length === 0) break
+        for (const child of batch) await walk(child, `${prefix}${entry.name}/`)
+      }
+    }
+  }
+  const entries = Array.from(items)
+    .map((i) => i.webkitGetAsEntry?.())
+    .filter((e): e is FileSystemEntry => !!e)
+  for (const entry of entries) await walk(entry, '')
+  return out
+}
+
+/** The queue as a whole, in words: what is in, of what was sent, and what
+ *  was already here and so not sent. */
+function queueSummary(queue: Queued[]): string {
+  const present = queue.filter((q) => q.state === 'present').length
+  const sent = queue.length - present
+  const done = queue.filter((q) => q.state === 'done').length
+  const parts: string[] = []
+  if (sent > 0) parts.push(`${done} of ${sent} uploaded`)
+  if (present > 0) parts.push(`${present} already here`)
+  return parts.join(' · ')
+}
+
+/** How far one file has got, in words. */
+function progressLabel(q: Queued): string {
+  switch (q.state) {
+    case 'waiting':
+      return `Waiting · ${bytesLabel(q.file.size)}`
+    case 'present':
+      return 'Already here, same size'
+    case 'done':
+      return `Uploaded · ${bytesLabel(q.file.size)}`
+    case 'failed':
+      return q.error ?? 'Upload failed'
+    case 'sending': {
+      const p = q.progress
+      if (!p?.pieces) return `Uploading · ${bytesLabel(q.file.size)}`
+      return `${bytesLabel(p.sent)} of ${bytesLabel(p.size)} · piece ${p.pieces.done} of ${p.pieces.total}`
+    }
+  }
+}
+
 /**
  * The files a conversation can reach, and a way to add one.
  *
@@ -77,7 +158,6 @@ export default function FilesPanel({
   // Where each scope with more files than the first page held goes on.
   const [more, setMore] = useState<FilePage['more']>({})
   const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
   // Whether the workspace has room, so a full one is told before anybody
   // picks a file rather than after it fails.
   const [full, setFull] = useState(false)
@@ -118,23 +198,83 @@ export default function FilesPanel({
     }
   }, [writable, scope])
 
-  async function onPick(list: FileList | null) {
-    if (!list || list.length === 0) return
-    setBusy(true)
-    try {
-      for (const file of Array.from(list)) {
-        await uploadFile(sessionId, scope, file)
-      }
-      await load()
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'upload failed')
-      // Refused for room: the notice says so from here on.
-      if (e instanceof ApiError && e.code === 'too_large') setFull(true)
-    } finally {
-      setBusy(false)
-      if (input.current) input.current.value = ''
+  // Files on their way in. Kept beside the list until dismissed, so a
+  // failure stays where it can be retried.
+  const [queue, setQueue] = useState<Queued[]>([])
+  const nextId = useRef(1)
+  const running = useRef(0)
+  const folderInput = useRef<HTMLInputElement>(null)
+
+  const update = useCallback((id: number, change: Partial<Queued>) => {
+    setQueue((q) => q.map((x) => (x.id === id ? { ...x, ...change } : x)))
+  }, [])
+
+  // Starts whatever is waiting, a few at a time; each one finishing changes
+  // the queue, which starts the next. Here rather than in a state update,
+  // which React may run twice: a file must be sent once.
+  useEffect(() => {
+    const room = FILES_AT_ONCE - running.current
+    const starting = queue.filter((x) => x.state === 'waiting').slice(0, Math.max(0, room))
+    if (starting.length === 0) return
+    running.current += starting.length
+    const ids = new Set(starting.map((x) => x.id))
+    setQueue((q) => q.map((x) => (ids.has(x.id) ? { ...x, state: 'sending' } : x)))
+    for (const item of starting) {
+      void sendFile(sessionId, item.scope, item.path, item.file, (progress) =>
+        update(item.id, { progress }),
+      )
+        // The slot is freed before the queue changes, so the change that
+        // marks this one finished is the one that starts the next.
+        .then(() => {
+          running.current -= 1
+          update(item.id, { state: 'done' })
+        })
+        .catch((e: unknown) => {
+          running.current -= 1
+          update(item.id, {
+            state: 'failed',
+            error: e instanceof ApiError ? e.message : 'Upload failed',
+          })
+          // Refused for room: the notice says so from here on.
+          if (e instanceof ApiError && e.code === 'too_large') setFull(true)
+        })
+        .finally(() => void load())
     }
+  }, [queue, sessionId, update, load])
+
+  function enqueue(picked: Picked[]) {
+    if (picked.length === 0) return
+    const already = new Map(files.map((f) => [f.path, f.size]))
+    const added: Queued[] = picked.map(({ file, path }) => ({
+      id: nextId.current++,
+      scope,
+      path,
+      file,
+      // The same name and size is taken to be the same file; it can still be
+      // sent again from its row.
+      state: already.get(`${scope}/${path}`) === file.size ? 'present' : 'waiting',
+    }))
+    setQueue((q) => [...q, ...added])
   }
+
+  function retry(id: number) {
+    update(id, { state: 'waiting', error: undefined, progress: undefined })
+  }
+
+  function onPick(list: FileList | null) {
+    if (!list || list.length === 0) return
+    enqueue(
+      Array.from(list).map((file) => ({
+        file,
+        // A folder picked whole names each file by where it sat in it.
+        path: file.webkitRelativePath || file.name,
+      })),
+    )
+    if (input.current) input.current.value = ''
+    if (folderInput.current) folderInput.current.value = ''
+  }
+
+  const busy = queue.some((q) => q.state === 'sending' || q.state === 'waiting')
 
   // A drop puts files exactly where the Upload button would have: the scope
   // the select is showing. Nothing is offered to drop onto when this person
@@ -161,7 +301,12 @@ export default function FilesPanel({
     e.preventDefault()
     depth.current = 0
     setDropping(false)
-    void onPick(e.dataTransfer.files)
+    const items = e.dataTransfer.items
+    if (items && items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
+      void droppedFiles(items).then(enqueue)
+    } else {
+      onPick(e.dataTransfer.files)
+    }
   }
 
   async function loadMore(s: Scope) {
@@ -230,7 +375,17 @@ export default function FilesPanel({
               multiple
               data-testid="files-input"
               className="hidden"
-              onChange={(e) => void onPick(e.target.files)}
+              onChange={(e) => onPick(e.target.files)}
+            />
+            <input
+              ref={folderInput}
+              type="file"
+              multiple
+              // A folder and everything in it, each file named by where it sat.
+              {...({ webkitdirectory: '' } as Record<string, string>)}
+              data-testid="folder-input"
+              className="hidden"
+              onChange={(e) => onPick(e.target.files)}
             />
             <div className="relative flex gap-1.5" ref={menuRef}>
               <button
@@ -247,12 +402,22 @@ export default function FilesPanel({
               </button>
               <button
                 type="button"
-                disabled={busy || full}
+                disabled={full}
                 onClick={() => input.current?.click()}
                 className="flex-1 flex items-center justify-center gap-2 px-3 py-1.5 rounded-md bg-brand-700 hover:bg-brand-600 dark:bg-brand-600 dark:hover:bg-brand-500 text-white text-sm font-medium disabled:opacity-50"
               >
                 <Upload size={14} aria-hidden />
                 {busy ? 'Uploading…' : 'Upload'}
+              </button>
+              <button
+                type="button"
+                disabled={full}
+                onClick={() => folderInput.current?.click()}
+                aria-label="Upload a folder"
+                title="Upload a folder"
+                className="flex items-center justify-center w-10 rounded-md border border-surface-300 dark:border-surface-700 bg-white dark:bg-surface-800 text-surface-600 dark:text-surface-300 hover:bg-surface-50 dark:hover:bg-surface-800/50 disabled:opacity-50"
+              >
+                <FolderUp size={14} aria-hidden />
               </button>
 
               {menuOpen && (
@@ -299,6 +464,75 @@ export default function FilesPanel({
           </>
         )}
       </div>
+
+      {queue.length > 0 && (
+        <div className="border-b border-surface-200 dark:border-surface-800">
+          <div className="flex items-center justify-between px-3 pt-2 text-xs text-surface-500 dark:text-surface-400">
+            <span>{queueSummary(queue)}</span>
+            {!busy && (
+              <button
+                type="button"
+                onClick={() => setQueue([])}
+                className="text-brand-700 dark:text-brand-400 hover:underline"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <ul className="max-h-48 overflow-auto p-2 space-y-1" aria-label="Uploads">
+            {queue.map((q) => {
+              const fraction = q.progress && q.progress.size > 0 ? q.progress.sent / q.progress.size : 0
+              return (
+                <li key={q.id} className="px-2 py-1">
+                  <div className="flex items-center gap-2">
+                    <span className="flex-1 min-w-0 truncate text-sm text-surface-800 dark:text-surface-200" title={q.path}>
+                      {q.path}
+                    </span>
+                    {(q.state === 'failed' || q.state === 'present') && (
+                      <button
+                        type="button"
+                        onClick={() => retry(q.id)}
+                        aria-label={q.state === 'present' ? `Upload ${q.path} again` : `Retry ${q.path}`}
+                        title={q.state === 'present' ? 'Upload again' : 'Retry'}
+                        className={iconButton}
+                      >
+                        <RotateCw size={14} aria-hidden />
+                      </button>
+                    )}
+                    {q.state !== 'sending' && (
+                      <button
+                        type="button"
+                        onClick={() => setQueue((all) => all.filter((x) => x.id !== q.id))}
+                        aria-label={`Remove ${q.path} from the list`}
+                        className={iconButton}
+                      >
+                        <X size={14} aria-hidden />
+                      </button>
+                    )}
+                  </div>
+                  <p
+                    className={`text-xs ${q.state === 'failed' ? 'text-red-600 dark:text-red-400' : 'text-surface-500 dark:text-surface-400'}`}
+                  >
+                    {progressLabel(q)}
+                  </p>
+                  {q.state === 'sending' && q.progress?.pieces && (
+                    <div
+                      className="mt-1 h-1 rounded bg-surface-200 dark:bg-surface-700 overflow-hidden"
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={Math.round(fraction * 100)}
+                      aria-label={`${q.path} upload progress`}
+                    >
+                      <div className="h-full bg-brand-600" style={{ width: `${fraction * 100}%` }} />
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
 
       {error && (
         <p className="px-3 py-2 text-xs text-red-600 dark:text-red-400" role="alert">

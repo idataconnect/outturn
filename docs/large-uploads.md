@@ -1,7 +1,7 @@
 # Large uploads
 
 Getting big files, many files, and whole archives into outturn reliably.
-The upload calls are built; archives and the browser's queue are next.
+The upload calls and the browser's queue are built; archives are next.
 
 ## Why
 
@@ -123,9 +123,14 @@ time, each retried on its own with backoff, and a list showing each one as
 waiting, sending, done or failed, with a retry for the failed. Small files go
 in one request and large ones in pieces, and the person never chooses.
 
-A file whose contents are already at its path is skipped rather than sent
-again, judged by size and a hash the browser computes as it reads, so dropping
-the same folder twice is harmless.
+A file already at its path at the same size is not sent again, and its row
+says so with a way to send it anyway, so dropping the same folder twice is
+harmless. Same name and size is a guess rather than proof -- the store keeps
+no hash to compare against -- which is why sending it anyway is one click.
+
+The browser remembers an unfinished upload of a file by its name, size and
+modification time, so reopening the page and dropping the same file again
+carries on from the pieces that arrived.
 
 ## When a file is usable
 

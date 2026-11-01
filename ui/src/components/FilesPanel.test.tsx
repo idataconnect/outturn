@@ -9,12 +9,16 @@ import { SessionContext, type SessionState } from '../lib/session'
 // what a drop does, not about how a file is transferred.
 vi.mock('../lib/chat', () => ({
   listFiles: vi.fn(async () => ({ items: [], more: {} })),
-  uploadFile: vi.fn(async () => ({ path: 'session/notes.txt', size: 4, scope: 'session' })),
   deleteFile: vi.fn(async () => undefined),
   fileUrl: (sessionId: string, path: string) => `/v1/sessions/${sessionId}/files/${path}`,
 }))
 
-import { listFiles, uploadFile } from '../lib/chat'
+vi.mock('../lib/uploads', () => ({
+  sendFile: vi.fn(async () => ({ path: 'session/notes.txt', size: 4, scope: 'session' })),
+}))
+
+import { listFiles } from '../lib/chat'
+import { sendFile } from '../lib/uploads'
 
 function signedIn(authorities: string[]): SessionState {
   return {
@@ -78,7 +82,65 @@ describe('FilesPanel drop target', () => {
     const file = new File(['hi'], 'notes.txt', { type: 'text/plain' })
     await user.upload(screen.getByTestId('files-input'), file)
 
-    await waitFor(() => expect(uploadFile).toHaveBeenCalledWith('abc', 'session', file))
+    await waitFor(() =>
+      expect(sendFile).toHaveBeenCalledWith('abc', 'session', 'notes.txt', file, expect.any(Function)),
+    )
+    // Listed as uploaded once it is.
+    expect(await screen.findByText(/Uploaded/)).toBeTruthy()
+  })
+
+  it('names a file from a picked folder by where it sat, and sends each once', async () => {
+    const user = userEvent.setup()
+    show()
+    await waitFor(() => expect(listFiles).toHaveBeenCalled())
+
+    const files = ['a.txt', 'b.txt', 'c.txt', 'd.txt'].map((n) => {
+      const f = new File(['x'], n)
+      Object.defineProperty(f, 'webkitRelativePath', { value: `policies/${n}` })
+      return f
+    })
+    await user.upload(screen.getByTestId('folder-input'), files)
+
+    await waitFor(() => expect(sendFile).toHaveBeenCalledTimes(4))
+    expect(vi.mocked(sendFile).mock.calls.map((c) => c[2]).sort()).toEqual([
+      'policies/a.txt',
+      'policies/b.txt',
+      'policies/c.txt',
+      'policies/d.txt',
+    ])
+    await waitFor(() => expect(screen.getByText('4 of 4 uploaded')).toBeTruthy())
+  })
+
+  it('does not send again a file already here at the same size, until asked', async () => {
+    vi.mocked(listFiles).mockResolvedValue({
+      items: [{ path: 'session/notes.txt', size: 2, scope: 'session' }],
+      more: {},
+    })
+    const user = userEvent.setup()
+    show()
+    await waitFor(() => expect(screen.getByText('session/notes.txt')).toBeTruthy())
+
+    const file = new File(['hi'], 'notes.txt')
+    await user.upload(screen.getByTestId('files-input'), file)
+    expect(await screen.findByText('Already here, same size')).toBeTruthy()
+    expect(sendFile).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'Upload notes.txt again' }))
+    await waitFor(() => expect(sendFile).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps a failed upload in the list with a way to try it again', async () => {
+    const { ApiError } = await import('../lib/api')
+    vi.mocked(sendFile).mockRejectedValueOnce(new ApiError(503, 'object storage is unavailable'))
+    const user = userEvent.setup()
+    show()
+    await waitFor(() => expect(listFiles).toHaveBeenCalled())
+
+    await user.upload(screen.getByTestId('files-input'), new File(['hi'], 'notes.txt'))
+    expect(await screen.findByText('object storage is unavailable')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Retry notes.txt' }))
+    expect(await screen.findByText(/Uploaded/)).toBeTruthy()
+    expect(sendFile).toHaveBeenCalledTimes(2)
   })
 
   it('keeps the overlay up while the pointer crosses a child', async () => {
