@@ -2280,6 +2280,24 @@ pub fn routes(state: Arc<ApiState>) -> Router {
             get(super::files::preview),
         )
         .route(
+            "/v1/agent-sessions/{id}/uploads",
+            post(super::uploads::start),
+        )
+        .route(
+            "/v1/agent-sessions/{id}/uploads/{upload}",
+            get(super::uploads::progress).delete(super::uploads::abandon),
+        )
+        .route(
+            "/v1/agent-sessions/{id}/uploads/{upload}/complete",
+            post(super::uploads::complete),
+        )
+        .route(
+            "/v1/agent-sessions/{id}/uploads/{upload}/pieces/{number}",
+            axum::routing::put(super::uploads::piece).layer(axum::extract::DefaultBodyLimit::max(
+                super::uploads::PIECE_BYTES as usize,
+            )),
+        )
+        .route(
             "/v1/agent-sessions/{id}/files/{scope}/{*path}",
             get(super::files::download)
                 .put(super::files::upload)

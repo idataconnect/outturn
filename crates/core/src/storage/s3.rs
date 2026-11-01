@@ -280,6 +280,55 @@ impl StorageBackend for S3Storage {
         ))
     }
 
+    async fn start_upload(&self, path: &str) -> Result<String, StorageError> {
+        self.bucket
+            .initiate_multipart_upload(&self.key(path), OCTET_STREAM)
+            .await
+            .map(|started| started.upload_id)
+            .map_err(classify)
+    }
+
+    async fn put_upload_part(
+        &self,
+        path: &str,
+        upload: &str,
+        number: u32,
+        data: Vec<u8>,
+    ) -> Result<String, StorageError> {
+        self.bucket
+            .put_multipart_chunk(data, &self.key(path), number, upload, OCTET_STREAM)
+            .await
+            .map(|part| part.etag)
+            .map_err(classify)
+    }
+
+    async fn complete_upload(
+        &self,
+        path: &str,
+        upload: &str,
+        parts: &[(u32, String)],
+    ) -> Result<(), StorageError> {
+        let parts = parts
+            .iter()
+            .map(|(part_number, etag)| s3::serde_types::Part {
+                part_number: *part_number,
+                etag: etag.clone(),
+            })
+            .collect();
+        self.bucket
+            .complete_multipart_upload(&self.key(path), upload, parts)
+            .await
+            .map(|_| ())
+            .map_err(classify)
+    }
+
+    async fn abort_upload(&self, path: &str, upload: &str) -> Result<(), StorageError> {
+        self.bucket
+            .abort_upload(&self.key(path), upload)
+            .await
+            .map_err(classify)
+    }
+
     async fn stat(&self, path: &str) -> Result<FileMetadata, StorageError> {
         let key = self.key(path);
         let (head, _code) = self.bucket.head_object(&key).await.map_err(classify)?;

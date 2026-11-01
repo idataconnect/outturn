@@ -52,7 +52,7 @@ fn read_authority(scope: Scope) -> Authority {
     }
 }
 
-fn write_authority(scope: Scope) -> Authority {
+pub(super) fn write_authority(scope: Scope) -> Authority {
     match scope {
         Scope::Session => Authority::SessionsCreate,
         Scope::Agent => Authority::StorageAgentWrite,
@@ -60,7 +60,7 @@ fn write_authority(scope: Scope) -> Authority {
     }
 }
 
-fn parse_scope(s: &str) -> Result<Scope, ApiError> {
+pub(super) fn parse_scope(s: &str) -> Result<Scope, ApiError> {
     Scope::parse(s).ok_or((
         StatusCode::NOT_FOUND,
         format!("{s} is not a scope; use session, agent or workspace"),
@@ -82,7 +82,7 @@ fn parse_scope(s: &str) -> Result<Scope, ApiError> {
 /// caller ignored it once the narrowing check that read it was removed as
 /// dead, and a returned value nobody consumes is a question about what it was
 /// for.
-async fn space_for(
+pub(super) async fn space_for(
     state: &ApiState,
     claims: &outturn_core::auth::SessionClaims,
     session_id: Uuid,
@@ -347,27 +347,7 @@ pub async fn upload(
         }
     }
 
-    // A document is bytes until something reads it. Queued rather than done
-    // here: a scanned file can take minutes, and the upload has already
-    // succeeded -- the words arriving later is a file not ready yet, where a
-    // request held open for them is a failure the uploader cannot act on.
-    super::extract::enqueue(&state.pool, claims.workspace_id, &key, &scoped).await;
-
-    // Putting a file into a conversation is using it. Session files are swept
-    // once a session has been idle (`storage_sweep`), and one dropped into a
-    // session swept before would otherwise never be swept at all; it also
-    // brings the conversation up the recent list, where the person who just
-    // added to it will look for it.
-    if s == Scope::Session {
-        let _ = sqlx::query(
-            "update agent_sessions set last_active_at = now() \
-             where id = $1 and workspace_id = $2",
-        )
-        .bind(session_id)
-        .bind(claims.workspace_id)
-        .execute(&state.pool)
-        .await;
-    }
+    landed(&state, claims.workspace_id, s, session_id, &key, &scoped).await;
 
     tracing::info!(
         actor = %claims.subject,
@@ -385,6 +365,39 @@ pub async fn upload(
             converted_from: original.map(|(kept, _)| kept),
         }),
     ))
+}
+
+/// What follows a file being stored whole, however it arrived: in one request,
+/// or in pieces (`uploads`).
+pub(super) async fn landed(
+    state: &ApiState,
+    workspace_id: Uuid,
+    s: Scope,
+    session_id: Uuid,
+    key: &str,
+    scoped: &str,
+) {
+    // A document is bytes until something reads it. Queued rather than done
+    // here: a scanned file can take minutes, and the upload has already
+    // succeeded -- the words arriving later is a file not ready yet, where a
+    // request held open for them is a failure the uploader cannot act on.
+    super::extract::enqueue(&state.pool, workspace_id, key, scoped).await;
+
+    // Putting a file into a conversation is using it. Session files are swept
+    // once a session has been idle (`storage_sweep`), and one dropped into a
+    // session swept before would otherwise never be swept at all; it also
+    // brings the conversation up the recent list, where the person who just
+    // added to it will look for it.
+    if s == Scope::Session {
+        let _ = sqlx::query(
+            "update agent_sessions set last_active_at = now() \
+             where id = $1 and workspace_id = $2",
+        )
+        .bind(session_id)
+        .bind(workspace_id)
+        .execute(&state.pool)
+        .await;
+    }
 }
 
 /// The first of `names` with nothing stored under it.
@@ -601,7 +614,7 @@ pub async fn delete(
 
 /// Records a stored object for the quota. Logged rather than failed: the
 /// file is stored either way, and the weekly listing corrects the count.
-async fn counted(state: &ApiState, key: &str, bytes: usize) {
+pub(super) async fn counted(state: &ApiState, key: &str, bytes: usize) {
     if let Err(e) = outturn_core::storage::stored::record(&state.pool, key, bytes as u64).await {
         tracing::warn!(key, error = %e, "could not count a stored file");
     }

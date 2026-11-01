@@ -748,6 +748,8 @@ mod templates;
 mod triggers;
 #[path = "api/turn_failures.rs"]
 mod turn_failures;
+#[path = "api/uploads.rs"]
+mod uploads;
 #[path = "api/usage.rs"]
 mod usage;
 #[path = "api/users.rs"]

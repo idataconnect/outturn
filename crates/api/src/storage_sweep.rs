@@ -42,6 +42,11 @@ pub async fn sweep(pool: &PgPool, storage: &Arc<dyn StorageBackend>, ttl_days: u
         Ok(n) => tracing::info!(sessions = n, ttl_days, "swept idle sessions' files"),
         Err(e) => tracing::warn!(error = %e, "could not sweep idle sessions' files"),
     }
+    match crate::uploads::sweep_expired(pool, storage).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(uploads = n, "dropped uploads left half done"),
+        Err(e) => tracing::warn!(error = %e, "could not sweep half-done uploads"),
+    }
     match recount(pool, storage).await {
         Ok(0) => {}
         Ok(n) => tracing::info!(workspaces = n, "counted what workspaces hold"),

@@ -1,7 +1,7 @@
 # Large uploads
 
 Getting big files, many files, and whole archives into outturn reliably.
-Designed, not built.
+The upload calls are built; archives and the browser's queue are next.
 
 ## Why
 
@@ -28,11 +28,14 @@ takes numbered pieces in any order, and joins them when told they are all
 there. Every S3-compatible store does this, including the MinIO this ships, so
 it is not a choice an operator has to make.
 
-The store is what tracks the pieces. Asked, it lists the ones it already has,
-so resuming is a question to the store rather than a table of chunks here that
-could disagree with it. Pieces nobody finished are swept by the bucket's
-lifecycle rule a day after the upload began (`S3Storage::ensure_lifecycle`),
-which already exists for the streaming writers.
+The store holds the pieces, and joins them only when it is handed each
+piece's tag -- which the S3 client this uses cannot ask it for afterwards. So
+each tag is kept as the store accepts the piece (`upload_parts`), and
+completing hands them back; the store refuses a set that is not what it
+holds, so the record cannot quietly disagree with it. Pieces nobody finished
+are swept by the bucket's lifecycle rule a day after the upload began
+(`S3Storage::ensure_lifecycle`), and the storage sweep marks such an upload
+abandoned and asks the store to drop them sooner.
 
 What the platform keeps is one row per upload:
 
@@ -40,7 +43,7 @@ What the platform keeps is one row per upload:
 |---|---|
 | `id` | The upload, as the browser names it |
 | `workspace_id`, `user_id` | Whose it is |
-| `scope`, `path` | Where it lands: the same scopes and paths a single upload takes |
+| `path`, `key` | Where it lands, as the person named it and as it resolved |
 | `size` | What the person said it would be, so the quota is checked first |
 | `store_upload_id` | The store's id for the multipart upload |
 | `state` | `open`, `complete` or `abandoned` |
@@ -65,7 +68,7 @@ row and the resume logic are the same either way; only the transport differs.
 ```
 POST   /v1/agent-sessions/{id}/uploads                   {scope, path, size}
          -> {upload_id, piece_size}
-PUT    /v1/agent-sessions/{id}/uploads/{upload_id}/{n}   (one piece's bytes)
+PUT    /v1/agent-sessions/{id}/uploads/{upload_id}/pieces/{n}   (one piece's bytes)
 GET    /v1/agent-sessions/{id}/uploads/{upload_id}        -> {received: [n...]}
 POST   /v1/agent-sessions/{id}/uploads/{upload_id}/complete
 DELETE /v1/agent-sessions/{id}/uploads/{upload_id}
@@ -76,14 +79,20 @@ DELETE /v1/agent-sessions/{id}/uploads/{upload_id}
   a byte is sent.
 - **A piece** is checked against the declared size: no piece past the end,
   and only the last may be short.
-- **Status** asks the store which pieces it has. A browser that lost its tab
+- **Status** says which pieces have arrived. A browser that lost its tab
   calls this and sends the rest.
 - **Complete** has the store join the pieces, checks the result is the
   declared size, and then does what a single upload does once a file has
-  landed: the HEIC copy, extraction for search, the file showing up for the
-  agent. A file replaced at the same path is replaced only now, when the new
+  landed: extraction for search, the file counted against the quota, the
+  file showing up for the agent. A HEIC photo is refused here and sent in
+  one request, where it is converted: one large enough to need pieces is not
+  a photo anybody took. A file replaced at the same path is replaced only now, when the new
   one is whole.
 - **Abort** tells the store to drop the pieces.
+
+Only the person who started an upload can send to it, ask about it or
+complete it, and each call checks again that they may still write where it
+lands. A file of up to `uploads::MAX_FILE_BYTES` (10 GiB) is taken.
 
 A file under the piece size still goes up in one request, as today.
 

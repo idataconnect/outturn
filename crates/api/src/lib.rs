@@ -48,6 +48,7 @@ pub mod storage_sweep;
 pub mod tracking;
 pub mod trigger;
 pub mod triggers;
+pub mod uploads;
 pub mod usage;
 pub mod user;
 pub mod wake;

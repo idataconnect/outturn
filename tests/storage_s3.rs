@@ -93,3 +93,48 @@ async fn the_lifecycle_rules_are_accepted() {
         .await
         .expect("lifecycle rules refused again");
 }
+
+/// An upload a person sends in pieces: pieces out of order and one sent
+/// twice still join into the file, and nothing is at the path until then.
+#[tokio::test]
+async fn an_upload_sent_in_pieces_joins_in_order_and_replaces_only_when_whole() {
+    let s = store().await;
+    s.write("upload.bin", b"the old file").await.unwrap();
+    let piece = 5 * 1024 * 1024;
+    let data = bytes(piece * 2 + 777);
+    let id = s.start_upload("upload.bin").await.unwrap();
+    let three = s
+        .put_upload_part("upload.bin", &id, 3, data[piece * 2..].to_vec())
+        .await
+        .unwrap();
+    let one = s
+        .put_upload_part("upload.bin", &id, 1, data[..piece].to_vec())
+        .await
+        .unwrap();
+    s.put_upload_part("upload.bin", &id, 2, vec![0; piece])
+        .await
+        .unwrap();
+    let two = s
+        .put_upload_part("upload.bin", &id, 2, data[piece..piece * 2].to_vec())
+        .await
+        .unwrap();
+    assert_eq!(read_all(&s, "upload.bin").await, b"the old file");
+    s.complete_upload("upload.bin", &id, &[(1, one), (2, two), (3, three)])
+        .await
+        .unwrap();
+    assert!(read_all(&s, "upload.bin").await == data);
+}
+
+#[tokio::test]
+async fn an_abandoned_upload_leaves_nothing_behind() {
+    let s = store().await;
+    let id = s.start_upload("gone.bin").await.unwrap();
+    s.put_upload_part("gone.bin", &id, 1, vec![1; 1000])
+        .await
+        .unwrap();
+    s.abort_upload("gone.bin", &id).await.unwrap();
+    assert!(matches!(
+        s.stat("gone.bin").await,
+        Err(StorageError::NotFound)
+    ));
+}

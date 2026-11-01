@@ -4,14 +4,21 @@ use super::{FileMetadata, ObjectReader, ObjectWriter, StorageBackend, StorageErr
 
 type Files = std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, Vec<u8>>>>;
 
+/// An upload in pieces: its path, and its pieces by number.
+type Upload = (String, std::collections::BTreeMap<u32, Vec<u8>>);
+
 pub struct MemoryStorage {
     files: Files,
+    /// Uploads sent in pieces and not yet completed, by id: their path and
+    /// their pieces by number.
+    uploads: std::sync::Mutex<std::collections::HashMap<String, Upload>>,
 }
 
 impl MemoryStorage {
     pub fn new() -> Self {
         Self {
             files: Default::default(),
+            uploads: Default::default(),
         }
     }
 
@@ -57,6 +64,66 @@ impl StorageBackend for MemoryStorage {
             path: path.to_string(),
             buf: Vec::new(),
         }))
+    }
+
+    async fn start_upload(&self, path: &str) -> Result<String, StorageError> {
+        let id = uuid::Uuid::now_v7().to_string();
+        self.uploads
+            .lock()
+            .unwrap()
+            .insert(id.clone(), (path.to_string(), Default::default()));
+        Ok(id)
+    }
+
+    async fn put_upload_part(
+        &self,
+        path: &str,
+        upload: &str,
+        number: u32,
+        data: Vec<u8>,
+    ) -> Result<String, StorageError> {
+        use sha2::Digest;
+        let mut uploads = self.uploads.lock().unwrap();
+        let (at, parts) = uploads.get_mut(upload).ok_or(StorageError::NotFound)?;
+        if at != path {
+            return Err(StorageError::NotFound);
+        }
+        let etag = hex::encode(sha2::Sha256::digest(&data));
+        parts.insert(number, data);
+        Ok(etag)
+    }
+
+    async fn complete_upload(
+        &self,
+        path: &str,
+        upload: &str,
+        parts: &[(u32, String)],
+    ) -> Result<(), StorageError> {
+        use sha2::Digest;
+        let (at, stored) = self
+            .uploads
+            .lock()
+            .unwrap()
+            .remove(upload)
+            .ok_or(StorageError::NotFound)?;
+        if at != path {
+            return Err(StorageError::NotFound);
+        }
+        let mut whole = Vec::new();
+        for (number, etag) in parts {
+            let data = stored
+                .get(number)
+                .filter(|d| hex::encode(sha2::Sha256::digest(d)) == *etag)
+                .ok_or_else(|| StorageError::Io(format!("piece {number} is not the one sent")))?;
+            whole.extend_from_slice(data);
+        }
+        self.files.write().await.insert(path.to_string(), whole);
+        Ok(())
+    }
+
+    async fn abort_upload(&self, _path: &str, upload: &str) -> Result<(), StorageError> {
+        self.uploads.lock().unwrap().remove(upload);
+        Ok(())
     }
 
     async fn open_reader(&self, path: &str) -> Result<Box<dyn ObjectReader>, StorageError> {

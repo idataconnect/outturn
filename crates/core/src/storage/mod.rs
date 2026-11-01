@@ -59,6 +59,51 @@ pub trait StorageBackend: Send + Sync {
 
     async fn delete(&self, path: &str) -> Result<(), StorageError>;
 
+    /// Starts an upload a person sends in pieces (docs/large-uploads.md), and
+    /// says the store's id for it. Nothing appears at the path until it is
+    /// completed.
+    async fn start_upload(&self, path: &str) -> Result<String, StorageError> {
+        let _ = path;
+        Err(StorageError::Unavailable(
+            "this storage does not take uploads in pieces".into(),
+        ))
+    }
+
+    /// Stores piece `number` of an upload, replacing one sent before under
+    /// the same number, and says the tag that completing it will need.
+    async fn put_upload_part(
+        &self,
+        path: &str,
+        upload: &str,
+        number: u32,
+        data: Vec<u8>,
+    ) -> Result<String, StorageError> {
+        let _ = (path, upload, number, data);
+        Err(StorageError::Unavailable(
+            "this storage does not take uploads in pieces".into(),
+        ))
+    }
+
+    /// Joins the pieces named, in order, into the object at the path,
+    /// replacing whatever was there in one step.
+    async fn complete_upload(
+        &self,
+        path: &str,
+        upload: &str,
+        parts: &[(u32, String)],
+    ) -> Result<(), StorageError> {
+        let _ = (path, upload, parts);
+        Err(StorageError::Unavailable(
+            "this storage does not take uploads in pieces".into(),
+        ))
+    }
+
+    /// Drops an upload's pieces.
+    async fn abort_upload(&self, path: &str, upload: &str) -> Result<(), StorageError> {
+        let _ = (path, upload);
+        Ok(())
+    }
+
     /// Opens an object to be read from the front, with its length -- the
     /// length of what this read will return, not of whatever the path held a
     /// moment earlier. What a file sent as a request body declares before
