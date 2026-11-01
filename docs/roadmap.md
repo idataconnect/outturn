@@ -22,10 +22,10 @@ committed and verified, and new work goes in where it belongs, not at the end.
    ten fixes, the retention sweeps, the indexes and the migration lock, name uniqueness, the prompt
    and sandbox boundaries with the storage quota, and the gateway's findings are in; the rest goes in
    the order given there.
-2. **Large uploads** ([large-uploads.md](large-uploads.md)): a file of any
-   size sent in pieces the store tracks, through the API by default, resumed
-   after a drop; then a zip unpacked into a scope as a job with a report, and
-   a queue for many files at once. Designed, not built.
+2. **Large uploads** ([large-uploads.md](large-uploads.md)): built -- a
+   file of up to 10 GiB in pieces through the API, resumed after a drop, and
+   a queue in the Files panel. Next, the composer's paperclip sending large
+   files the same way.
 3. **A request whose body is a session file** ([file-bodies.md](file-bodies.md)):
    built for requests nobody has to approve, streamed from the runtime behind
    the request. Next, multipart form bodies, a response saved to a file,

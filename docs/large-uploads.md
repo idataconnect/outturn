@@ -1,7 +1,7 @@
 # Large uploads
 
 Getting big files, many files, and whole archives into outturn reliably.
-The upload calls and the browser's queue are built; archives are next.
+Built.
 
 ## Why
 
@@ -98,23 +98,16 @@ A file under the piece size still goes up in one request, as today.
 
 ## Archives
 
-A zip uploaded this way can be unpacked into a scope as a job of its own
-rather than inside an agent's turn. A turn's unpacking (`expand_archive`)
-holds the turn open, counts against its time, and is capped at 10,000
-entries of 32 MiB each, which is right for an agent tidying a download and
-wrong for onboarding a company's files.
+A zip uploaded this way is unpacked by the agent, with `expand_archive`, into
+a folder beside it named after it: `agent/onboarding.zip` becomes
+`agent/onboarding/...`, which a model understands without being told. A
+read of the zip itself says so. No job of its own is needed until a zip
+outgrows a turn's unpacking (10,000 entries of 32 MiB each), or its contents
+need extracting for search the way an upload is.
 
-The job runs on the API's worker, reading the archive from the store and
-writing each entry with the streaming writers, so no entry is held whole. It
-ends in a report a person can read and the agent is told: how many files
-landed and where, and each one skipped and why -- too large, a name that
-would escape the destination, a type that is refused. Each file is then
-extracted for search like any other upload.
-
-The person chooses where it lands. Onboarding data belongs in `agent/`, kept
-and shared by every conversation with that agent. `session/` is scratch,
-swept when the conversation has been quiet for
-`OUTTURN_SESSION_FILE_TTL_DAYS`.
+Onboarding data belongs in `agent/`, kept and shared by every conversation
+with that agent. `session/` is scratch, swept when the conversation has been
+quiet for `OUTTURN_SESSION_FILE_TTL_DAYS`.
 
 ## Many files at once
 
@@ -144,5 +137,3 @@ happens today for a document Tika has not finished.
 - **Resuming across days.** The lifecycle rule's day bounds how long an
   upload can be left half done. Longer means a longer rule, which costs the
   store whatever pieces sit in it.
-- **Formats other than zip.** A tarball or 7z unpacks the same way once
-  there is a reader for it; zip covers what people are sent.
