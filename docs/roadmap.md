@@ -580,6 +580,17 @@ capability -- the existing job queue, sent by the gateway over SMTP, tested
 before anything relies on it -- then approval notifications, then signing in
 by email, below.
 
+**Approval rules proposed by a model that read the specification.** The
+wizard guesses a rule per operation from its method and name, which misses
+what a name hides: a POST to `:batchUpdate` may restyle cells or delete rows.
+Wanted: a last phase in making a skill, in which a model reads the
+specification and proposes the `approval` annotations -- risk, binds, the
+money fields -- in place of those guesses. They are confirmed on
+`/skills/{id}/review` like any other proposal, and nothing is gated until a
+person confirms it. Found dogfooding the Sheets skill, whose hand-written
+gates covered value writes and not `batchUpdate`, so a format change went out
+unasked.
+
 **Signing in by email.** Today an account signs in with a password and
 nothing else. Wanted: a link sent by email that signs the person in -- a
 magic link -- chosen by the operator at the platform level as password only,
