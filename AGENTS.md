@@ -325,6 +325,7 @@ are near before changing it.
 - Storage and search: [storage.md](docs/storage.md),
   [storage-quota.md](docs/storage-quota.md),
   [streaming-storage.md](docs/streaming-storage.md),
+  [large-uploads.md](docs/large-uploads.md),
   [document-extraction.md](docs/document-extraction.md),
   [pdf-rendering.md](docs/pdf-rendering.md),
   [session-search.md](docs/session-search.md),

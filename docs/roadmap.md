@@ -22,11 +22,16 @@ committed and verified, and new work goes in where it belongs, not at the end.
    ten fixes, the retention sweeps, the indexes and the migration lock, name uniqueness, the prompt
    and sandbox boundaries with the storage quota, and the gateway's findings are in; the rest goes in
    the order given there.
-2. **A request whose body is a session file** ([file-bodies.md](file-bodies.md)):
-   built for requests nobody has to approve, read by the gateway from the
-   object store through a link the runtime signs. Next, holding one for
-   approval by its path and digest, then a file body for skill operations.
-3. **Text an operator can change, in any language.** Designed before built.
+2. **Large uploads** ([large-uploads.md](large-uploads.md)): a file of any
+   size sent in pieces the store tracks, through the API by default, resumed
+   after a drop; then a zip unpacked into a scope as a job with a report, and
+   a queue for many files at once. Designed, not built.
+3. **A request whose body is a session file** ([file-bodies.md](file-bodies.md)):
+   built for requests nobody has to approve, streamed from the runtime behind
+   the request. Next, multipart form bodies, a response saved to a file,
+   holding a file body for approval by its path and digest, and a file body
+   for skill operations.
+4. **Text an operator can change, in any language.** Designed before built.
    Every user-facing block of text -- UI strings, refusals, the platform
    preamble, notices such as being over a storage quota -- named by key
    with a shipped default, overridable per deployment, and translated per
@@ -34,12 +39,12 @@ committed and verified, and new work goes in where it belongs, not at the end.
    without a build; dropping a new block into code is one call with a key
    and a default. When a block's source text changes, its translations are
    marked stale and an agent drafts new ones for a person to accept.
-4. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
+5. **What is left of triggers** ([triggers.md](triggers.md)): one form with a
    common half for every kind, attachments on mail, then IMAP.
-5. **A first real call to Amazon Bedrock**, by whoever first has an AWS
+6. **A first real call to Amazon Bedrock**, by whoever first has an AWS
    account: everything in [bedrock.md](bedrock.md) is tried against
    stand-ins only, and the two-doors recipe says so until then.
-6. **Credentials that are the asker's** ([user-credentials.md](user-credentials.md)):
+7. **Credentials that are the asker's** ([user-credentials.md](user-credentials.md)):
    a connection the agent holds or one each person connects, so a backend
    applies its own per-user permissions; the asker's credential threaded
    through the turn by the platform, and a signed on-behalf-of header for
@@ -50,7 +55,7 @@ committed and verified, and new work goes in where it belongs, not at the end.
    platform can be told who is asking in a header the gateway signs, and a
    prompt in a session somebody else is in says beforehand whose access its
    turn may bring in. What is left is under *Not settled* there.
-7. **Service accounts** ([service-accounts.md](service-accounts.md)): a
+8. **Service accounts** ([service-accounts.md](service-accounts.md)): a
    workspace's own Google service account key, sealed, exchanged by the
    gateway for a token whose scope the binding fixes, and a Sheets skill whose
    writes need approving. Dogfooded on a spreadsheet of water bills.
