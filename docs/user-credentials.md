@@ -2,8 +2,8 @@
 
 A connection that is the asking person's rather than the agent's, so that a
 backend with permissions of its own sees who is asking and applies them.
-Built but for machine users and the on-behalf-of header (*As built*, at the
-end). It rests on [sealed-credentials.md](sealed-credentials.md)
+Built (*As built*, at the end), but for what is listed there as not built and
+what is not settled. It rests on [sealed-credentials.md](sealed-credentials.md)
 and the commitment ([invariants.md](invariants.md), *The commitment is what
 makes a rule a rule*), both built, and generalizes the ownership rules that
 [integrations.md](integrations.md#whose-token-it-is) wrote for OAuth grants to
@@ -102,9 +102,10 @@ a person's grant: it is theirs to give and theirs to take back. Connecting
 one's own needs no authority beyond membership, as one's own account needs
 none; the API refuses a binding whose `user` is not the caller.
 
-**Who may revoke: the person, and anyone with `settings:update`.** An
+**Who may revoke: the person, and anyone with `credentials:write`.** An
 administrator may cut somebody's connection off from the workspace's agents
-without being able to use it. Leaving a workspace revokes every credential the
+without being able to use it. Revoking is acting on a credential, so it takes
+the authority the workspace's own keys take, not `settings:update`. Leaving a workspace revokes every credential the
 person connected in it. Revocation is what [sealed-credentials.md](sealed-credentials.md#revocation-reaches-a-running-turn)
 already describes -- the row marked, the ciphertext wiped, a notification --
 and reaches a running turn the same way, because the gateway reads the row on
@@ -158,6 +159,14 @@ asks and then Sam asks in the same session, Dana's turn reaches the backend as
 Dana and Sam's as Sam. Sam's turns never carry Dana's credential, and that is
 the guarantee: nobody can ask the backend for anything with somebody else's
 access.
+
+It holds only if a turn answers nobody but its asker, and three things once
+let a turn answer somebody else. A message sent mid-turn is handed to the
+running turn as a steer only when its sender asked that turn; Sam's waits
+for a turn of its own. Messages that arrive while the agent sleeps are
+answered by the wake's turn only when they are one person's, and that turn
+is theirs; anybody else's keeps its own. And a failed prompt is asked again
+only by whoever sent it.
 
 What this does not do is make the conversation private, and it is worth being
 plain about, because the obvious extension of the rule fails. A session is one
@@ -339,6 +348,28 @@ leaves the backend proving who is asking; the header leaves it trusting outturn
 to have checked. The first is right for a backend outturn does not control, the
 second for one where the operator is on both sides.
 
+## Rotating the assertion key
+
+A backend caches the JWKS -- the API serves it with `max-age=300` -- so the
+new public half is published before the gateway signs with it, and the old
+one is withdrawn only after nothing it signed is still alive:
+
+1. Generate a new seed and its public half (`scripts/dev-secrets.sh` shows
+   how). Set `OUTTURN_ASSERTION_PUBLIC_KEY` on the API to the old public key
+   and the new one, comma-separated, and roll the API.
+2. Wait at least five minutes, the cache's lifetime, plus whatever longer a
+   backend you know of keeps it.
+3. Set `OUTTURN_ASSERTION_KEY` on the gateway to the new seed, and roll the
+   gateway. A header lives a minute, so one signed with the old key a moment
+   before still verifies against the published pair.
+4. After another minute and the cache's lifetime again, set
+   `OUTTURN_ASSERTION_PUBLIC_KEY` to the new key alone, and roll the API.
+
+Out of order, a backend holding the old JWKS receives a header whose `kid` it
+has never seen, and refuses every request it carries until its cache turns
+over. The issuer does not change in a rotation; a new issuer is a new
+deployment as far as a backend can tell.
+
 ## What this does not change
 
 - **Tenancy.** Workspaces' keys are their own, bound to their ids, as they are.
@@ -362,7 +393,7 @@ second for one where the operator is on both sides.
    users as a kind of account that cannot sign in.
 3. API: resolving asker-owned rules at mint time; the Account page's
    connections, stored only by their owner, revocable by the owner and by
-   `settings:update`, revoked on leaving; the held request's own leaf.
+   `credentials:write`, revoked on leaving; the held request's own leaf.
 4. Gateway: the binding check against `asker`, and the refusal for nothing
    connected.
 5. The page: whose connection each call used, the one-time notice in a session
@@ -405,7 +436,8 @@ Steps 1 to 6.
   since people's keys are sealed to it. `rules_for_turn` resolves each
   asker's rule for the prompt's `user_id`; `prepare_turn` and `gates_for` both
   use it, so the gates the API later derives again are over the same hosts.
-- `work::asker_of` is the prompt's `user_id`. A trade-in renews only a token
+- `work::asker_of` is `worker::asker_for`: the prompt's `user_id`, or on a
+  turn nobody sent the agent's machine user. A trade-in renews only a token
   whose asker is the leased job's, nobody included: a token kept from a turn
   nobody sent, renewed under a person's lease, would reach a host that is
   told who is asking as the integration itself.
@@ -414,7 +446,9 @@ Steps 1 to 6.
   authority; `PUT /v1/connections/{rule_id}` connects or replaces a key sealed
   as the caller's, for this workspace, host and header; `DELETE` disconnects
   it. Members only -- a role, not just a token -- so leaving reaches every key.
-  An administrator revokes one through `DELETE /v1/credentials/{id}`.
+  An administrator revokes one through `DELETE /v1/credentials/{id}`, under
+  `credentials:write`; `PUT` there, which replaces the workspace's own keys,
+  does not find a person's.
 - `api::egress::set_owner`, `PUT /v1/egress-rules/{id}/owner`: a host's
   connection made each person's own, keeping or gaining the header their keys
   travel in, or one key for everyone again, which revokes the keys people
@@ -513,6 +547,29 @@ next one.
   never wrote in the session is not counted, since nothing says they read
   it; the line is in the transcript for them all the same. Test:
   `a_prompt_says_whose_access_a_shared_session_is_about_to_see`.
+
+- A turn answers only its asker: `gateway::routing::take_pending` hands a
+  turn only steers from whoever sent its prompt, `wake::write_tx` folds only
+  the first sender's messages into a wake and gives the turn to them, and
+  `sessions::retry_turn` refuses anyone but the sender. The *Used Dana's
+  connection* line is written only for the turn's own asker, whatever the
+  runtime reports. Tests: `a_turn_answers_only_the_person_who_asked`,
+  `waking_answers_what_arrived_meanwhile_in_one_turn`,
+  `a_reply_says_whose_connection_it_used`.
+
+Not built:
+
+- The fingerprint on the Account page beside a connection, which *Whose it
+  is* above relies on to show a key re-sealed as somebody's. Until it is,
+  that gap is as open for a person's key as for the workspace's before its
+  test call.
+- Telling a turn in its prompt which of its connections the asker is missing.
+  The gateway's refusal says so, and the agent can relay it, but only once a
+  request has been tried.
+- A place on the page for an administrator to revoke somebody's connection.
+  The route exists; the workspace's Connections page lists only its own keys.
+- Retry is still offered on somebody else's failed prompt, and refused when
+  pressed: the transcript does not tell the page who sent what.
 
 A reply sent on another's behalf does not carry the *Used Dana's
 connection* line, since the runtime does not know whose turn it is -- the

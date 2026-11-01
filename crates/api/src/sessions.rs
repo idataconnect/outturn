@@ -527,6 +527,28 @@ pub async fn retry_turn(
     )
     .await?;
 
+    // Asked again by whoever asked. The turn carries its sender's own
+    // connections (docs/user-credentials.md), so a retry pressed by somebody
+    // else would reach those hosts as the sender on another's say-so. A
+    // prompt nobody sent is nobody's, and anyone here may run it again.
+    let sender: Option<Option<Uuid>> = sqlx::query_scalar(
+        "select user_id from agent_messages where id = $1 and session_id = $2 and role = 'user'",
+    )
+    .bind(message_id)
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if let Some(Some(sender)) = sender
+        && sender != claims.subject
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "only the person who sent this can ask again: the turn runs with their connections"
+                .into(),
+        ));
+    }
+
     let Some(job_id) = jobs::turn_for_message(&state.pool, claims.workspace_id, message_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?

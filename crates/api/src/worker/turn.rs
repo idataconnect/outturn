@@ -410,6 +410,20 @@ impl Worker {
                         }
                     }
                     Ok(ExecuteEvent::Connection { host, asker }) => {
+                        // The runtime is the untrusted tier, and this line is
+                        // the platform's word on whose access was used. So it
+                        // is written only for the one person it can be: the
+                        // turn's own asker, the one its token names.
+                        let ours = asker_for(&self.pool, payload).await.ok().flatten();
+                        if ours != Some(asker) {
+                            tracing::warn!(
+                                session_id = %payload.session_id,
+                                %host,
+                                reported = %asker,
+                                "a runtime reported a connection for somebody the turn is not; dropped"
+                            );
+                            continue;
+                        }
                         // Named as the person is called now, read once per
                         // report: the runtime says each host once a turn.
                         let name: Option<String> =

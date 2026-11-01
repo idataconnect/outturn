@@ -591,7 +591,7 @@ pub async fn set_owner(
     header: Option<String>,
 ) -> Result<Rule, RuleError> {
     let row = sqlx::query(
-        "select host, header, credential_env, token_url, credential_id from egress_rules \
+        "select host, header, credential_env, token_url, credential_id, owner from egress_rules \
          where id = $1 and workspace_id = $2",
     )
     .bind(id)
@@ -622,7 +622,24 @@ pub async fn set_owner(
                     "a connection each person makes names one host, not a wildcard".into(),
                 ));
             }
-            let header = header.or_else(|| row.get("header")).ok_or_else(|| {
+            // People's keys are sealed to the header they travel in, so a
+            // rule that is already each person's keeps it -- the refusal
+            // `set_credential` makes. Changing it would leave every key
+            // listed as connected and refused at the gateway.
+            let current: Option<String> = row.get("header");
+            if Owner::read(&row) == Owner::Asker
+                && let Some(asked) = header.as_deref()
+                && !current
+                    .as_deref()
+                    .is_some_and(|now| now.eq_ignore_ascii_case(asked))
+            {
+                return Err(RuleError::Invalid(
+                    "people's keys for this host are sealed to the header it has now; remove \
+                     the host and add it again to change it"
+                        .into(),
+                ));
+            }
+            let header = header.or(current).ok_or_else(|| {
                 RuleError::Invalid(
                     "a connection each person makes needs a header for their key to travel \
                          in, such as authorization"

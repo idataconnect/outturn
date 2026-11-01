@@ -24,6 +24,17 @@ organizations are added *above* it rather than nesting beneath.
 **Workspace member** — an employee of a tenant, holding workspace roles. The
 only kind of person with a seat besides the operator.
 
+**Machine user** — a `users` row belonging to one workspace (`machine_of`),
+which cannot sign in and holds no role. It exists to hold the keys an agent's
+turns nobody sent carry, named on the agent. Not a person, so never counted as
+one in a session. [user-credentials.md](user-credentials.md#nobody-asked).
+
+**Asker** — whose credentials a turn carries: the person who sent its prompt,
+or the agent's machine user on a turn nobody sent. Decided once by the API
+(`worker::asker_for`), carried in the turn token's `ask` claim, and not always
+the prompt's `user_id`, which is empty on a turn nobody sent.
+[user-credentials.md](user-credentials.md#whose-turn-it-is).
+
 **A tenant's own customer** — has *no* seat, and no interface. An agent works
 for a workspace member, on the tenant's systems; the customer is data the
 conversation is about. A demo where a customer appears to be typing is
@@ -191,7 +202,13 @@ outright.
 
 **Egress rule** — a host a workspace's agents may reach, with either a sealed
 credential or the *name* of the environment variable holding it. Never the
-value.
+value. Owned by the agent, one key for every turn, or by the asker, each
+person's own key on their own turns.
+
+**Connection** — a person's own key for a host whose rule is the asker's,
+sealed in their browser as theirs and connected on their Account page. What
+"Used Dana's connection" under a reply refers to.
+[user-credentials.md](user-credentials.md#connecting-one).
 
 **Sealed credential** — a secret encrypted in the browser to the gateway's
 public key, with its binding (workspace, hosts, header) as associated data, so

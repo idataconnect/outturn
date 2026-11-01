@@ -416,3 +416,46 @@ describe('a prompt in a conversation somebody else is in', () => {
     expect(screen.queryByRole('note')).toBeNull()
   })
 })
+
+describe('a reply whose requests carried somebody\'s own key', () => {
+  it('says whose, and to which host, under the reply', () => {
+    render(
+      <Harness
+        messages={[
+          { role: 'user', content: [{ type: 'text', text: 'my invoices' }] },
+          {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Here they are.' }],
+            metadata: {
+              custom: {
+                connections: [
+                  { host: 'books.example.com', user_id: 'u1', name: 'Dana' },
+                  { host: 'ledger.example.com', user_id: 'u1', name: null },
+                ],
+              },
+            },
+          },
+        ]}
+      />,
+    )
+    expect(
+      screen.getByText((_, el) =>
+        el?.tagName === 'P' &&
+        el.textContent ===
+          "Used Dana's connection to books.example.com; Used somebody's connection to ledger.example.com",
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('says nothing under a reply that used no one\'s', () => {
+    render(
+      <Harness
+        messages={[
+          { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+          { role: 'assistant', content: [{ type: 'text', text: 'Hi.' }] },
+        ]}
+      />,
+    )
+    expect(screen.queryByText(/connection to/)).toBeNull()
+  })
+})

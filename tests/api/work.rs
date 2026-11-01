@@ -1264,13 +1264,26 @@ async fn a_gated_call_reaches_the_browser_as_waiting_not_failed() {
 /// A request that went out with a person's own key is recorded on the reply,
 /// by host and by whose, once each -- from the runtime's event rather than
 /// anything the agent's tool results say. docs/user-credentials.md.
+///
+/// And only for the turn's own asker. The runtime is the untrusted tier, so a
+/// report naming anybody else is dropped rather than shown as the platform's
+/// word.
 #[tokio::test]
 async fn a_reply_says_whose_connection_it_used() {
     let h = harness_or_skip!();
     let (job, lease, session_id, runtime) = a_leased_turn(&h).await;
-    let dana = Uuid::now_v7();
-    sqlx::query("insert into users (id, display_name) values ($1, 'Dana Reyes')")
-        .bind(dana)
+    let dana: Uuid = sqlx::query_scalar(
+        "update users set display_name = 'Dana Reyes' where id = \
+             (select user_id from agent_messages where session_id = $1 and role = 'user') \
+         returning id",
+    )
+    .bind(session_id)
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    let sam = Uuid::now_v7();
+    sqlx::query("insert into users (id, display_name) values ($1, 'Sam Other')")
+        .bind(sam)
         .execute(&h.db.pool)
         .await
         .unwrap();
@@ -1278,6 +1291,7 @@ async fn a_reply_says_whose_connection_it_used() {
     let stream = [
         serde_json::json!({"kind": "tool", "id": "c1", "name": "fetch_url", "action": "Reading invoices", "arguments": "{}"}),
         serde_json::json!({"kind": "connection", "host": "books.example.com", "asker": dana}),
+        serde_json::json!({"kind": "connection", "host": "payroll.example.com", "asker": sam}),
         serde_json::json!({"kind": "tool_result", "id": "c1", "details": "{}", "content": "{}", "is_error": false}),
         serde_json::json!({"kind": "done", "content": "Here they are.", "prompt_tokens": 1, "completion_tokens": 1, "cache_read_tokens": 0, "cache_write_tokens": 0, "reasoning_tokens": 0}),
     ]
@@ -1303,6 +1317,6 @@ async fn a_reply_says_whose_connection_it_used() {
     assert_eq!(
         metadata["connections"],
         serde_json::json!([{"host": "books.example.com", "user_id": dana, "name": "Dana Reyes"}]),
-        "{metadata}"
+        "the turn's own asker, and nobody the runtime merely named: {metadata}"
     );
 }

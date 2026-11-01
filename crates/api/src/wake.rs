@@ -244,9 +244,9 @@ pub async fn write_tx(
     let woke_at = chrono::Utc::now();
 
     // Unanswered, unabsorbed messages from people, in the order they arrived.
-    let queued: Vec<(Uuid, chrono::DateTime<chrono::Utc>)> = if note.kind == Kind::Sleep {
+    let waiting: Vec<(Uuid, chrono::DateTime<chrono::Utc>, Uuid)> = if note.kind == Kind::Sleep {
         sqlx::query_as(
-            "select u.id, u.created_at from agent_messages u \
+            "select u.id, u.created_at, u.user_id from agent_messages u \
              where u.session_id = $1 and u.role = 'user' and u.absorbed_by is null \
                and u.user_id is not null \
                and not exists (select 1 from agent_messages r where r.replies_to = u.id) \
@@ -259,6 +259,18 @@ pub async fn write_tx(
     } else {
         Vec::new()
     };
+    // Only the first sender's, and the turn is theirs. It carries its asker's
+    // own connections (docs/user-credentials.md), so answering two people in
+    // one turn would reach a host as one of them on the other's words -- and
+    // a turn nobody sent would carry the agent's machine user instead of
+    // either. Anybody else's message keeps its own turn, parked behind the
+    // sleep and run once it lifts, as a steer from them would be.
+    let asker = waiting.first().map(|(_, _, who)| *who);
+    let queued: Vec<(Uuid, chrono::DateTime<chrono::Utc>)> = waiting
+        .iter()
+        .filter(|(_, _, who)| Some(*who) == asker)
+        .map(|(id, at, _)| (*id, *at))
+        .collect();
 
     let content = compose(
         &note,
@@ -277,8 +289,11 @@ pub async fn write_tx(
         }
     });
 
-    // No `user_id`: nobody sent it. The same rule a scheduled prompt follows,
-    // and what stops a wake turn clearing a stopped session's latch.
+    // No `user_id`: nobody sent it. The same rule a scheduled prompt follows.
+    // The turn is still the waiting person's when there is one -- the payload
+    // below says so -- and it may then lift a stopped session's latch, as
+    // their message would have on a turn of its own. With nobody waiting it
+    // is nobody's, and cannot.
     let note_id = Uuid::now_v7();
     sqlx::query(
         "insert into agent_messages (id, session_id, role, content, user_id, metadata) \
@@ -324,7 +339,9 @@ pub async fn write_tx(
         agent_id: note.agent_id,
         message_id: note_id,
         timezone: note.timezone.clone(),
-        user_id: None,
+        // Whose the turn is, when it answers somebody; the note itself
+        // stays nobody's, as above.
+        user_id: asker,
     })
     .map_err(|e| protocol(e.to_string()))?;
     jobs::enqueue(

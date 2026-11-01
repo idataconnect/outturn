@@ -130,11 +130,20 @@ async fn waking_answers_what_arrived_meanwhile_in_one_turn() {
     let (agent, session) = a_held_conversation(&h, workspace, &admin).await;
     asleep(&h, workspace, agent, session).await;
 
-    for text in ["any news?", "hello?"] {
+    // Somebody else's message, between hers: answered on a turn of its own,
+    // since a turn carries one asker's connections.
+    let other = h
+        .login_as("night@test.invalid", None, Some((workspace, "operator")))
+        .await;
+    for (who, text) in [
+        (&admin, "any news?"),
+        (&other, "me too"),
+        (&admin, "hello?"),
+    ] {
         let (status, body) = post_with_cookie(
             &h,
             &format!("/v1/agent-sessions/{session}/messages"),
-            &admin,
+            who,
             &serde_json::json!({ "content": text }).to_string(),
         )
         .await;
@@ -182,6 +191,26 @@ async fn waking_answers_what_arrived_meanwhile_in_one_turn() {
     .await
     .expect("wake turn");
     assert_eq!(priority, outturn::jobs::PRIORITY_REALTIME);
+    let (asker, sender): (Option<String>, Option<Uuid>) = sqlx::query_as(
+        "select j.payload->>'user_id', \
+                (select user_id from agent_messages where content = 'any news?') \
+         from jobs j where j.kind = 'chat.turn' and j.payload->>'message_id' = $1",
+    )
+    .bind(note.to_string())
+    .fetch_one(&h.db.pool)
+    .await
+    .expect("wake turn");
+    assert_eq!(
+        asker,
+        sender.map(|s| s.to_string()),
+        "the turn is the waiting person's"
+    );
+    let theirs: Option<Uuid> =
+        sqlx::query_scalar("select absorbed_by from agent_messages where content = 'me too'")
+            .fetch_one(&h.db.pool)
+            .await
+            .expect("their message");
+    assert_eq!(theirs, None, "somebody else's keeps its own turn");
     let holds: i64 = sqlx::query_scalar("select count(*) from inhibitors")
         .fetch_one(&h.db.pool)
         .await

@@ -66,8 +66,9 @@ in the infrastructure repository, or `kubectl apply` once by hand.
 
 Losing `OUTTURN_SEAL_KEY` makes every sealed credential unopenable, backups
 included; keep a copy where you keep the database's backups' keys. Rotating
-either keypair is in [sealed-credentials.md](sealed-credentials.md) and
-[invariants.md](invariants.md).
+the token and seal keypairs is in [sealed-credentials.md](sealed-credentials.md)
+and [invariants.md](invariants.md); the assertion keypair, in
+[user-credentials.md](user-credentials.md#rotating-the-assertion-key).
 
 ## The Secret and the ConfigMap
 

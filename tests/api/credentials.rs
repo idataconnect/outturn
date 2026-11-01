@@ -824,6 +824,41 @@ async fn a_hosts_connection_switches_between_one_key_and_each_persons_own() {
     .await
     .unwrap();
 
+    // Her key is sealed to the header the rule has, so the rule keeps it:
+    // a change would leave her key listed as connected and refused.
+    let (status, body) =
+        owner(serde_json::json!({ "owner": "asker", "header": "x-api-key" })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) =
+        owner(serde_json::json!({ "owner": "asker", "header": "AUTHORIZATION" })).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the same header is no change: {body}"
+    );
+
+    // Nor is her key the workspace's to replace: that is her connecting it
+    // again. Not found, so the route says nothing about whose it is.
+    let (public, key_id) = seal_key(&h, &admin).await;
+    let binding = serde_json::to_vec(&serde_json::json!({
+        "credential": theirs, "kind": "static", "workspaces": [acme],
+        "hosts": [host], "header": "authorization",
+    }))
+    .unwrap();
+    let sealed = seal::seal(&public, &binding, b"Bearer the-admins").unwrap();
+    let request = Request::put(format!("/v1/credentials/{theirs}"))
+        .header("authorization", format!("Bearer {admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "binding": b64(&binding), "sealed": b64(&sealed), "key_id": key_id,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let (status, body) = h.send(request).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
     let (status, body) = owner(serde_json::json!({ "owner": "agent" })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let rule: Value = serde_json::from_str(&body).unwrap();
@@ -1326,5 +1361,102 @@ async fn a_prompt_says_whose_access_a_shared_session_is_about_to_see() {
         say(&dana_token, "and the ledger").await["hosts"],
         serde_json::json!(["ledger.example.com"]),
         "only what was not said before"
+    );
+}
+
+/// A turn carries its asker's own connections, so it answers nobody else.
+/// Somebody else's message sent mid-turn is not handed to it as a steer --
+/// it waits for a turn of its own, which carries theirs -- and nobody else
+/// may ask a person's prompt again. docs/user-credentials.md.
+#[tokio::test]
+async fn a_turn_answers_only_the_person_who_asked() {
+    let h = harness().await;
+    let acme = h.make_workspace("Acme", "acme").await;
+    let admin = h
+        .login_as("admin@acme.example", None, Some((acme, "admin")))
+        .await;
+    let dana = h
+        .login_as("dana@acme.example", None, Some((acme, "operator")))
+        .await;
+    let sam = h
+        .login_as("sam@acme.example", None, Some((acme, "operator")))
+        .await;
+
+    let (status, body) = h
+        .post(
+            "/v1/agents",
+            Some(&admin),
+            r#"{"name":"Books","slug":"books","policy":{"model":"test-model"}}"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let agent = serde_json::from_str::<Value>(&body).unwrap()["id"].clone();
+    let (status, body) = h
+        .post(
+            "/v1/agent-sessions",
+            Some(&dana),
+            &serde_json::json!({ "agent_id": agent, "title": "" }).to_string(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let session: Uuid = serde_json::from_str::<Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let say = |token: &str, words: &str| {
+        let h = &h;
+        let path = format!("/v1/agent-sessions/{session}/messages");
+        let body = serde_json::json!({ "content": words }).to_string();
+        let token = token.to_string();
+        async move {
+            let (status, body) = h.post(&path, Some(&token), &body).await;
+            assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+            serde_json::from_str::<Value>(&body).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .parse::<Uuid>()
+                .unwrap()
+        }
+    };
+
+    let asked = say(&dana, "my invoices").await;
+    let runtime = h.runtime_token(acme);
+    let (status, body) = h.post("/v1/work", Some(&runtime), "{}").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let assignment: Value = serde_json::from_str(&body).unwrap();
+    let reply: Uuid = assignment["reply_id"].as_str().unwrap().parse().unwrap();
+
+    let sams = say(&sam, "and payroll while you're there").await;
+    let hers = say(&dana, "the overdue ones").await;
+    let taken: Vec<Uuid> = outturn::gateway::routing::take_pending(&h.db.pool, session, reply)
+        .await
+        .expect("take")
+        .iter()
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(taken, vec![hers], "Dana's steer only, not Sam's");
+    let absorbed: Option<Uuid> =
+        sqlx::query_scalar("select absorbed_by from agent_messages where id = $1")
+            .bind(sams)
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(absorbed, None, "Sam's waits for a turn of its own");
+
+    // Her turn fails; asking again is hers to do.
+    sqlx::query("update jobs set state = 'failed' where payload->>'message_id' = $1")
+        .bind(asked.to_string())
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+    let retry = format!("/v1/agent-sessions/{session}/messages/{asked}/retry");
+    let (status, body) = h.post(&retry, Some(&sam), "{}").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, body) = h.post(&retry, Some(&dana), "{}").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["queued"],
+        true
     );
 }

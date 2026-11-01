@@ -296,6 +296,14 @@ pub struct Pending {
 /// a steer hands over only the words -- an invocation with nothing typed would
 /// arrive as an empty message. So it waits for its own turn, and what follows
 /// it waits behind it rather than being answered first.
+///
+/// Nor is a message from anybody but the one who sent the turn's own prompt.
+/// A turn carries its asker's credentials (docs/user-credentials.md), and a
+/// steer answered inside it would reach a host as them on another person's
+/// words. Somebody else's message waits for its own turn, which carries
+/// theirs; a turn nobody sent takes only what nobody sent. The sender is read
+/// from the reply's prompt, so a reply not yet written takes the second case,
+/// which is the narrower one.
 pub async fn take_pending(
     pool: &PgPool,
     session_id: Uuid,
@@ -308,6 +316,11 @@ pub async fn take_pending(
              where u.session_id = $1 \
                and u.role = 'user' \
                and u.absorbed_by is null \
+               and u.user_id is not distinct from ( \
+                   select p.user_id from agent_messages r \
+                   join agent_messages p on p.id = r.replies_to \
+                   where r.id = $2 \
+               ) \
                and not exists ( \
                    select 1 from agent_messages r where r.replies_to = u.id \
                ) \

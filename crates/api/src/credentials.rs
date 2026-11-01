@@ -263,6 +263,9 @@ pub async fn list(
 /// Replaces a credential's seal, keeping its id: the key a client rotated at
 /// their provider is the same credential to them, and every rule naming it
 /// follows. Also how a revoked credential is given a key again.
+///
+/// The workspace's own keys only. A person's is replaced by connecting it
+/// again, by them (docs/user-credentials.md); here it is not found.
 pub async fn rotate(
     State(state): State<Arc<ApiState>>,
     headers: axum::http::HeaderMap,
@@ -274,7 +277,7 @@ pub async fn rotate(
     let row = sqlx::query(concat!(
         "update credentials set binding = $3, sealed = $4, key_id = $5, \
              generation = generation + 1, updated_at = now(), revoked_at = null \
-         where id = $1 and workspace_id = $2 returning ",
+         where id = $1 and workspace_id = $2 and user_id is null returning ",
         columns!(),
         ""
     ))
