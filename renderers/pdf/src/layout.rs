@@ -28,17 +28,21 @@ const MARGIN: f32 = 56.0;
 const BOTTOM: f32 = PAGE_H - MARGIN;
 const MEASURE: f32 = PAGE_W - 2.0 * MARGIN;
 
-const BODY: f32 = 10.5;
-const CODE: f32 = 9.0;
-const LEADING: f32 = 1.4;
+const BODY: f32 = 10.0;
+const CODE: f32 = 8.5;
+const TITLE: f32 = 24.0;
+const LEADING: f32 = 1.45;
 const INDENT: f32 = 18.0;
+const CODE_PAD: f32 = 4.0;
 
 type Color = (u8, u8, u8);
 const INK: Color = (0x22, 0x22, 0x22);
 const MUTED: Color = (0x66, 0x66, 0x66);
 const LINK: Color = (0x1a, 0x55, 0xb0);
 const RULE: Color = (0xcc, 0xcc, 0xcc);
-const SHADE: Color = (0xf2, 0xf2, 0xf2);
+const SHADE: Color = (0xf3, 0xf4, 0xf6);
+const ACCENT: Color = (0x1f, 0x3a, 0x5f);
+const TINT: Color = (0xe6, 0xeb, 0xf2);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum FaceId {
@@ -527,7 +531,7 @@ impl<'f, 's> Pages<'f, 's> {
                 y: top,
                 w: 2.0,
                 h: height,
-                color: RULE,
+                color: ACCENT,
             });
         }
     }
@@ -572,6 +576,15 @@ impl<'f, 's> Pages<'f, 's> {
                 });
             }
             for p in merge(self.faces, line, size) {
+                if p.face == FaceId::Mono {
+                    self.ops().push(Op::Rect {
+                        x: frame.x + p.dx - 1.5,
+                        y: top + size * 0.1,
+                        w: p.width + 3.0,
+                        h: size * 1.25,
+                        color: SHADE,
+                    });
+                }
                 if let Some(url) = &p.link {
                     self.ops().push(Op::Link {
                         x: frame.x + p.dx,
@@ -612,17 +625,23 @@ impl<'f, 's> Pages<'f, 's> {
                 lines.push(chunk.iter().collect());
             }
         }
-        for line in lines {
-            self.room_for(leading);
-            let top = self.y;
+        let last = lines.len() - 1;
+        for (i, line) in lines.into_iter().enumerate() {
+            // The ground runs a little past the first and last lines, so the
+            // text does not sit against its edge.
+            let above = if i == 0 { CODE_PAD } else { 0.0 };
+            let below = if i == last { CODE_PAD } else { 0.0 };
+            self.room_for(above + leading + below);
+            let top = self.y + above;
+            let ground = self.y;
             self.ops().push(Op::Rect {
                 x: frame.x - 4.0,
-                y: top,
+                y: ground,
                 w: frame.measure + 8.0,
-                h: leading,
+                h: above + leading + below,
                 color: SHADE,
             });
-            self.quote_bars(frame, top, leading);
+            self.quote_bars(frame, self.y, above + leading + below);
             let mut x = frame.x;
             for (face, text) in self.faces.segments(&line, FaceId::Mono) {
                 let w = self.faces.get(face).width(text, size);
@@ -636,7 +655,7 @@ impl<'f, 's> Pages<'f, 's> {
                 });
                 x += w;
             }
-            self.y += leading;
+            self.y += above + leading + below;
         }
     }
 
@@ -653,18 +672,30 @@ impl<'f, 's> Pages<'f, 's> {
         self.y += BODY;
     }
 
-    fn table(&mut self, rows: &[(bool, Vec<Vec<Run>>)], aligns: &[Alignment], frame: Frame) {
+    /// The rule under the document's opening title.
+    fn title_rule(&mut self) {
+        let y = self.y;
+        self.ops().push(Op::Rect {
+            x: MARGIN,
+            y,
+            w: MEASURE,
+            h: 1.5,
+            color: ACCENT,
+        });
+        self.y += BODY * 1.2;
+    }
+
+    fn table(&mut self, rows: &[TableRow], aligns: &[Alignment], frame: Frame) {
         let columns = rows.iter().map(|(_, r)| r.len()).max().unwrap_or(0);
         if columns == 0 {
             return;
         }
-        let size = BODY - 1.0;
+        let size = BODY - 0.5;
         let leading = size * LEADING;
-        let pad = 4.0;
 
-        // Each column gets what its widest cell would take on one line, until
-        // that is more than there is; then each keeps a fair floor and the
-        // rest is shared by what they asked for.
+        // Each column gets what its widest cell would take on one line. Where
+        // that is less than the page, the spare is shared by what they asked
+        // for; where more, each keeps a fair floor and shares the rest.
         let mut natural = vec![0.0f32; columns];
         for (_, cells) in rows {
             for (i, cell) in cells.iter().enumerate() {
@@ -672,74 +703,177 @@ impl<'f, 's> Pages<'f, 's> {
                     .iter()
                     .map(|r| self.faces.get(r.face).width(&r.text, size))
                     .sum();
-                natural[i] = natural[i].max(w + 2.0 * pad);
+                natural[i] = natural[i].max(w + 2.0 * CELL_PAD);
             }
         }
         let total: f32 = natural.iter().sum();
         let widths: Vec<f32> = if total <= frame.measure {
-            natural
+            natural.iter().map(|n| n * frame.measure / total).collect()
         } else {
             let floor = frame.measure / columns as f32 / 2.0;
             let spare = frame.measure - floor * columns as f32;
             natural.iter().map(|n| floor + spare * n / total).collect()
         };
+        let shape = TableShape {
+            aligns: column_aligns(rows, aligns, columns),
+            widths,
+            size,
+            frame,
+        };
 
+        let head = rows.iter().find(|(header, _)| *header);
         for (header, cells) in rows {
-            let wrapped: Vec<Vec<Vec<Placed>>> = (0..columns)
-                .map(|i| {
-                    let cell = cells.get(i).map(Vec::as_slice).unwrap_or(&[]);
-                    wrap(self.faces, cell, size, (widths[i] - 2.0 * pad).max(1.0))
-                })
-                .collect();
-            let lines = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
-            let height = lines as f32 * leading + pad;
-            self.room_for(height);
-            let top = self.y;
-            if *header {
-                self.ops().push(Op::Rect {
-                    x: frame.x,
-                    y: top,
-                    w: widths.iter().sum(),
-                    h: height,
-                    color: SHADE,
-                });
+            let wrapped = self.wrap_row(cells, &shape);
+            let height = row_height(&wrapped, leading);
+            // A header alone at the foot of a page belongs with its first row.
+            let wanted = if *header {
+                height + leading + CELL_PAD
+            } else {
+                height
+            };
+            let page = self.count;
+            self.room_for(wanted);
+            // A table carried over a page says again what its columns are.
+            if self.count != page
+                && !*header
+                && let Some((_, head)) = head
+            {
+                let wrapped = self.wrap_row(head, &shape);
+                let height = row_height(&wrapped, leading);
+                self.draw_row(&wrapped, true, height, &shape);
             }
-            self.quote_bars(frame, top, height);
-            let mut x = frame.x;
-            for (i, cell) in wrapped.iter().enumerate() {
-                for (n, line) in cell.iter().enumerate() {
-                    let baseline = top + pad / 2.0 + n as f32 * leading + size * 1.1;
-                    let used = line.last().map(|p| p.dx + p.width).unwrap_or(0.0);
-                    let slack = (widths[i] - 2.0 * pad - used).max(0.0);
-                    let shift = match aligns.get(i) {
-                        Some(Alignment::Right) => slack,
-                        Some(Alignment::Center) => slack / 2.0,
-                        _ => 0.0,
-                    };
-                    for p in merge(self.faces, line, size) {
-                        self.ops().push(Op::Text {
-                            x: x + pad + shift + p.dx,
-                            y: baseline,
-                            face: p.face,
-                            size,
-                            color: p.color,
-                            text: p.text,
-                        });
-                    }
-                }
-                x += widths[i];
-            }
-            self.y += height;
-            let y = self.y - 0.5;
-            self.ops().push(Op::Rect {
-                x: frame.x,
-                y,
-                w: widths.iter().sum(),
-                h: 0.5,
-                color: RULE,
-            });
+            self.draw_row(&wrapped, *header, height, &shape);
         }
     }
+
+    fn wrap_row(&self, cells: &[Vec<Run>], shape: &TableShape) -> Vec<Vec<Vec<Placed>>> {
+        (0..shape.widths.len())
+            .map(|i| {
+                let cell = cells.get(i).map(Vec::as_slice).unwrap_or(&[]);
+                let room = (shape.widths[i] - 2.0 * CELL_PAD).max(1.0);
+                wrap(self.faces, cell, shape.size, room)
+            })
+            .collect()
+    }
+
+    fn draw_row(
+        &mut self,
+        wrapped: &[Vec<Vec<Placed>>],
+        header: bool,
+        height: f32,
+        shape: &TableShape,
+    ) {
+        let TableShape {
+            widths,
+            aligns,
+            size,
+            frame,
+        } = shape;
+        let (size, frame) = (*size, *frame);
+        let leading = size * LEADING;
+        let width: f32 = widths.iter().sum();
+        let top = self.y;
+        if header {
+            self.ops().push(Op::Rect {
+                x: frame.x,
+                y: top,
+                w: width,
+                h: height,
+                color: TINT,
+            });
+        }
+        self.quote_bars(frame, top, height);
+        let mut x = frame.x;
+        for (i, cell) in wrapped.iter().enumerate() {
+            for (n, line) in cell.iter().enumerate() {
+                let baseline = top + CELL_PAD / 2.0 + n as f32 * leading + size * 1.1;
+                let used = line.last().map(|p| p.dx + p.width).unwrap_or(0.0);
+                let slack = (widths[i] - 2.0 * CELL_PAD - used).max(0.0);
+                let shift = match aligns.get(i) {
+                    Some(Alignment::Right) => slack,
+                    Some(Alignment::Center) => slack / 2.0,
+                    _ => 0.0,
+                };
+                for p in merge(self.faces, line, size) {
+                    self.ops().push(Op::Text {
+                        x: x + CELL_PAD + shift + p.dx,
+                        y: baseline,
+                        face: p.face,
+                        size,
+                        color: p.color,
+                        text: p.text,
+                    });
+                }
+            }
+            x += widths[i];
+        }
+        self.y += height;
+        let (rule, color) = if header { (1.0, ACCENT) } else { (0.5, RULE) };
+        let y = self.y - rule;
+        self.ops().push(Op::Rect {
+            x: frame.x,
+            y,
+            w: width,
+            h: rule,
+            color,
+        });
+    }
+}
+
+/// A table row: whether it is the header, and its cells.
+type TableRow = (bool, Vec<Vec<Run>>);
+
+const CELL_PAD: f32 = 5.0;
+
+/// What every row of a table shares.
+struct TableShape {
+    widths: Vec<f32>,
+    aligns: Vec<Alignment>,
+    size: f32,
+    frame: Frame,
+}
+
+fn row_height(wrapped: &[Vec<Vec<Placed>>], leading: f32) -> f32 {
+    let lines = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
+    lines as f32 * leading + CELL_PAD
+}
+
+/// Each column's alignment. A column the source left unaligned and that holds
+/// only figures is set to the right, so that its digits line up: a model
+/// rarely writes `---:`, and the figures should not depend on it.
+fn column_aligns(rows: &[TableRow], aligns: &[Alignment], columns: usize) -> Vec<Alignment> {
+    (0..columns)
+        .map(|i| match aligns.get(i) {
+            Some(Alignment::None) | None => {
+                let mut cells = rows
+                    .iter()
+                    .filter(|(header, _)| !*header)
+                    .filter_map(|(_, cells)| cells.get(i))
+                    .map(|cell| cell.iter().map(|r| r.text.as_str()).collect::<String>())
+                    .filter(|text| !text.trim().is_empty())
+                    .peekable();
+                if cells.peek().is_some() && cells.all(|text| is_figure(&text)) {
+                    Alignment::Right
+                } else {
+                    Alignment::None
+                }
+            }
+            Some(a) => *a,
+        })
+        .collect()
+}
+
+/// Whether a cell reads as a number: digits, with what surrounds a number in a
+/// report -- a sign, separators, a percent or a currency symbol.
+fn is_figure(text: &str) -> bool {
+    let text = text.trim();
+    text.chars().any(|c| c.is_ascii_digit())
+        && text.chars().all(|c| {
+            c.is_ascii_digit()
+                || c.is_whitespace()
+                || matches!(c, '.' | ',' | '+' | '-' | '\u{2212}' | '%' | '(' | ')')
+                || matches!(c, '$' | '\u{20AC}' | '\u{A3}' | '\u{A5}')
+        })
 }
 
 /// What the parser is inside of, outermost first.
@@ -820,8 +954,8 @@ pub fn render(markdown: &str) -> Result<Vec<u8>, String> {
 
     let mut doc = Document::new();
     let mut metadata = Metadata::new().producer("outturn".to_string());
-    if let Some(t) = title {
-        metadata = metadata.title(t);
+    if let Some(t) = &title {
+        metadata = metadata.title(t.clone());
     }
     doc.set_metadata(metadata);
 
@@ -830,7 +964,7 @@ pub fn render(markdown: &str) -> Result<Vec<u8>, String> {
     lay_out(markdown, &faces, &mut |ops| {
         n += 1;
         if failed.is_none()
-            && let Err(e) = paint_page(&mut doc, &faces, ops, n, total)
+            && let Err(e) = paint_page(&mut doc, &faces, ops, n, total, title.as_deref())
         {
             failed = Some(e);
         }
@@ -856,7 +990,8 @@ fn lay_out(
     let mut runs: Vec<Run> = Vec::new();
     let mut heading: Option<f32> = None;
     let mut code: Option<String> = None;
-    let mut table: Option<Vec<(bool, Vec<Vec<Run>>)>> = None;
+    let mut table: Option<Vec<TableRow>> = None;
+    let mut opening = false;
     let mut aligns: Vec<Alignment> = Vec::new();
     let mut in_head = false;
     let mut title: Option<String> = None;
@@ -883,16 +1018,19 @@ fn lay_out(
         }
         match heading {
             Some(size) => {
-                pages.gap(size * 0.6);
+                pages.gap(size * 0.9);
                 // A heading alone at the foot of a page belongs on the next.
                 pages.room_for(size * LEADING + BODY * LEADING * 2.0);
                 for r in runs.iter_mut() {
                     if r.face == FaceId::Regular || r.face == FaceId::Italic {
                         r.face = FaceId::Bold;
                     }
+                    if r.link.is_none() {
+                        r.color = ACCENT;
+                    }
                 }
                 pages.text_block(runs, size, frame, marker, false);
-                pages.gap(size * 0.25);
+                pages.gap(size * 0.35);
             }
             None => {
                 pages.text_block(runs, BODY, frame, marker, false);
@@ -915,10 +1053,17 @@ fn lay_out(
             }
             Event::Start(Tag::Heading { level, .. }) => {
                 flush(&mut runs, &mut stack, &mut pages, None, quoted);
+                // A top-level heading before anything else is the document's
+                // title, and is set as one.
+                opening = level == HeadingLevel::H1
+                    && pages.count == 0
+                    && pages.y == MARGIN
+                    && stack.is_empty();
                 heading = Some(match level {
-                    HeadingLevel::H1 => 20.0,
-                    HeadingLevel::H2 => 15.5,
-                    HeadingLevel::H3 => 12.5,
+                    _ if opening => TITLE,
+                    HeadingLevel::H1 => 19.0,
+                    HeadingLevel::H2 => 14.5,
+                    HeadingLevel::H3 => 11.5,
                     _ => BODY,
                 });
             }
@@ -927,6 +1072,9 @@ fn lay_out(
                     title = Some(runs.iter().map(|r| r.text.as_str()).collect());
                 }
                 flush(&mut runs, &mut stack, &mut pages, heading.take(), quoted);
+                if std::mem::take(&mut opening) {
+                    pages.title_rule();
+                }
             }
             Event::Start(Tag::List(start)) => {
                 // A nested list ends the item text before it.
@@ -1101,6 +1249,26 @@ fn fill(color: Color) -> Fill {
     }
 }
 
+/// As much of `text` as fits in `measure`, marked where it was cut.
+fn fit(faces: &Faces, text: &str, size: f32, measure: f32) -> String {
+    let wide = |t: &str| -> f32 {
+        faces
+            .segments(t, FaceId::Regular)
+            .iter()
+            .map(|(face, part)| faces.get(*face).width(part, size))
+            .sum()
+    };
+    if wide(text) <= measure {
+        return text.to_string();
+    }
+    let mut cut: String = text.to_string();
+    while !cut.is_empty() && wide(&cut) + wide("…") > measure {
+        cut.pop();
+    }
+    cut.push('…');
+    cut
+}
+
 /// Draws one page. `n` counts from one.
 fn paint_page(
     doc: &mut Document,
@@ -1108,6 +1276,7 @@ fn paint_page(
     ops: Vec<Op>,
     n: usize,
     count: usize,
+    title: Option<&str>,
 ) -> Result<(), String> {
     let settings = PageSettings::from_wh(PAGE_W, PAGE_H).ok_or("bad page size")?;
     let mut page = doc.start_page_with(settings);
@@ -1156,13 +1325,40 @@ fn paint_page(
             let w = faces.get(FaceId::Regular).width(&label, 8.0);
             surface.set_fill(Some(fill(MUTED)));
             surface.draw_text(
-                Point::from_xy((PAGE_W - w) / 2.0, PAGE_H - MARGIN / 2.0),
+                Point::from_xy(PAGE_W - MARGIN - w, PAGE_H - MARGIN / 2.0),
                 faces.get(FaceId::Regular).font.clone(),
                 8.0,
                 &label,
                 false,
                 TextDirection::Auto,
             );
+        }
+        // The first page has the title itself; the rest say what they are from.
+        if n > 1
+            && let Some(title) = title
+        {
+            let mut x = MARGIN;
+            let running = fit(faces, title, 8.0, MEASURE);
+            surface.set_fill(Some(fill(MUTED)));
+            for (face, text) in faces.segments(&running, FaceId::Regular) {
+                surface.draw_text(
+                    Point::from_xy(x, MARGIN / 2.0 + 8.0),
+                    faces.get(face).font.clone(),
+                    8.0,
+                    text,
+                    false,
+                    TextDirection::Auto,
+                );
+                x += faces.get(face).width(text, 8.0);
+            }
+            if let Some(rect) = Rect::from_xywh(MARGIN, MARGIN / 2.0 + 12.0, MEASURE, 0.5) {
+                let mut path = PathBuilder::new();
+                path.push_rect(rect);
+                if let Some(path) = path.finish() {
+                    surface.set_fill(Some(fill(RULE)));
+                    surface.draw_path(&path);
+                }
+            }
         }
         surface.finish();
     }
@@ -1313,6 +1509,65 @@ mod tests {
         let family = "👨\u{200D}👩\u{200D}👧\u{200D}👦";
         let segs = faces.segments(family, FaceId::Regular);
         assert_eq!(segs, [(FaceId::Emoji, family)]);
+    }
+
+    fn texts_by_page(md: &str) -> Vec<Vec<(f32, String)>> {
+        let mut pages = Vec::new();
+        lay_out(md, &Faces::new(), &mut |ops| {
+            pages.push(
+                ops.into_iter()
+                    .filter_map(|op| match op {
+                        Op::Text { size, text, .. } => Some((size, text)),
+                        _ => None,
+                    })
+                    .collect(),
+            )
+        });
+        pages
+    }
+
+    #[test]
+    fn only_an_opening_heading_is_set_as_the_title() {
+        let opening = texts_by_page("# Report\n\nWords.\n");
+        assert_eq!(opening[0][0], (TITLE, "Report".to_string()));
+        let later = texts_by_page("Words.\n\n# Report\n");
+        assert!(later[0].iter().all(|(size, _)| *size != TITLE));
+    }
+
+    #[test]
+    fn a_table_carried_over_a_page_repeats_its_header() {
+        let mut md = "| Region | Note |\n|---|---|\n".to_string();
+        for i in 0..200 {
+            md.push_str(&format!("| r{i} | note |\n"));
+        }
+        let pages = texts_by_page(&md);
+        assert!(pages.len() > 1);
+        for page in &pages {
+            assert_eq!(page[0].1, "Region");
+        }
+    }
+
+    #[test]
+    fn a_column_of_figures_is_set_right_unless_the_source_said_otherwise() {
+        let row = |cells: &[&str], header| (header, cells.iter().map(|c| runs(c)).collect());
+        let rows = vec![
+            row(&["Name", "Amount", "Pinned"], true),
+            row(&["north", "$1,204.50", "12"], false),
+            row(&["south", "(3%)", ""], false),
+        ];
+        let aligns = [Alignment::None, Alignment::None, Alignment::Left];
+        let got = column_aligns(&rows, &aligns, 3);
+        assert_eq!(got[0], Alignment::None);
+        assert_eq!(got[1], Alignment::Right);
+        assert_eq!(got[2], Alignment::Left);
+    }
+
+    #[test]
+    fn a_title_too_long_for_the_header_is_cut() {
+        let faces = Faces::new();
+        let cut = fit(&faces, &"long title ".repeat(40), 8.0, 200.0);
+        assert!(cut.ends_with('…'));
+        assert!(faces.get(FaceId::Regular).width(&cut, 8.0) <= 200.0);
     }
 
     #[test]

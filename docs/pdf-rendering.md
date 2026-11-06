@@ -11,8 +11,11 @@ the agent the path and size; the document never passes through the guest. Headin
 paragraphs, bold, italic, inline code, links (clickable), ordered, unordered
 and task lists, block quotes, code blocks, rules and tables with column
 alignment are laid out on A4 with page numbers, and the first top-level
-heading becomes the document's title. Images are not drawn yet and appear as
-their alt text.
+heading becomes the document's title, set large under a rule when it opens the
+document and repeated in a running header from page 2. A table carried over a
+page repeats its header, and a column holding only figures is set to the right
+unless the markdown said otherwise. Images are not drawn yet and appear as their
+alt text.
 
 The renderer is `renderers/pdf`: markdown parsed by `pulldown-cmark`, laid out
 by a flow layout written here, and written out by
@@ -94,6 +97,24 @@ would make it flat -- the format allows it; the offsets in the cross-reference
 table are of bytes already written -- but that means `pdf-writer` and font
 subsetting done here, and nothing the cap admits needs it yet.
 
+## Why not Typst
+
+Typst was measured as the layout engine, on the same generated report and
+pinned to two CPUs. Its output is good and its speed is close, but it holds the
+whole laid-out document, because outlines, cross-references and page totals are
+resolved over all of it:
+
+| Markdown | This renderer | Typst 0.15.1 |
+|---|---|---|
+| 200 KiB | 0.2 s, 13 MiB | 0.3 s, 127 MiB |
+| 2 MiB | 1.6 s, 20 MiB | 3.3 s, 1,020 MiB |
+
+Memory that grows with the document is the property this renderer was built to
+avoid. And Typst is a programming language: 101 bytes of source ran for 33 s, so
+the size cap that bounds a render here would bound nothing if a model wrote it.
+Should designed documents be wanted later, Typst is still the way to get them,
+with templates filled from inert data, capped to documents short enough to fit.
+
 ## Where it goes next
 
 **Queued rendering.** Large or many documents -- a month-end run of a few
@@ -107,13 +128,12 @@ followed by one too.
 render now and return the file, or queue it and tell the guest when it will be
 woken. A guest's code does not change.
 
-**A better default look.** A document looks professional because its design
-is good, not because its source language is rich: given more to write, a model
-mostly writes the same headings and tables. So the next gain is in the
-renderer -- typography, a title block and running header, and a few named
-themes a model chooses between -- with an accent color and inline color for
-the figure that has to stand out. Every model gets the same good output,
-because the design lives here rather than in the prompt.
+**Named themes.** A document looks professional because its design is good,
+not because its source language is rich: given more to write, a model mostly
+writes the same headings and tables. So the gain is in the renderer -- a few
+named themes a model chooses between, with an accent color and inline color for
+the figure that has to stand out. Every model gets the same good output, because
+the design lives here rather than in the prompt.
 
 **Images.** Read from storage by the runtime and sent with the markdown,
 decoded in the renderer, each capped in pixels before it is decoded -- a
