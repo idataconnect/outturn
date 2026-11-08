@@ -440,13 +440,34 @@ impl AgentHost {
     ) -> Result<ObjectInfo, String> {
         self.may_write(&destination)?;
         let (storage, resolved) = self.object_at(&destination)?;
-        // The document and the PDF it becomes are both held at once; the
-        // PDF's share is its most, as the renderer's answer is not known yet.
+        // Only where there is a renderer to send them to: without one the
+        // answer is that rendering is not available, not a complaint about
+        // an image.
+        let paths = if self.renderer_url.is_some() {
+            crate::render::image_paths(&markdown)
+        } else {
+            Vec::new()
+        };
+        let found = self.image_sizes(&paths).await?;
+        let image_bytes: u64 = found.iter().map(|image| image.size).sum();
+        // The document, its images and the PDF they become are all held at
+        // once; the PDF's share is its most, as the renderer's answer is not
+        // known yet.
         let _charge = self.charge(
-            markdown.len() as u64 + crate::render::MAX_PDF_BYTES as u64,
+            markdown.len() as u64 + image_bytes + crate::render::MAX_PDF_BYTES as u64,
             "render a PDF",
         )?;
-        let pdf = crate::render::render(&self.http, self.renderer_url.as_deref(), markdown).await?;
+        let mut images = Vec::with_capacity(found.len());
+        for image in found {
+            let bytes = image
+                .storage
+                .read(&image.resolved, 0, image.size as u32)
+                .await
+                .map_err(|e| self.storage_failed("read", e))?;
+            images.push((image.path, bytes));
+        }
+        let pdf = crate::render::render(&self.http, self.renderer_url.as_deref(), markdown, images)
+            .await?;
         self.take_bytes(pdf.len() as u64)?;
         let size = storage
             .write(&resolved, &pdf)
@@ -463,6 +484,55 @@ impl AgentHost {
             path: destination,
             size,
         })
+    }
+
+    /// Where each image a document draws is, and how large, or why one
+    /// cannot be drawn -- said before anything is read, so that a document
+    /// over the limits is refused without reading any of it.
+    async fn image_sizes(&mut self, paths: &[String]) -> Result<Vec<ImageAt>, String> {
+        use crate::render::{MAX_IMAGE_BYTES, MAX_IMAGES};
+        if paths.len() > MAX_IMAGES {
+            return Err(format!(
+                "the document draws {} different images; a PDF may draw at most {MAX_IMAGES}",
+                paths.len()
+            ));
+        }
+        let mut found = Vec::with_capacity(paths.len());
+        let mut total = 0;
+        for path in paths {
+            // The renderer reaches nothing, and nor does this: an image on the
+            // web has to be fetched and saved before it can be drawn.
+            if path.contains("://") || path.starts_with("data:") {
+                return Err(format!(
+                    "the image {path} is not a file; images are drawn from files, such as \
+                     session/chart.png. Fetch it and save it as a file first"
+                ));
+            }
+            let (storage, resolved) = self
+                .object_at(path)
+                .map_err(|e| format!("the image {path} cannot be drawn: {e}"))?;
+            let size = match storage.stat(&resolved).await {
+                Ok(meta) => meta.size,
+                Err(outturn_core::storage::StorageError::NotFound) => {
+                    return Err(format!("there is no file at {path} to draw"));
+                }
+                Err(e) => return Err(self.storage_failed("stat", e)),
+            };
+            total += size;
+            if total > MAX_IMAGE_BYTES {
+                return Err(format!(
+                    "the images come to more than {MAX_IMAGE_BYTES} bytes; a PDF's images may \
+                     come to at most that"
+                ));
+            }
+            found.push(ImageAt {
+                path: path.clone(),
+                storage,
+                resolved,
+                size,
+            });
+        }
+        Ok(found)
     }
 
     pub(super) async fn delete_object(&mut self, path: String) -> Result<(), String> {
@@ -658,6 +728,15 @@ impl outturn::agent::host::HostObjectReader for AgentHost {
         self.table.delete(reader)?;
         Ok(())
     }
+}
+
+/// An image a document draws: its path as the agent wrote it, where it is
+/// stored, and how large it is.
+struct ImageAt {
+    path: String,
+    storage: Arc<dyn outturn_core::storage::StorageBackend>,
+    resolved: String,
+    size: u64,
 }
 
 #[cfg(test)]

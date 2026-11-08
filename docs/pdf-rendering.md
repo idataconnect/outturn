@@ -14,8 +14,13 @@ alignment are laid out on A4 with page numbers, and the first top-level
 heading becomes the document's title, set large under a rule when it opens the
 document and repeated in a running header from page 2. A table carried over a
 page repeats its header, and a column holding only figures is set to the right
-unless the markdown said otherwise. Images are not drawn yet and appear as their
-alt text.
+unless the markdown said otherwise.
+
+Images are drawn from files. `![alt](session/chart.png "Figure 1: Sales")`
+places the image as a block of its own, centered, at its own size taken as 96
+pixels to the inch and scaled down to the measure and to most of a page; the
+title, where there is one, is its caption. An image in a table cell or a
+heading is shown as its alt text.
 
 The renderer is `renderers/pdf`: markdown parsed by `pulldown-cmark`, laid out
 by a flow layout written here, and written out by
@@ -71,6 +76,32 @@ pod's -- was not worth carrying for that.
 Every refusal is a sentence the agent can act on -- too large, busy, too slow,
 not available here -- returned as an ordinary tool error, and the turn carries
 on.
+
+## Images
+
+The renderer reaches nothing, so the runtime reads each image the markdown
+names -- through the agent's own scopes, as any read is -- and sends it with
+the markdown, as one body: each part a length-prefixed name and its bytes, the
+markdown first under the name "" (`application/x-outturn-bundle`). Markdown
+with no images is still sent alone, as `text/markdown`.
+
+An image on the web is refused with a sentence saying to save it first, and an
+image that is not there, or that cannot be read, fails the render by name:
+a document missing its figure is not what was asked for, and an agent told
+which path was wrong can fix it.
+
+| | Value | Why |
+|---|---|---|
+| Images | 32 at most, 24 MiB together | Checked by the runtime before any is read, and again here |
+| Pixels | 16 million in a PNG, GIF or WebP | Counted from the header before decoding; decoded, that is 64 MB |
+
+A JPEG is written into the PDF as it is, never decoded, so it is held to no
+pixel limit: a phone photo costs its file size. A phone stores a portrait
+photo on its side and says in EXIF how to turn it, so the orientation is read
+from the header and applied as the image is drawn; without it every portrait
+photo would lie down. The other formats are decoded once each, however often
+they are drawn, and what krilla keeps is the compressed result, so a render's
+peak is one decoded image at a time: six 16-megapixel PNGs peak at 53 MiB.
 
 ## Two passes
 
@@ -134,7 +165,3 @@ writes the same headings and tables. So the gain is in the renderer -- a few
 named themes a model chooses between, with an accent color and inline color for
 the figure that has to stand out. Every model gets the same good output, because
 the design lives here rather than in the prompt.
-
-**Images.** Read from storage by the runtime and sent with the markdown,
-decoded in the renderer, each capped in pixels before it is decoded -- a
-decoded image is the one thing that could change the memory picture above.

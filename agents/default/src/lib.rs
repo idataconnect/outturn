@@ -435,9 +435,13 @@ fn builtin_tools() -> Vec<ToolDefinition> {
         description: "Make a PDF from markdown and save it. Headings, \
                       paragraphs, bold, italic, links, lists, task lists, \
                       block quotes, code blocks and tables are laid out on \
-                      A4 pages with page numbers; images are not drawn yet \
-                      and appear as their alt text. The first top-level \
-                      heading becomes the document's title."
+                      A4 pages with page numbers. The first top-level \
+                      heading becomes the document's title. Images are \
+                      drawn from files, written as ![alt](session/chart.png) \
+                      or with a caption as ![alt](session/chart.png \"Figure \
+                      1: Sales by region\"); PNG, JPEG, GIF and WebP can be \
+                      drawn. An image on the web has to be saved as a file \
+                      first."
             .to_string(),
         parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path for the PDF, e.g. session/report.pdf"},"markdown":{"type":"string","description":"The whole document, in markdown."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Making the quarterly report."}},"required":["path","markdown","action"]}"#
             .to_string(),

@@ -3065,16 +3065,24 @@ fn first_tool_result(gateway: &FakeGateway) -> String {
         .to_string()
 }
 
+/// What the fake renderer was sent: the content type, and the body.
+type Rendered = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
 /// A stand-in for the renderer service: answers every render with the same
-/// small PDF-shaped bytes, and remembers the markdown it was sent.
-async fn fake_renderer() -> (String, Arc<Mutex<Vec<String>>>) {
-    let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+/// small PDF-shaped bytes, and remembers what it was sent.
+async fn fake_renderer() -> (String, Rendered) {
+    let seen: Rendered = Arc::default();
     let app = axum::Router::new().route(
         "/v1/render/pdf",
         axum::routing::post({
             let seen = Arc::clone(&seen);
-            move |body: String| async move {
-                seen.lock().unwrap().push(body);
+            move |headers: axum::http::HeaderMap, body: axum::body::Bytes| async move {
+                let content_type = headers
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                seen.lock().unwrap().push((content_type, body.to_vec()));
                 b"%PDF-1.7 rendered".to_vec()
             }
         }),
@@ -3118,7 +3126,10 @@ async fn render_pdf_stores_what_the_renderer_made_at_the_path_named() {
         .await
         .expect("run");
 
-    assert_eq!(*seen.lock().unwrap(), ["# Aging\n\nAcme owes 1,200.00\n"]);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].0.starts_with("text/markdown"), "{}", seen[0].0);
+    assert_eq!(seen[0].1, b"# Aging\n\nAcme owes 1,200.00\n");
     let pdf = store
         .read(
             &scope::resolve(&space, "session/report.pdf").unwrap(),
@@ -3133,6 +3144,91 @@ async fn render_pdf_stores_what_the_renderer_made_at_the_path_named() {
         result.contains(&format!("\"bytes\":{}", pdf.len())),
         "{result}"
     );
+}
+
+/// The images a document draws are read from storage, through the agent's
+/// scopes, and sent with its markdown: the renderer reaches nothing itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn render_pdf_sends_the_images_the_markdown_draws() {
+    use outturn::storage::{MemoryStorage, StorageBackend, scope};
+
+    let (renderer, seen) = fake_renderer().await;
+    let store = Arc::new(MemoryStorage::new());
+    let markdown = "# Sales\n\n![chart](session/chart.png)\n\n![chart](session/chart.png)\n";
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "render_pdf".into(),
+        arguments: serde_json::json!({
+            "path": "session/report.pdf",
+            "markdown": markdown,
+            "action": "Making the report",
+        })
+        .to_string(),
+        reply: "Done.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(store.clone());
+    options.renderer_url = Some(renderer);
+    let space = scope::Space {
+        workspace_id: options.workspace_id,
+        agent_id: options.agent_id,
+        session_id: options.session_id,
+    };
+    let image = [0x89, b'P', b'N', b'G', 0xff, 0x00];
+    store
+        .write(&scope::resolve(&space, "session/chart.png").unwrap(), &image)
+        .await
+        .unwrap();
+
+    runner()
+        .run(&component(), user("Make it."), String::new(), options)
+        .await
+        .expect("run");
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "{}", first_tool_result(&gateway));
+    assert_eq!(seen[0].0, "application/x-outturn-bundle");
+    // The markdown, then the image once though it is drawn twice.
+    let name = b"session/chart.png";
+    let expected: Vec<u8> = [
+        &[0, 0][..],
+        &(markdown.len() as u32).to_be_bytes(),
+        markdown.as_bytes(),
+        &(name.len() as u16).to_be_bytes(),
+        name,
+        &(image.len() as u32).to_be_bytes(),
+        &image,
+    ]
+    .concat();
+    assert_eq!(seen[0].1, expected);
+}
+
+/// An image that is not there is said by name, and nothing is rendered: a
+/// document missing its figure is not what the agent asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn render_pdf_names_an_image_that_is_not_there() {
+    use outturn::storage::MemoryStorage;
+
+    let (renderer, seen) = fake_renderer().await;
+    let gateway = FakeGateway::start(Behavior::ToolThenReply {
+        name: "render_pdf".into(),
+        arguments: r##"{"path":"session/r.pdf","markdown":"![x](session/gone.png) ![y](https://example.com/y.png)","action":"Making it"}"##
+            .into(),
+        reply: "Oh.".into(),
+    })
+    .await;
+    let mut options = options(&gateway, None);
+    options.storage = Some(Arc::new(MemoryStorage::new()));
+    options.renderer_url = Some(renderer);
+
+    runner()
+        .run(&component(), user("Make it."), String::new(), options)
+        .await
+        .expect("run");
+
+    let result = first_tool_result(&gateway);
+    assert!(result.contains("no file at session/gone.png"), "{result}");
+    assert!(seen.lock().unwrap().is_empty());
 }
 
 /// Where no renderer is deployed, the agent is told so plainly.

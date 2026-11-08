@@ -12,6 +12,8 @@ use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEn
 use skrifa::MetadataProvider;
 use skrifa::instance::{LocationRef, Size};
 
+use crate::images::{Images, Picture};
+
 static REGULAR: &[u8] = include_bytes!("../fonts/DejaVuSans.ttf");
 static BOLD: &[u8] = include_bytes!("../fonts/DejaVuSans-Bold.ttf");
 static ITALIC: &[u8] = include_bytes!("../fonts/DejaVuSans-Oblique.ttf");
@@ -31,6 +33,7 @@ const MEASURE: f32 = PAGE_W - 2.0 * MARGIN;
 const BODY: f32 = 10.0;
 const CODE: f32 = 8.5;
 const TITLE: f32 = 24.0;
+const CAPTION: f32 = 8.5;
 const LEADING: f32 = 1.45;
 const INDENT: f32 = 18.0;
 const CODE_PAD: f32 = 4.0;
@@ -241,6 +244,14 @@ enum Op {
         w: f32,
         h: f32,
         url: String,
+    },
+    Image {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        name: String,
+        picture: Picture,
     },
 }
 
@@ -659,6 +670,68 @@ impl<'f, 's> Pages<'f, 's> {
         }
     }
 
+    /// Places an image as a block of its own, centered in the frame: at its
+    /// own size where it fits, taken as 96 pixels to the inch, and scaled
+    /// down to the measure and to most of a page where it does not.
+    fn image(&mut self, name: &str, picture: Picture, caption: &str, frame: Frame) {
+        let (pw, ph) = picture.upright();
+        let (natural_w, natural_h) = (pw as f32 * 0.75, ph as f32 * 0.75);
+        let caption_room = if caption.is_empty() {
+            0.0
+        } else {
+            CAPTION * LEADING * 2.0
+        };
+        let tallest = (BOTTOM - MARGIN) * 0.85 - caption_room;
+        let scale = 1f32.min(frame.measure / natural_w).min(tallest / natural_h);
+        let (w, h) = (natural_w * scale, natural_h * scale);
+        self.gap(BODY * 0.3);
+        self.room_for(h + caption_room);
+        let top = self.y;
+        self.quote_bars(frame, top, h);
+        self.ops().push(Op::Image {
+            x: frame.x + (frame.measure - w) / 2.0,
+            y: top,
+            w,
+            h,
+            name: name.to_string(),
+            picture,
+        });
+        self.y += h;
+        if !caption.is_empty() {
+            self.y += CAPTION * 0.5;
+            self.caption(caption, frame);
+        }
+        self.gap(BODY * 0.8);
+    }
+
+    /// A figure's caption, centered under it.
+    fn caption(&mut self, text: &str, frame: Frame) {
+        let run = [Run {
+            text: text.to_string(),
+            face: FaceId::Italic,
+            color: MUTED,
+            link: None,
+        }];
+        let leading = CAPTION * LEADING;
+        for line in wrap(self.faces, &run, CAPTION, frame.measure) {
+            self.room_for(leading);
+            let used = line.last().map(|p| p.dx + p.width).unwrap_or(0.0);
+            let shift = (frame.measure - used) / 2.0;
+            let baseline = self.y + CAPTION * 1.1;
+            for p in merge(self.faces, &line, CAPTION) {
+                self.ops().push(Op::Text {
+                    x: frame.x + shift + p.dx,
+                    y: baseline,
+                    face: p.face,
+                    size: CAPTION,
+                    color: p.color,
+                    text: p.text,
+                });
+            }
+            self.y += leading;
+        }
+    }
+
     fn rule(&mut self, frame: Frame) {
         self.room_for(BODY);
         let y = self.y + BODY / 2.0;
@@ -948,9 +1021,9 @@ fn take_marker(stack: &mut [Container]) -> Option<String> {
 /// finished. Layout depends on nothing but the markdown and the fonts, so the
 /// passes break pages in the same places, and laying out twice is cheap next
 /// to drawing once.
-pub fn render(markdown: &str) -> Result<Vec<u8>, String> {
+pub fn render(markdown: &str, images: &Images) -> Result<Vec<u8>, String> {
     let faces = Faces::new();
-    let (total, title) = lay_out(markdown, &faces, &mut |_| {});
+    let (total, title) = lay_out(markdown, &faces, images, &mut |_| {})?;
 
     let mut doc = Document::new();
     let mut metadata = Metadata::new().producer("outturn".to_string());
@@ -961,14 +1034,14 @@ pub fn render(markdown: &str) -> Result<Vec<u8>, String> {
 
     let mut n = 0;
     let mut failed: Option<String> = None;
-    lay_out(markdown, &faces, &mut |ops| {
+    lay_out(markdown, &faces, images, &mut |ops| {
         n += 1;
         if failed.is_none()
-            && let Err(e) = paint_page(&mut doc, &faces, ops, n, total, title.as_deref())
+            && let Err(e) = paint_page(&mut doc, &faces, images, ops, n, total, title.as_deref())
         {
             failed = Some(e);
         }
-    });
+    })?;
     if let Some(e) = failed {
         return Err(e);
     }
@@ -977,12 +1050,14 @@ pub fn render(markdown: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Lays out a document, handing each page to `finished` as it is completed.
-/// Says how many pages there were, and the document's title if it has one.
+/// Says how many pages there were, and the document's title if it has one,
+/// or why an image it names cannot be drawn.
 fn lay_out(
     markdown: &str,
     faces: &Faces,
+    images: &Images,
     finished: &mut dyn FnMut(Vec<Op>),
-) -> (usize, Option<String>) {
+) -> Result<(usize, Option<String>), String> {
     let mut pages = Pages::new(faces, finished);
 
     let mut stack: Vec<Container> = Vec::new();
@@ -996,6 +1071,8 @@ fn lay_out(
     let mut in_head = false;
     let mut title: Option<String> = None;
     let mut image_alt = false;
+    // An image that was sent, being drawn: its name and its caption.
+    let mut figure: Option<(String, String)> = None;
 
     // Lays out whatever inline text has gathered as one block.
     let flush = |runs: &mut Vec<Run>,
@@ -1193,9 +1270,25 @@ fn lay_out(
             Event::End(TagEnd::Link) => {
                 inline.links.pop();
             }
+            // Drawn where it was sent and the block can hold one -- not in a
+            // table cell, whose rows are text, nor in a heading.
+            Event::Start(Tag::Image {
+                dest_url, title, ..
+            }) if images.has(&dest_url) && table.is_none() && heading.is_none() => {
+                // Text before it in the paragraph is a block of its own.
+                flush(&mut runs, &mut stack, &mut pages, None, quoted);
+                figure = Some((dest_url.to_string(), title.to_string()));
+            }
+            Event::End(TagEnd::Image) if figure.is_some() => {
+                let (name, caption) = figure.take().unwrap();
+                let picture = images.measure(&name)?;
+                let frame = frame_for(&stack);
+                pages.image(&name, picture, caption.trim(), frame);
+            }
             Event::Start(Tag::Image { .. }) => {
-                // Images are not drawn yet; the alt text stands in, marked so
-                // a reader knows something was there.
+                // An image that was not sent, or that sits where none can be
+                // drawn: its alt text stands in, marked so a reader knows
+                // something was there.
                 image_alt = true;
                 runs.push(Run {
                     text: "[image: ".into(),
@@ -1214,7 +1307,9 @@ fn lay_out(
                 });
             }
             Event::Text(text) => {
-                if let Some(c) = &mut code {
+                if figure.is_some() {
+                    // Alt text, for a figure that is drawn instead.
+                } else if let Some(c) = &mut code {
                     c.push_str(&text);
                 } else if image_alt {
                     runs.push(Run {
@@ -1239,7 +1334,7 @@ fn lay_out(
     flush(&mut runs, &mut stack, &mut pages, None, quoted);
     pages.end_page();
 
-    (pages.count, title)
+    Ok((pages.count, title))
 }
 
 fn fill(color: Color) -> Fill {
@@ -1273,6 +1368,7 @@ fn fit(faces: &Faces, text: &str, size: f32, measure: f32) -> String {
 fn paint_page(
     doc: &mut Document,
     faces: &Faces,
+    images: &Images,
     ops: Vec<Op>,
     n: usize,
     count: usize,
@@ -1318,6 +1414,21 @@ fn paint_page(
                     }
                 }
                 Op::Link { x, y, w, h, url } => links.push((x, y, w, h, url)),
+                Op::Image {
+                    x,
+                    y,
+                    w,
+                    h,
+                    name,
+                    picture,
+                } => {
+                    let image = images.image(&name, &picture)?;
+                    let (transform, (iw, ih)) = picture.placement(x, y, w, h);
+                    let size = krilla::geom::Size::from_wh(iw, ih).ok_or("bad image size")?;
+                    surface.push_transform(&transform);
+                    surface.draw_image(image, size);
+                    surface.pop();
+                }
             }
         }
         if count > 1 {
@@ -1430,21 +1541,26 @@ mod tests {
         let md = "# Title\n\nSome **bold**, *italic*, `code` and [a link](https://example.com).\n\n\
                   - one\n- two\n  1. nested\n  2. again\n\n> quoted\n\n```\nfn main() {}\n```\n\n\
                   | a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\n- [x] done\n- [ ] not\n\n![alt](x.png)\n";
-        let pdf = render(md).expect("rendered");
+        let pdf = render(md, &Images::new()).expect("rendered");
         assert!(pdf.starts_with(b"%PDF"));
-        let (_, title) = lay_out(md, &Faces::new(), &mut |_| {});
+        let (_, title) = lay_out(md, &Faces::new(), &Images::new(), &mut |_| {}).unwrap();
         assert_eq!(title.as_deref(), Some("Title"));
     }
 
     #[test]
     fn empty_input_is_still_a_document() {
-        assert!(render("").expect("rendered").starts_with(b"%PDF"));
+        assert!(
+            render("", &Images::new())
+                .expect("rendered")
+                .starts_with(b"%PDF")
+        );
     }
 
     #[test]
     fn long_input_paginates() {
         let md = "A paragraph of moderate length that wraps a line or two. ".repeat(20) + "\n\n";
-        let (pages, _) = lay_out(&md.repeat(60), &Faces::new(), &mut |_| {});
+        let (pages, _) =
+            lay_out(&md.repeat(60), &Faces::new(), &Images::new(), &mut |_| {}).unwrap();
         assert!(pages > 3, "only {pages} pages");
     }
 
@@ -1480,9 +1596,15 @@ mod tests {
         let md = md.repeat(40);
         let faces = Faces::new();
         let mut first = Vec::new();
-        lay_out(&md, &faces, &mut |ops| first.push(ops.len()));
+        lay_out(&md, &faces, &Images::new(), &mut |ops| {
+            first.push(ops.len())
+        })
+        .unwrap();
         let mut second = Vec::new();
-        lay_out(&md, &faces, &mut |ops| second.push(ops.len()));
+        lay_out(&md, &faces, &Images::new(), &mut |ops| {
+            second.push(ops.len())
+        })
+        .unwrap();
         assert_eq!(first, second);
     }
 
@@ -1513,7 +1635,7 @@ mod tests {
 
     fn texts_by_page(md: &str) -> Vec<Vec<(f32, String)>> {
         let mut pages = Vec::new();
-        lay_out(md, &Faces::new(), &mut |ops| {
+        lay_out(md, &Faces::new(), &Images::new(), &mut |ops| {
             pages.push(
                 ops.into_iter()
                     .filter_map(|op| match op {
@@ -1522,7 +1644,8 @@ mod tests {
                     })
                     .collect(),
             )
-        });
+        })
+        .unwrap();
         pages
     }
 
@@ -1570,10 +1693,86 @@ mod tests {
         assert!(faces.get(FaceId::Regular).width(&cut, 8.0) <= 200.0);
     }
 
+    fn ops_by_page(md: &str, images: &Images) -> Vec<Vec<Op>> {
+        let mut pages = Vec::new();
+        lay_out(md, &Faces::new(), images, &mut |ops| pages.push(ops)).unwrap();
+        pages
+    }
+
+    fn one_image(name: &str, w: u32, h: u32) -> Images {
+        let mut images = Images::new();
+        images.insert(name.into(), crate::images::tests::png(w, h));
+        images
+    }
+
+    #[test]
+    fn an_image_sent_is_drawn_and_its_alt_text_is_not() {
+        let images = one_image("session/chart.png", 200, 100);
+        let pages = ops_by_page("Before ![a chart](session/chart.png) after.\n", &images);
+        let drawn: Vec<(f32, f32)> = pages[0]
+            .iter()
+            .filter_map(|op| match op {
+                Op::Image { w, h, .. } => Some((*w, *h)),
+                _ => None,
+            })
+            .collect();
+        // At its own size: 96 pixels to the inch.
+        assert_eq!(drawn, [(150.0, 75.0)]);
+        let texts = texts_by_page("Before ![a chart](session/chart.png) after.\n");
+        assert!(texts[0].iter().any(|(_, t)| t.contains("image")));
+        let with_image: Vec<String> = pages[0]
+            .iter()
+            .filter_map(|op| match op {
+                Op::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(with_image, ["Before", "after."]);
+    }
+
+    #[test]
+    fn a_wide_image_is_scaled_to_the_measure_and_keeps_its_shape() {
+        let images = one_image("wide.png", 3000, 1000);
+        let pages = ops_by_page("![](wide.png)\n", &images);
+        let Some(Op::Image { w, h, .. }) =
+            pages[0].iter().find(|op| matches!(op, Op::Image { .. }))
+        else {
+            panic!("no image drawn");
+        };
+        assert!((w - MEASURE).abs() < 0.01, "{w}");
+        assert!((w / h - 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_title_becomes_a_caption() {
+        let images = one_image("a.png", 10, 10);
+        let pages = ops_by_page("![alt](a.png \"Figure 1: sales\")\n", &images);
+        assert!(pages[0].iter().any(|op| matches!(
+            op,
+            Op::Text { text, size, .. } if text == "Figure 1: sales" && *size == CAPTION
+        )));
+    }
+
+    #[test]
+    fn an_image_that_cannot_be_drawn_fails_the_render_by_name() {
+        let mut images = Images::new();
+        images.insert("bad.png".into(), b"not a png".to_vec());
+        let err = render("![](bad.png)\n", &images).unwrap_err();
+        assert!(err.contains("bad.png"), "{err}");
+    }
+
+    #[test]
+    fn a_document_with_images_renders() {
+        let images = one_image("a.png", 64, 48);
+        let pdf = render("# Karl\n\n![a](a.png)\n\n![a](a.png \"again\")\n", &images).unwrap();
+        assert!(pdf.starts_with(b"%PDF"));
+    }
+
     #[test]
     fn a_document_with_emoji_renders() {
         let pdf = render(
             "# Karl 🌫️\n\nBirds 🐦 judging you 👀\n\n| Mood | Icon |\n|---|---|\n| Grumpy | 😾 |\n",
+            &Images::new(),
         )
         .expect("rendered");
         assert!(pdf.starts_with(b"%PDF"));

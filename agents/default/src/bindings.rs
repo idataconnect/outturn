@@ -1388,8 +1388,9 @@ pub mod outturn {
             /// The document is made and written by the host and never passes through
             /// the guest: it would only be copied back out again, and linear memory
             /// is the scarcer of the two. Headings, paragraphs, emphasis, links,
-            /// lists, block quotes, code and tables are laid out; images are not yet,
-            /// and appear as their alt text.
+            /// lists, block quotes, code and tables are laid out. Images are read by
+            /// the host from the paths the markdown names, under the guest's own
+            /// scopes, and drawn; one that cannot be found or drawn fails the render.
             ///
             /// Refused while the pod is short of memory, which is worth waiting out.
             pub fn render_pdf(
