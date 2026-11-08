@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use outturn_core::utf8::describe_binary;
 
-use super::{AgentHost, MAX_LISTS_PER_TURN, ObjectInfo, Stored, outturn};
+use super::{AgentHost, MAX_LISTS_PER_TURN, ObjectInfo, PdfStyle, Stored, outturn};
 
 /// An object a guest is writing, as the host holds it.
 pub struct WriterState {
@@ -437,6 +437,7 @@ impl AgentHost {
         &mut self,
         markdown: String,
         destination: String,
+        style: PdfStyle,
     ) -> Result<ObjectInfo, String> {
         self.may_write(&destination)?;
         let (storage, resolved) = self.object_at(&destination)?;
@@ -466,8 +467,14 @@ impl AgentHost {
                 .map_err(|e| self.storage_failed("read", e))?;
             images.push((image.path, bytes));
         }
-        let pdf = crate::render::render(&self.http, self.renderer_url.as_deref(), markdown, images)
-            .await?;
+        let pdf = crate::render::render(
+            &self.http,
+            self.renderer_url.as_deref(),
+            markdown,
+            images,
+            &style,
+        )
+        .await?;
         self.take_bytes(pdf.len() as u64)?;
         let size = storage
             .write(&resolved, &pdf)

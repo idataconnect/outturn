@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Query, State};
 use axum::http::HeaderMap;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -53,9 +53,18 @@ pub fn app() -> Router {
 
 async fn render_pdf(
     State(renders): State<Arc<Semaphore>>,
+    // The look asked for: `theme` by name, and `accent` as `#rrggbb`.
+    Query(look): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    let theme = match crate::Theme::named(
+        look.get("theme").map(String::as_str),
+        look.get("accent").map(String::as_str),
+    ) {
+        Ok(theme) => theme,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
     let bundled = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -99,7 +108,7 @@ async fn render_pdf(
     // is actually done.
     let work = tokio::task::spawn_blocking(move || {
         let _slot = slot;
-        crate::render(&markdown, &images)
+        crate::render(&markdown, &images, &theme)
     });
     let rendered = match tokio::time::timeout(TIME_LIMIT, work).await {
         Ok(Ok(rendered)) => rendered,
@@ -196,10 +205,32 @@ mod tests {
         // what it makes of the markdown alone.
         let mut images = crate::Images::new();
         images.insert("a.png".into(), png);
-        let drawn = crate::render("![a](a.png)\n", &images).unwrap();
-        let alone = crate::render("![a](a.png)\n", &crate::Images::new()).unwrap();
+        let drawn = crate::render("![a](a.png)\n", &images, &crate::Theme::default()).unwrap();
+        let alone = crate::render(
+            "![a](a.png)\n",
+            &crate::Images::new(),
+            &crate::Theme::default(),
+        )
+        .unwrap();
         assert_ne!(drawn, alone);
         assert_eq!(pdf.as_ref(), drawn.as_slice());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_theme_is_refused_with_the_real_ones() {
+        let response = app()
+            .oneshot(
+                Request::post("/v1/render/pdf?theme=fancy")
+                    .body(Body::from("# Karl"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let said = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&said).contains("report, letter, plain"));
     }
 
     #[tokio::test]

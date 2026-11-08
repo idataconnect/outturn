@@ -38,8 +38,8 @@ wasmtime::component::bindgen!({
 
 pub use outturn::agent::host::{
     Arrival, Clock, Completion, CompletionRequest, ContentPart, HttpRequest, HttpResponse, Limits,
-    Message, ObjectInfo, SkillOperation, TimerDue, ToolActivity, ToolCall, ToolDefinition,
-    ToolOutcome, Usage,
+    Message, ObjectInfo, PdfStyle, SkillOperation, TimerDue, ToolActivity, ToolCall,
+    ToolDefinition, ToolOutcome, Usage,
 };
 
 /// Reports text as the model produces it, before the turn finishes.
@@ -682,8 +682,9 @@ impl outturn::agent::host::Host for AgentHost {
         &mut self,
         markdown: String,
         destination: String,
+        style: PdfStyle,
     ) -> Result<ObjectInfo, String> {
-        AgentHost::render_pdf(self, markdown, destination).await
+        AgentHost::render_pdf(self, markdown, destination, style).await
     }
 
     async fn delete_object(&mut self, path: String) -> Result<(), String> {

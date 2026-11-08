@@ -77,6 +77,26 @@ Every refusal is a sentence the agent can act on -- too large, busy, too slow,
 not available here -- returned as an ordinary tool error, and the turn carries
 on.
 
+## Themes
+
+A document takes one of three looks, named in `render_pdf`'s `theme`, with an
+optional `accent` in `#rrggbb` -- a brand color, say:
+
+| Theme | Looks like |
+|---|---|
+| `report`, the default | Navy headings, a large title over a rule, tinted table headers, a running header |
+| `letter` | Ink headings, a modest title with no rule, no running header |
+| `plain` | Black and grey, links in ink: for printing |
+
+Named rather than described, because a document looks professional when its
+design is good, not when its source language is rich: given more to write, a
+model mostly writes the same headings and tables. Choosing between three looks
+it does well, and every model gets the same output because the design lives
+here. An accent too pale to read on white is refused, and so is a theme the
+renderer does not have; both answers name what would be accepted. The runtime
+passes both on as query parameters without checking them, so the list lives in
+one place.
+
 ## Images
 
 The renderer reaches nothing, so the runtime reads each image the markdown
@@ -158,10 +178,3 @@ followed by one too.
 `render-pdf` is a host import, so the swap is the host's decision per call:
 render now and return the file, or queue it and tell the guest when it will be
 woken. A guest's code does not change.
-
-**Named themes.** A document looks professional because its design is good,
-not because its source language is rich: given more to write, a model mostly
-writes the same headings and tables. So the gain is in the renderer -- a few
-named themes a model chooses between, with an accent color and inline color for
-the figure that has to stand out. Every model gets the same good output, because
-the design lives here rather than in the prompt.

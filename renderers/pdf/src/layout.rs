@@ -13,6 +13,7 @@ use skrifa::MetadataProvider;
 use skrifa::instance::{LocationRef, Size};
 
 use crate::images::{Images, Picture};
+use crate::theme::{Color, INK, Theme};
 
 static REGULAR: &[u8] = include_bytes!("../fonts/DejaVuSans.ttf");
 static BOLD: &[u8] = include_bytes!("../fonts/DejaVuSans-Bold.ttf");
@@ -32,20 +33,14 @@ const MEASURE: f32 = PAGE_W - 2.0 * MARGIN;
 
 const BODY: f32 = 10.0;
 const CODE: f32 = 8.5;
-const TITLE: f32 = 24.0;
 const CAPTION: f32 = 8.5;
 const LEADING: f32 = 1.45;
 const INDENT: f32 = 18.0;
 const CODE_PAD: f32 = 4.0;
 
-type Color = (u8, u8, u8);
-const INK: Color = (0x22, 0x22, 0x22);
 const MUTED: Color = (0x66, 0x66, 0x66);
-const LINK: Color = (0x1a, 0x55, 0xb0);
 const RULE: Color = (0xcc, 0xcc, 0xcc);
 const SHADE: Color = (0xf3, 0xf4, 0xf6);
-const ACCENT: Color = (0x1f, 0x3a, 0x5f);
-const TINT: Color = (0xe6, 0xeb, 0xf2);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum FaceId {
@@ -492,6 +487,7 @@ struct Frame {
 /// not grow with how long the document is, beyond what the PDF writer keeps.
 struct Pages<'f, 's> {
     faces: &'f Faces,
+    theme: &'f Theme,
     current: Vec<Op>,
     finished: &'s mut dyn FnMut(Vec<Op>),
     count: usize,
@@ -499,9 +495,10 @@ struct Pages<'f, 's> {
 }
 
 impl<'f, 's> Pages<'f, 's> {
-    fn new(faces: &'f Faces, finished: &'s mut dyn FnMut(Vec<Op>)) -> Self {
+    fn new(faces: &'f Faces, theme: &'f Theme, finished: &'s mut dyn FnMut(Vec<Op>)) -> Self {
         Pages {
             faces,
+            theme,
             current: Vec::new(),
             finished,
             count: 0,
@@ -535,6 +532,7 @@ impl<'f, 's> Pages<'f, 's> {
     }
 
     fn quote_bars(&mut self, frame: Frame, top: f32, height: f32) {
+        let color = self.theme.accent;
         for q in 0..frame.quotes {
             let x = MARGIN + q as f32 * INDENT + 2.0;
             self.ops().push(Op::Rect {
@@ -542,7 +540,7 @@ impl<'f, 's> Pages<'f, 's> {
                 y: top,
                 w: 2.0,
                 h: height,
-                color: ACCENT,
+                color,
             });
         }
     }
@@ -745,15 +743,19 @@ impl<'f, 's> Pages<'f, 's> {
         self.y += BODY;
     }
 
-    /// The rule under the document's opening title.
+    /// The rule under the document's opening title, where the theme has one.
     fn title_rule(&mut self) {
-        let y = self.y;
+        if !self.theme.title_rule {
+            self.y += BODY * 0.6;
+            return;
+        }
+        let (y, color) = (self.y, self.theme.accent);
         self.ops().push(Op::Rect {
             x: MARGIN,
             y,
             w: MEASURE,
             h: 1.5,
-            color: ACCENT,
+            color,
         });
         self.y += BODY * 1.2;
     }
@@ -846,13 +848,13 @@ impl<'f, 's> Pages<'f, 's> {
         let leading = size * LEADING;
         let width: f32 = widths.iter().sum();
         let top = self.y;
-        if header {
+        if header && let Some(color) = self.theme.header_fill {
             self.ops().push(Op::Rect {
                 x: frame.x,
                 y: top,
                 w: width,
                 h: height,
-                color: TINT,
+                color,
             });
         }
         self.quote_bars(frame, top, height);
@@ -881,7 +883,11 @@ impl<'f, 's> Pages<'f, 's> {
             x += widths[i];
         }
         self.y += height;
-        let (rule, color) = if header { (1.0, ACCENT) } else { (0.5, RULE) };
+        let (rule, color) = if header {
+            (1.0, self.theme.accent)
+        } else {
+            (0.5, RULE)
+        };
         let y = self.y - rule;
         self.ops().push(Op::Rect {
             x: frame.x,
@@ -957,8 +963,8 @@ enum Container {
 }
 
 /// Inline style, as nested spans set it.
-#[derive(Default)]
 struct Inline {
+    link_color: Color,
     strong: usize,
     emphasis: usize,
     links: Vec<String>,
@@ -979,7 +985,7 @@ impl Inline {
         Run {
             text: text.to_string(),
             face,
-            color: if link.is_some() { LINK } else { INK },
+            color: if link.is_some() { self.link_color } else { INK },
             link,
         }
     }
@@ -1021,9 +1027,9 @@ fn take_marker(stack: &mut [Container]) -> Option<String> {
 /// finished. Layout depends on nothing but the markdown and the fonts, so the
 /// passes break pages in the same places, and laying out twice is cheap next
 /// to drawing once.
-pub fn render(markdown: &str, images: &Images) -> Result<Vec<u8>, String> {
+pub fn render(markdown: &str, images: &Images, theme: &Theme) -> Result<Vec<u8>, String> {
     let faces = Faces::new();
-    let (total, title) = lay_out(markdown, &faces, images, &mut |_| {})?;
+    let (total, title) = lay_out(markdown, &faces, images, theme, &mut |_| {})?;
 
     let mut doc = Document::new();
     let mut metadata = Metadata::new().producer("outturn".to_string());
@@ -1034,10 +1040,12 @@ pub fn render(markdown: &str, images: &Images) -> Result<Vec<u8>, String> {
 
     let mut n = 0;
     let mut failed: Option<String> = None;
-    lay_out(markdown, &faces, images, &mut |ops| {
+    // A theme without a running header has no title to repeat.
+    let running = title.as_deref().filter(|_| theme.running_header);
+    lay_out(markdown, &faces, images, theme, &mut |ops| {
         n += 1;
         if failed.is_none()
-            && let Err(e) = paint_page(&mut doc, &faces, images, ops, n, total, title.as_deref())
+            && let Err(e) = paint_page(&mut doc, &faces, images, ops, n, total, running)
         {
             failed = Some(e);
         }
@@ -1056,12 +1064,18 @@ fn lay_out(
     markdown: &str,
     faces: &Faces,
     images: &Images,
+    theme: &Theme,
     finished: &mut dyn FnMut(Vec<Op>),
 ) -> Result<(usize, Option<String>), String> {
-    let mut pages = Pages::new(faces, finished);
+    let mut pages = Pages::new(faces, theme, finished);
 
     let mut stack: Vec<Container> = Vec::new();
-    let mut inline = Inline::default();
+    let mut inline = Inline {
+        link_color: theme.link,
+        strong: 0,
+        emphasis: 0,
+        links: Vec::new(),
+    };
     let mut runs: Vec<Run> = Vec::new();
     let mut heading: Option<f32> = None;
     let mut code: Option<String> = None;
@@ -1102,8 +1116,8 @@ fn lay_out(
                     if r.face == FaceId::Regular || r.face == FaceId::Italic {
                         r.face = FaceId::Bold;
                     }
-                    if r.link.is_none() {
-                        r.color = ACCENT;
+                    if r.link.is_none() && pages.theme.colored_headings {
+                        r.color = pages.theme.accent;
                     }
                 }
                 pages.text_block(runs, size, frame, marker, false);
@@ -1137,7 +1151,7 @@ fn lay_out(
                     && pages.y == MARGIN
                     && stack.is_empty();
                 heading = Some(match level {
-                    _ if opening => TITLE,
+                    _ if opening => pages.theme.title,
                     HeadingLevel::H1 => 19.0,
                     HeadingLevel::H2 => 14.5,
                     HeadingLevel::H3 => 11.5,
@@ -1541,16 +1555,23 @@ mod tests {
         let md = "# Title\n\nSome **bold**, *italic*, `code` and [a link](https://example.com).\n\n\
                   - one\n- two\n  1. nested\n  2. again\n\n> quoted\n\n```\nfn main() {}\n```\n\n\
                   | a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\n- [x] done\n- [ ] not\n\n![alt](x.png)\n";
-        let pdf = render(md, &Images::new()).expect("rendered");
+        let pdf = render(md, &Images::new(), &Theme::default()).expect("rendered");
         assert!(pdf.starts_with(b"%PDF"));
-        let (_, title) = lay_out(md, &Faces::new(), &Images::new(), &mut |_| {}).unwrap();
+        let (_, title) = lay_out(
+            md,
+            &Faces::new(),
+            &Images::new(),
+            &Theme::default(),
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(title.as_deref(), Some("Title"));
     }
 
     #[test]
     fn empty_input_is_still_a_document() {
         assert!(
-            render("", &Images::new())
+            render("", &Images::new(), &Theme::default())
                 .expect("rendered")
                 .starts_with(b"%PDF")
         );
@@ -1559,8 +1580,14 @@ mod tests {
     #[test]
     fn long_input_paginates() {
         let md = "A paragraph of moderate length that wraps a line or two. ".repeat(20) + "\n\n";
-        let (pages, _) =
-            lay_out(&md.repeat(60), &Faces::new(), &Images::new(), &mut |_| {}).unwrap();
+        let (pages, _) = lay_out(
+            &md.repeat(60),
+            &Faces::new(),
+            &Images::new(),
+            &Theme::default(),
+            &mut |_| {},
+        )
+        .unwrap();
         assert!(pages > 3, "only {pages} pages");
     }
 
@@ -1596,12 +1623,12 @@ mod tests {
         let md = md.repeat(40);
         let faces = Faces::new();
         let mut first = Vec::new();
-        lay_out(&md, &faces, &Images::new(), &mut |ops| {
+        lay_out(&md, &faces, &Images::new(), &Theme::default(), &mut |ops| {
             first.push(ops.len())
         })
         .unwrap();
         let mut second = Vec::new();
-        lay_out(&md, &faces, &Images::new(), &mut |ops| {
+        lay_out(&md, &faces, &Images::new(), &Theme::default(), &mut |ops| {
             second.push(ops.len())
         })
         .unwrap();
@@ -1635,16 +1662,22 @@ mod tests {
 
     fn texts_by_page(md: &str) -> Vec<Vec<(f32, String)>> {
         let mut pages = Vec::new();
-        lay_out(md, &Faces::new(), &Images::new(), &mut |ops| {
-            pages.push(
-                ops.into_iter()
-                    .filter_map(|op| match op {
-                        Op::Text { size, text, .. } => Some((size, text)),
-                        _ => None,
-                    })
-                    .collect(),
-            )
-        })
+        lay_out(
+            md,
+            &Faces::new(),
+            &Images::new(),
+            &Theme::default(),
+            &mut |ops| {
+                pages.push(
+                    ops.into_iter()
+                        .filter_map(|op| match op {
+                            Op::Text { size, text, .. } => Some((size, text)),
+                            _ => None,
+                        })
+                        .collect(),
+                )
+            },
+        )
         .unwrap();
         pages
     }
@@ -1652,9 +1685,10 @@ mod tests {
     #[test]
     fn only_an_opening_heading_is_set_as_the_title() {
         let opening = texts_by_page("# Report\n\nWords.\n");
-        assert_eq!(opening[0][0], (TITLE, "Report".to_string()));
+        let title = Theme::default().title;
+        assert_eq!(opening[0][0], (title, "Report".to_string()));
         let later = texts_by_page("Words.\n\n# Report\n");
-        assert!(later[0].iter().all(|(size, _)| *size != TITLE));
+        assert!(later[0].iter().all(|(size, _)| *size != title));
     }
 
     #[test]
@@ -1695,7 +1729,10 @@ mod tests {
 
     fn ops_by_page(md: &str, images: &Images) -> Vec<Vec<Op>> {
         let mut pages = Vec::new();
-        lay_out(md, &Faces::new(), images, &mut |ops| pages.push(ops)).unwrap();
+        lay_out(md, &Faces::new(), images, &Theme::default(), &mut |ops| {
+            pages.push(ops)
+        })
+        .unwrap();
         pages
     }
 
@@ -1757,15 +1794,36 @@ mod tests {
     fn an_image_that_cannot_be_drawn_fails_the_render_by_name() {
         let mut images = Images::new();
         images.insert("bad.png".into(), b"not a png".to_vec());
-        let err = render("![](bad.png)\n", &images).unwrap_err();
+        let err = render("![](bad.png)\n", &images, &Theme::default()).unwrap_err();
         assert!(err.contains("bad.png"), "{err}");
     }
 
     #[test]
     fn a_document_with_images_renders() {
         let images = one_image("a.png", 64, 48);
-        let pdf = render("# Karl\n\n![a](a.png)\n\n![a](a.png \"again\")\n", &images).unwrap();
+        let pdf = render(
+            "# Karl\n\n![a](a.png)\n\n![a](a.png \"again\")\n",
+            &images,
+            &Theme::default(),
+        )
+        .unwrap();
         assert!(pdf.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn each_theme_renders_and_looks_different() {
+        let md = "# Report\n\n## Part\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n> quoted\n";
+        let pdfs: Vec<Vec<u8>> = crate::theme::THEMES
+            .iter()
+            .map(|name| {
+                let theme = Theme::named(Some(name), None).unwrap();
+                render(md, &Images::new(), &theme).unwrap()
+            })
+            .collect();
+        assert!(pdfs.iter().all(|pdf| pdf.starts_with(b"%PDF")));
+        assert_ne!(pdfs[0], pdfs[1]);
+        assert_ne!(pdfs[0], pdfs[2]);
+        assert_ne!(pdfs[1], pdfs[2]);
     }
 
     #[test]
@@ -1773,6 +1831,7 @@ mod tests {
         let pdf = render(
             "# Karl 🌫️\n\nBirds 🐦 judging you 👀\n\n| Mood | Icon |\n|---|---|\n| Grumpy | 😾 |\n",
             &Images::new(),
+            &Theme::default(),
         )
         .expect("rendered");
         assert!(pdf.starts_with(b"%PDF"));

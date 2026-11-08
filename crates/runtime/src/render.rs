@@ -80,6 +80,7 @@ pub async fn render(
     url: Option<&str>,
     markdown: String,
     images: Vec<(String, Vec<u8>)>,
+    style: &crate::component::PdfStyle,
 ) -> Result<Vec<u8>, String> {
     let Some(url) = url else {
         return Err("PDF rendering is not available here".to_string());
@@ -97,6 +98,9 @@ pub async fn render(
     };
     let response = http
         .post(format!("{url}/v1/render/pdf"))
+        // The renderer knows its themes and says which when one is wrong, so
+        // the look is passed on as given rather than checked twice.
+        .query(&[("theme", &style.theme), ("accent", &style.accent)])
         .header(reqwest::header::CONTENT_TYPE, content_type)
         .timeout(TIMEOUT)
         .body(body)

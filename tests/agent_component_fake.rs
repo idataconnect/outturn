@@ -3065,28 +3065,34 @@ fn first_tool_result(gateway: &FakeGateway) -> String {
         .to_string()
 }
 
-/// What the fake renderer was sent: the content type, and the body.
-type Rendered = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+/// What the fake renderer was sent: the query, the content type, and the body.
+type Rendered = Arc<Mutex<Vec<(String, String, Vec<u8>)>>>;
 
 /// A stand-in for the renderer service: answers every render with the same
 /// small PDF-shaped bytes, and remembers what it was sent.
 async fn fake_renderer() -> (String, Rendered) {
     let seen: Rendered = Arc::default();
-    let app = axum::Router::new().route(
-        "/v1/render/pdf",
-        axum::routing::post({
-            let seen = Arc::clone(&seen);
-            move |headers: axum::http::HeaderMap, body: axum::body::Bytes| async move {
-                let content_type = headers
-                    .get(axum::http::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or_default()
-                    .to_string();
-                seen.lock().unwrap().push((content_type, body.to_vec()));
-                b"%PDF-1.7 rendered".to_vec()
-            }
-        }),
-    );
+    let app =
+        axum::Router::new().route(
+            "/v1/render/pdf",
+            axum::routing::post({
+                let seen = Arc::clone(&seen);
+                move |uri: axum::http::Uri,
+                      headers: axum::http::HeaderMap,
+                      body: axum::body::Bytes| async move {
+                    let content_type = headers
+                        .get(axum::http::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
+                    let query = uri.query().unwrap_or_default().to_string();
+                    seen.lock()
+                        .unwrap()
+                        .push((query, content_type, body.to_vec()));
+                    b"%PDF-1.7 rendered".to_vec()
+                }
+            }),
+        );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -3128,8 +3134,10 @@ async fn render_pdf_stores_what_the_renderer_made_at_the_path_named() {
 
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
-    assert!(seen[0].0.starts_with("text/markdown"), "{}", seen[0].0);
-    assert_eq!(seen[0].1, b"# Aging\n\nAcme owes 1,200.00\n");
+    // No look was asked for, so none is named: the renderer's default.
+    assert_eq!(seen[0].0, "");
+    assert!(seen[0].1.starts_with("text/markdown"), "{}", seen[0].1);
+    assert_eq!(seen[0].2, b"# Aging\n\nAcme owes 1,200.00\n");
     let pdf = store
         .read(
             &scope::resolve(&space, "session/report.pdf").unwrap(),
@@ -3160,6 +3168,8 @@ async fn render_pdf_sends_the_images_the_markdown_draws() {
         arguments: serde_json::json!({
             "path": "session/report.pdf",
             "markdown": markdown,
+            "theme": "letter",
+            "accent": "#7a1f2b",
             "action": "Making the report",
         })
         .to_string(),
@@ -3176,7 +3186,10 @@ async fn render_pdf_sends_the_images_the_markdown_draws() {
     };
     let image = [0x89, b'P', b'N', b'G', 0xff, 0x00];
     store
-        .write(&scope::resolve(&space, "session/chart.png").unwrap(), &image)
+        .write(
+            &scope::resolve(&space, "session/chart.png").unwrap(),
+            &image,
+        )
         .await
         .unwrap();
 
@@ -3187,7 +3200,8 @@ async fn render_pdf_sends_the_images_the_markdown_draws() {
 
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1, "{}", first_tool_result(&gateway));
-    assert_eq!(seen[0].0, "application/x-outturn-bundle");
+    assert_eq!(seen[0].0, "theme=letter&accent=%237a1f2b");
+    assert_eq!(seen[0].1, "application/x-outturn-bundle");
     // The markdown, then the image once though it is drawn twice.
     let name = b"session/chart.png";
     let expected: Vec<u8> = [
@@ -3200,7 +3214,7 @@ async fn render_pdf_sends_the_images_the_markdown_draws() {
         &image,
     ]
     .concat();
-    assert_eq!(seen[0].1, expected);
+    assert_eq!(seen[0].2, expected);
 }
 
 /// An image that is not there is said by name, and nothing is rendered: a

@@ -9,8 +9,10 @@
 
 mod images;
 mod layout;
+mod theme;
 
 pub use images::{BUNDLE, Images, unbundle};
 pub use layout::render;
+pub use theme::{THEMES, Theme};
 
 pub mod service;

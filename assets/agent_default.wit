@@ -119,6 +119,15 @@ interface host {
         size: u64,
     }
 
+    /// How a PDF looks. Both are passed to the renderer as given, and it
+    /// refuses what it does not know with a sentence naming what it does.
+    record pdf-style {
+        /// A theme by name: report, letter or plain. None is report.
+        theme: option<string>,
+        /// An accent color, as `#rrggbb`. None is the theme's own.
+        accent: option<string>,
+    }
+
     /// Reads part of an object.
     ///
     /// Ranged rather than whole-file, because a guest reading a large object
@@ -215,7 +224,7 @@ interface host {
     /// scopes, and drawn; one that cannot be found or drawn fails the render.
     ///
     /// Refused while the pod is short of memory, which is worth waiting out.
-    render-pdf: func(markdown: string, destination: string) -> result<object-info, string>;
+    render-pdf: func(markdown: string, destination: string, style: pdf-style) -> result<object-info, string>;
 
     /// Removes an object.
     ///
