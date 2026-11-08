@@ -92,17 +92,24 @@ enum FaceId {
     FallbackBold,
 }
 
-/// A font and the advance of each character in it, in ems.
+/// A font, and what a run of text in it measures.
 ///
-/// Measured from the font rather than from shaping: shaping is what draws,
-/// but breaking a line only needs to know whether a word fits, and kerning
-/// only ever makes a word narrower than its advances say.
+/// Measured by shaping, as krilla draws it: summing each character's advance
+/// leaves out kerning, so a run came out narrower than it was laid out and
+/// whatever followed it on the line started late.
+/// Shaped widths a face keeps before it starts over.
+const RUNS_KEPT: usize = 16 * 1024;
+
 struct Face {
     font: Font,
+    shaper: rustybuzz::Face<'static>,
     data: &'static [u8],
     index: u32,
     emoji: bool,
     advances: RefCell<HashMap<char, f32>>,
+    /// Shaped widths in ems, by run. Words repeat, and shaping each again
+    /// more than doubled the time a long document took.
+    runs: RefCell<HashMap<String, f32>>,
     covers: RefCell<HashMap<char, bool>>,
 }
 
@@ -112,12 +119,15 @@ impl Face {
         // what this component holds, and holding them twice is most of its
         // memory.
         let font = Font::new(data.into(), index).expect("a font that was checked did not parse");
+        let shaper = rustybuzz::Face::from_slice(data, index).expect("a font that was checked did not parse");
         Face {
             font,
+            shaper,
             data,
             index,
             emoji,
             advances: RefCell::default(),
+            runs: RefCell::default(),
             covers: RefCell::default(),
         }
     }
@@ -175,7 +185,23 @@ impl Face {
         if self.emoji {
             return self.emoji_width(text, size);
         }
-        text.chars().map(|c| self.char_width(c)).sum::<f32>() * size
+        if let Some(ems) = self.runs.borrow().get(text) {
+            return ems * size;
+        }
+        let mut buffer = rustybuzz::UnicodeBuffer::new();
+        buffer.push_str(text);
+        buffer.guess_segment_properties();
+        let shaped = rustybuzz::shape(&self.shaper, &[], buffer);
+        let units: i32 = shaped.glyph_positions().iter().map(|p| p.x_advance).sum();
+        let ems = units as f32 / self.shaper.units_per_em() as f32;
+        let mut runs = self.runs.borrow_mut();
+        // Bounded, so a document of nothing but distinct words cannot grow it
+        // without end; starting over costs only time.
+        if runs.len() >= RUNS_KEPT {
+            runs.clear();
+        }
+        runs.insert(text.to_owned(), ems);
+        ems * size
     }
 }
 

@@ -570,6 +570,7 @@ dependencies = [
  "krilla",
  "png",
  "pulldown-cmark",
+ "rustybuzz",
  "skrifa",
  "tokio",
  "tower",
