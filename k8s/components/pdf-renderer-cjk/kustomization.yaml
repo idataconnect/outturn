@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# The PDF renderer with CJK fonts, for documents written in Chinese, Japanese
+# or Korean, which the built-in fonts draw as boxes. Instead of pdf-renderer,
+# not beside it: this is pdf-renderer with its image swapped, so the service
+# and the network policies are the ones pdf-renderer declares.
+#
+#   scripts/dev.sh --with pdf-renderer-cjk
+#
+# The fonts are forty megabytes of image and of each pod's memory, which is
+# why they are not in the renderer every deployment runs.
+components:
+  - ../pdf-renderer
+
+patches:
+  - target:
+      kind: Deployment
+      name: outturn-pdf-renderer
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/image
+        value: outturn-pdf-renderer-cjk

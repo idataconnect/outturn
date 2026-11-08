@@ -116,6 +116,28 @@ EXPOSE 8090
 USER 65534:65534
 ENTRYPOINT ["outturn-renderer"]
 
+# The same renderer with CJK fonts, deployed by k8s/components/pdf-renderer-cjk
+# where documents may be written in Chinese, Japanese or Korean. Forty
+# megabytes of fonts every other deployment does without; the built-in faces
+# lack those scripts, and without these they render as boxes. Noto Sans CJK,
+# regular and bold, as Debian packages it: apt checks what it installs.
+FROM rust:1@sha256:09027f873d45b8ecd1dc86f1fa13b7a62b875c961f017a0e331267b350430137 AS cjk-fonts
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends fonts-noto-cjk && \
+    rm -rf /var/lib/apt/lists/*
+
+FROM pdf-renderer AS pdf-renderer-cjk
+COPY --from=cjk-fonts /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc /usr/share/fonts/NotoSansCJK-Regular.ttc
+COPY --from=cjk-fonts /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc /usr/share/fonts/NotoSansCJK-Bold.ttc
+COPY --from=cjk-fonts /usr/share/doc/fonts-noto-cjk/copyright /usr/share/doc/fonts-noto-cjk/copyright
+# Each collection holds the same characters drawn five ways -- Japanese,
+# Korean, Simplified and Traditional Chinese, Hong Kong -- in that order.
+# Simplified Chinese is the default; an index here chooses another.
+ENV FALLBACK_FONT=/usr/share/fonts/NotoSansCJK-Regular.ttc \
+    FALLBACK_FONT_INDEX=2 \
+    FALLBACK_FONT_BOLD=/usr/share/fonts/NotoSansCJK-Bold.ttc \
+    FALLBACK_FONT_BOLD_INDEX=2
+
 # The HEIC converter, deployed only where an operator wants phone photos
 # converted (k8s/components/heic). Its own crate and its own image: libheif
 # and its HEVC decoder are in this image and in no other.

@@ -29,7 +29,7 @@ without the typesetting engine above it, which is what gets font subsetting
 and embedding right. Four DejaVu faces are built in (regular, bold,
 oblique, mono). They cover Latin, Greek and Cyrillic and a good deal else, but
 not CJK; a document in a script the fonts lack renders its missing glyphs as
-boxes.
+boxes -- unless the deployment runs the renderer with CJK fonts (below).
 
 Emoji are drawn in color from Twemoji, a fifth face that takes any character
 the text faces lack and it has -- or one followed by the emoji variation
@@ -76,6 +76,29 @@ pod's -- was not worth carrying for that.
 Every refusal is a sentence the agent can act on -- too large, busy, too slow,
 not available here -- returned as an ordinary tool error, and the turn carries
 on.
+
+## CJK, where it is wanted
+
+Chinese, Japanese and Korean need fonts of about twenty megabytes a weight,
+which every deployment would carry in its image and in each pod's memory to
+serve the few that write in them. So they are an image of their own:
+`k8s/components/pdf-renderer-cjk` (`scripts/dev.sh --with pdf-renderer-cjk`,
+instead of `pdf-renderer`) is the same renderer and the same service, in an
+image with Noto Sans CJK, regular and bold, as Debian packages it.
+
+The renderer takes them as a fallback, named by `FALLBACK_FONT` and
+`FALLBACK_FONT_BOLD`, and `_INDEX` beside each for the face in a collection:
+a character no built-in face has, and the emoji face does not either, is
+drawn from it, bold where the text is. Noto's collections draw the same
+characters five ways, Japanese first; the image chooses Simplified Chinese,
+index 2. A path given that does not load stops the renderer at startup, rather
+than leaving boxes in somebody's document.
+
+| | Without | With |
+|---|---|---|
+| Image | 39 MB | 79 MB |
+| Idle | 4 MiB | 39 MiB |
+| After the 2 MiB input | 17 MiB | 52 MiB |
 
 ## Themes
 

@@ -23,6 +23,45 @@ static MONO: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
 /// has, so an emoji in a report is an emoji rather than an empty box.
 static EMOJI: &[u8] = include_bytes!("../fonts/Twemoji.ttf");
 
+/// Fonts for whatever no built-in face has, where the deployment gave them:
+/// CJK, most often, which the built-in faces lack and which would take
+/// megabytes in every image to carry. A regular face, and a bold one where
+/// there is one for headings and strong text. Set once, at startup.
+static FALLBACK: std::sync::OnceLock<Fallback> = std::sync::OnceLock::new();
+
+/// A font given at startup: its bytes, and which face of a collection it is.
+type Given = (&'static [u8], u32);
+
+struct Fallback {
+    regular: Given,
+    bold: Option<Given>,
+}
+
+/// A font file and the face in it to use.
+pub struct FontFile {
+    pub data: Vec<u8>,
+    pub index: u32,
+}
+
+/// Takes fonts for characters no built-in face has: a regular face, and a
+/// bold one if there is one. Refused if either is not a font krilla can
+/// draw; they can be given only once.
+pub fn set_fallback_fonts(regular: FontFile, bold: Option<FontFile>) -> Result<(), String> {
+    fn checked(file: FontFile) -> Result<Given, String> {
+        let data: &'static [u8] = Box::leak(file.data.into_boxed_slice());
+        skrifa::FontRef::from_index(data, file.index).map_err(|e| format!("not a font: {e}"))?;
+        Font::new(data.into(), file.index).ok_or("a font krilla cannot draw")?;
+        Ok((data, file.index))
+    }
+    let fallback = Fallback {
+        regular: checked(regular)?,
+        bold: bold.map(checked).transpose()?,
+    };
+    FALLBACK
+        .set(fallback)
+        .map_err(|_| "fallback fonts are already set".to_string())
+}
+
 // A4, in points. Letter is an inch shorter and a little wider; A4 is what
 // most of the world prints on, and either prints acceptably on the other.
 const PAGE_W: f32 = 595.0;
@@ -49,6 +88,8 @@ enum FaceId {
     Italic,
     Mono,
     Emoji,
+    Fallback,
+    FallbackBold,
 }
 
 /// A font and the advance of each character in it, in ems.
@@ -59,20 +100,22 @@ enum FaceId {
 struct Face {
     font: Font,
     data: &'static [u8],
+    index: u32,
     emoji: bool,
     advances: RefCell<HashMap<char, f32>>,
     covers: RefCell<HashMap<char, bool>>,
 }
 
 impl Face {
-    fn new(data: &'static [u8], emoji: bool) -> Self {
+    fn new(data: &'static [u8], index: u32, emoji: bool) -> Self {
         // From the static bytes, not a copy of them: the fonts are most of
         // what this component holds, and holding them twice is most of its
         // memory.
-        let font = Font::new(data.into(), 0).expect("a bundled font did not parse");
+        let font = Font::new(data.into(), index).expect("a font that was checked did not parse");
         Face {
             font,
             data,
+            index,
             emoji,
             advances: RefCell::default(),
             covers: RefCell::default(),
@@ -108,7 +151,7 @@ impl Face {
     /// One character's advance, in ems.
     fn char_width(&self, c: char) -> f32 {
         *self.advances.borrow_mut().entry(c).or_insert_with(|| {
-            let font = skrifa::FontRef::new(self.data).expect("bundled font");
+            let font = skrifa::FontRef::from_index(self.data, self.index).expect("checked font");
             let upem = font
                 .metrics(Size::unscaled(), LocationRef::default())
                 .units_per_em as f32;
@@ -122,7 +165,7 @@ impl Face {
 
     fn has(&self, c: char) -> bool {
         *self.covers.borrow_mut().entry(c).or_insert_with(|| {
-            skrifa::FontRef::new(self.data)
+            skrifa::FontRef::from_index(self.data, self.index)
                 .map(|f| f.charmap().map(c).is_some())
                 .unwrap_or(false)
         })
@@ -136,21 +179,39 @@ impl Face {
     }
 }
 
-struct Faces([Face; 5]);
+struct Faces {
+    built_in: [Face; 5],
+    fallback: Option<Face>,
+    fallback_bold: Option<Face>,
+}
 
 impl Faces {
     fn new() -> Self {
-        Faces([
-            Face::new(REGULAR, false),
-            Face::new(BOLD, false),
-            Face::new(ITALIC, false),
-            Face::new(MONO, false),
-            Face::new(EMOJI, true),
-        ])
+        Faces {
+            built_in: [
+                Face::new(REGULAR, 0, false),
+                Face::new(BOLD, 0, false),
+                Face::new(ITALIC, 0, false),
+                Face::new(MONO, 0, false),
+                Face::new(EMOJI, 0, true),
+            ],
+            fallback: FALLBACK
+                .get()
+                .map(|f| Face::new(f.regular.0, f.regular.1, false)),
+            fallback_bold: FALLBACK
+                .get()
+                .and_then(|f| f.bold)
+                .map(|(data, index)| Face::new(data, index, false)),
+        }
     }
 
     fn get(&self, id: FaceId) -> &Face {
-        &self.0[id as usize]
+        match id {
+            // Only ever chosen where there is one: `segments` asks first.
+            FaceId::Fallback => self.fallback.as_ref().expect("a fallback face"),
+            FaceId::FallbackBold => self.fallback_bold.as_ref().expect("a bold fallback face"),
+            id => &self.built_in[id as usize],
+        }
     }
 
     /// A space beside text in `face`. The emoji font has none of its own, so
@@ -165,7 +226,8 @@ impl Faces {
     }
 
     /// Splits text into stretches each drawn in one face: `primary` where it
-    /// has the character, the emoji face where it does not and that does.
+    /// has the character, the emoji face where it does not and that does,
+    /// and the deployment's fallback where neither has it and that does.
     ///
     /// What joins an emoji to the next -- a zero-width joiner, a variation
     /// selector, a skin tone, a keycap -- stays with the emoji before it, so
@@ -186,10 +248,18 @@ impl Faces {
             let asks_for_emoji = next == Some('\u{FE0F}') && emoji.has(c);
             let face = if modifies_emoji || asks_for_emoji {
                 FaceId::Emoji
-            } else if main.has(c) || !emoji.has(c) {
+            } else if main.has(c) {
                 primary
-            } else {
+            } else if emoji.has(c) {
                 FaceId::Emoji
+            } else if primary == FaceId::Bold
+                && self.fallback_bold.as_ref().is_some_and(|f| f.has(c))
+            {
+                FaceId::FallbackBold
+            } else if self.fallback.as_ref().is_some_and(|f| f.has(c)) {
+                FaceId::Fallback
+            } else {
+                primary
             };
             if current.is_some_and(|f| f != face) {
                 out.push((current.unwrap(), &text[start..i]));
@@ -1824,6 +1894,15 @@ mod tests {
         assert_ne!(pdfs[0], pdfs[1]);
         assert_ne!(pdfs[0], pdfs[2]);
         assert_ne!(pdfs[1], pdfs[2]);
+    }
+
+    #[test]
+    fn without_a_fallback_a_character_no_face_has_stays_in_its_own_face() {
+        // No test sets one: the fallback is a deployment's, given at startup.
+        let faces = Faces::new();
+        assert!(faces.fallback.is_none());
+        let segs = faces.segments("Tokyo 東京", FaceId::Regular);
+        assert_eq!(segs, [(FaceId::Regular, "Tokyo 東京")]);
     }
 
     #[test]

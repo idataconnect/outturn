@@ -12,7 +12,7 @@ mod layout;
 mod theme;
 
 pub use images::{BUNDLE, Images, unbundle};
-pub use layout::render;
+pub use layout::{FontFile, render, set_fallback_fonts};
 pub use theme::{THEMES, Theme};
 
 pub mod service;
