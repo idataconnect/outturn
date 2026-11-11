@@ -17,3 +17,9 @@ Copyright Twitter, Inc. and other contributors.
 Graphics licensed under CC-BY 4.0: https://creativecommons.org/licenses/by/4.0/
 (see renderers/pdf/fonts/LICENSE-Twemoji-graphics).
 The font build is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The pdf-renderer-cjk image also includes Noto Sans CJK, regular and bold, as
+packaged by Debian (fonts-noto-cjk). Copyright 2014-2021 Adobe
+(http://www.adobe.com/), with Reserved Font Name 'Source'. Licensed under the
+SIL Open Font License, Version 1.1; the terms are in the image at
+/usr/share/doc/fonts-noto-cjk/copyright.

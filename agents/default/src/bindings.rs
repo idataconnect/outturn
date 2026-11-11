@@ -245,6 +245,26 @@ pub mod outturn {
                         .finish()
                 }
             }
+            /// How a PDF looks. Both are passed to the renderer as given, and it
+            /// refuses what it does not know with a sentence naming what it does.
+            #[derive(Clone)]
+            pub struct PdfStyle {
+                /// A theme by name: report, letter or plain. None is report.
+                pub theme: Option<_rt::String>,
+                /// An accent color, as `#rrggbb`. None is the theme's own.
+                pub accent: Option<_rt::String>,
+            }
+            impl ::core::fmt::Debug for PdfStyle {
+                fn fmt(
+                    &self,
+                    f: &mut ::core::fmt::Formatter<'_>,
+                ) -> ::core::fmt::Result {
+                    f.debug_struct("PdfStyle")
+                        .field("theme", &self.theme)
+                        .field("accent", &self.accent)
+                        .finish()
+                }
+            }
             /// An object being written, a piece at a time.
             ///
             /// Nothing exists at the path until `finish`. A writer dropped without
@@ -1388,13 +1408,15 @@ pub mod outturn {
             /// The document is made and written by the host and never passes through
             /// the guest: it would only be copied back out again, and linear memory
             /// is the scarcer of the two. Headings, paragraphs, emphasis, links,
-            /// lists, block quotes, code and tables are laid out; images are not yet,
-            /// and appear as their alt text.
+            /// lists, block quotes, code and tables are laid out. Images are read by
+            /// the host from the paths the markdown names, under the guest's own
+            /// scopes, and drawn; one that cannot be found or drawn fails the render.
             ///
             /// Refused while the pod is short of memory, which is worth waiting out.
             pub fn render_pdf(
                 markdown: &str,
                 destination: &str,
+                style: &PdfStyle,
             ) -> Result<ObjectInfo, _rt::String> {
                 unsafe {
                     #[repr(align(8))]
@@ -1413,23 +1435,54 @@ pub mod outturn {
                     let vec1 = destination;
                     let ptr1 = vec1.as_ptr().cast::<u8>();
                     let len1 = vec1.len();
-                    let ptr2 = ret_area.0.as_mut_ptr().cast::<u8>();
+                    let PdfStyle { theme: theme2, accent: accent2 } = style;
+                    let (result4_0, result4_1, result4_2) = match theme2 {
+                        Some(e) => {
+                            let vec3 = e;
+                            let ptr3 = vec3.as_ptr().cast::<u8>();
+                            let len3 = vec3.len();
+                            (1i32, ptr3.cast_mut(), len3)
+                        }
+                        None => (0i32, ::core::ptr::null_mut(), 0usize),
+                    };
+                    let (result6_0, result6_1, result6_2) = match accent2 {
+                        Some(e) => {
+                            let vec5 = e;
+                            let ptr5 = vec5.as_ptr().cast::<u8>();
+                            let len5 = vec5.len();
+                            (1i32, ptr5.cast_mut(), len5)
+                        }
+                        None => (0i32, ::core::ptr::null_mut(), 0usize),
+                    };
+                    let ptr7 = ret_area.0.as_mut_ptr().cast::<u8>();
                     #[cfg(target_arch = "wasm32")]
                     #[link(wasm_import_module = "outturn:agent/host@0.1.0")]
                     unsafe extern "C" {
                         #[link_name = "render-pdf"]
-                        fn wit_import3(
+                        fn wit_import8(
                             _: *mut u8,
                             _: usize,
+                            _: *mut u8,
+                            _: usize,
+                            _: i32,
+                            _: *mut u8,
+                            _: usize,
+                            _: i32,
                             _: *mut u8,
                             _: usize,
                             _: *mut u8,
                         );
                     }
                     #[cfg(not(target_arch = "wasm32"))]
-                    unsafe extern "C" fn wit_import3(
+                    unsafe extern "C" fn wit_import8(
                         _: *mut u8,
                         _: usize,
+                        _: *mut u8,
+                        _: usize,
+                        _: i32,
+                        _: *mut u8,
+                        _: usize,
+                        _: i32,
                         _: *mut u8,
                         _: usize,
                         _: *mut u8,
@@ -1437,51 +1490,63 @@ pub mod outturn {
                         unreachable!()
                     }
                     unsafe {
-                        wit_import3(ptr0.cast_mut(), len0, ptr1.cast_mut(), len1, ptr2)
+                        wit_import8(
+                            ptr0.cast_mut(),
+                            len0,
+                            ptr1.cast_mut(),
+                            len1,
+                            result4_0,
+                            result4_1,
+                            result4_2,
+                            result6_0,
+                            result6_1,
+                            result6_2,
+                            ptr7,
+                        )
                     };
-                    let l4 = i32::from(*ptr2.add(0).cast::<u8>());
-                    let result12 = match l4 {
+                    let l9 = i32::from(*ptr7.add(0).cast::<u8>());
+                    let result17 = match l9 {
                         0 => {
                             let e = {
-                                let l5 = *ptr2.add(8).cast::<*mut u8>();
-                                let l6 = *ptr2
+                                let l10 = *ptr7.add(8).cast::<*mut u8>();
+                                let l11 = *ptr7
                                     .add(8 + 1 * ::core::mem::size_of::<*const u8>())
                                     .cast::<usize>();
-                                let len7 = l6;
-                                let bytes7 = _rt::Vec::from_raw_parts(
-                                    l5.cast(),
-                                    len7,
-                                    len7,
+                                let len12 = l11;
+                                let bytes12 = _rt::Vec::from_raw_parts(
+                                    l10.cast(),
+                                    len12,
+                                    len12,
                                 );
-                                let l8 = *ptr2
+                                let l13 = *ptr7
                                     .add(8 + 2 * ::core::mem::size_of::<*const u8>())
                                     .cast::<i64>();
                                 ObjectInfo {
-                                    path: _rt::string_lift(bytes7),
-                                    size: l8 as u64,
+                                    path: _rt::string_lift(bytes12),
+                                    size: l13 as u64,
                                 }
                             };
                             Ok(e)
                         }
                         1 => {
                             let e = {
-                                let l9 = *ptr2.add(8).cast::<*mut u8>();
-                                let l10 = *ptr2
+                                let l14 = *ptr7.add(8).cast::<*mut u8>();
+                                let l15 = *ptr7
                                     .add(8 + 1 * ::core::mem::size_of::<*const u8>())
                                     .cast::<usize>();
-                                let len11 = l10;
-                                let bytes11 = _rt::Vec::from_raw_parts(
-                                    l9.cast(),
-                                    len11,
-                                    len11,
+                                let len16 = l15;
+                                let bytes16 = _rt::Vec::from_raw_parts(
+                                    l14.cast(),
+                                    len16,
+                                    len16,
                                 );
-                                _rt::string_lift(bytes11)
+                                _rt::string_lift(bytes16)
                             };
                             Err(e)
                         }
                         _ => _rt::invalid_enum_discriminant(),
                     };
-                    result12
+                    result17
                 }
             }
             #[allow(unused_unsafe, clippy::all)]
@@ -3931,9 +3996,9 @@ pub(crate) use __export_agent_world_impl as export;
 )]
 #[doc(hidden)]
 #[allow(clippy::octal_escapes)]
-pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2237] = *b"\
-\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xbb\x10\x01A\x02\x01\
-A\x05\x01Bw\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
+pub static __WIT_BINDGEN_COMPONENT_TYPE: [u8; 2278] = *b"\
+\0asm\x0d\0\x01\0\0\x19\x16wit-component-encoding\x04\0\x07\xe4\x10\x01A\x02\x01\
+A\x05\x01By\x01r\x03\x02ids\x04names\x09argumentss\x04\0\x09tool-call\x03\0\0\x01\
 r\x03\x04names\x0bdescriptions\x0aparameterss\x04\0\x0ftool-definition\x03\0\x02\
 \x01q\x02\x04text\x01s\0\x04call\x01\x01\0\x04\0\x0ccontent-part\x03\0\x04\x01p\x05\
 \x01ks\x01r\x03\x04roles\x05parts\x06\x0ctool-call-id\x07\x04\0\x07message\x03\0\
@@ -3943,43 +4008,44 @@ l\x07\x0btemperature\x0c\x0amax-tokens\x0d\x04\0\x12completion-request\x03\0\x0e
 -write-tokensy\x10reasoning-tokensy\x04\0\x05usage\x03\0\x10\x01k\x11\x01r\x03\x05\
 parts\x06\x0dfinish-reason\x07\x05usage\x12\x04\0\x0acompletion\x03\0\x13\x01r\x04\
 \x02ids\x04names\x06actions\x09argumentss\x04\0\x0dtool-activity\x03\0\x15\x01r\x02\
-\x04paths\x04sizew\x04\0\x0bobject-info\x03\0\x17\x04\0\x0dobject-writer\x03\x01\
-\x04\0\x0dobject-reader\x03\x01\x01o\x02ss\x01p\x1b\x01r\x06\x06methods\x03urls\x07\
-headers\x1c\x04body\x07\x09body-file\x07\x09operation\x07\x04\0\x0chttp-request\x03\
-\0\x1d\x01r\x04\x06status{\x07headers\x1c\x04bodys\x09truncated\x7f\x04\0\x0dhtt\
-p-response\x03\0\x1f\x01q\x02\x02at\x01s\0\x07seconds\x01w\0\x04\0\x09timer-due\x03\
-\0!\x01r\x04\x02ids\x07detailss\x07contents\x08is-error\x7f\x04\0\x0ctool-outcom\
-e\x03\0#\x01r\x02\x07contents\x08deliverys\x04\0\x07arrival\x03\0%\x01r\x02\x0fm\
-ax-tool-roundsy\x09cancelled\x7f\x04\0\x06limits\x03\0'\x01ps\x01r\x08\x04names\x0b\
-descriptions\x04files\x06methods\x03urls\x04body)\x05query)\x06schemas\x04\0\x0f\
-skill-operation\x03\0*\x01r\x04\x03nows\x07weekdays\x08timezones\x0cabbreviation\
-s\x04\0\x05clock\x03\0,\x01h\x19\x01p}\x01j\0\x01s\x01@\x02\x04self.\x05chunk/\0\
-0\x04\0\x1b[method]object-writer.write\x011\x01i\x19\x01j\x01\x18\x01s\x01@\x01\x06\
-writer2\03\x04\0\x1c[static]object-writer.finish\x014\x01h\x1a\x01j\x01/\x01s\x01\
-@\x02\x04self5\x03leny\06\x04\0\x1a[method]object-reader.read\x017\x01@\x03\x04p\
-aths\x06offsetw\x03leny\06\x04\0\x0bread-object\x018\x01j\x01s\x01s\x01@\x02\x04\
-paths\x08questions\09\x04\0\x0edescribe-image\x01:\x04\0\x0aread-bytes\x018\x01@\
-\x01\x04paths\03\x04\0\x0bstat-object\x01;\x01j\x01w\x01s\x01@\x02\x04paths\x04d\
-ata/\0<\x04\0\x0cwrite-object\x01=\x01j\x012\x01s\x01@\x01\x04paths\0>\x04\0\x0b\
-open-writer\x01?\x01i\x1a\x01j\x01\xc0\0\x01s\x01@\x01\x04paths\0\xc1\0\x04\0\x0b\
-open-reader\x01B\x01@\x02\x08markdowns\x0bdestinations\03\x04\0\x0arender-pdf\x01\
-C\x01@\x01\x04paths\00\x04\0\x0ddelete-object\x01D\x01j\x01\x20\x01s\x01@\x01\x07\
-request\x1e\0\xc5\0\x04\0\x05fetch\x01F\x01@\x02\x07secondsw\x06reasons\09\x04\0\
-\x05sleep\x01G\x01@\x02\x03due\"\x06reasons\09\x04\0\x09set-timer\x01H\x01@\0\09\
-\x04\0\x0blist-timers\x01I\x01@\x01\x02ids\09\x04\0\x0ccancel-timer\x01J\x01p\x18\
-\x01j\x01\xcb\0\x01s\x01@\x01\x06prefixs\0\xcc\0\x04\0\x0clist-objects\x01M\x01@\
-\x01\x07outcome$\x01\0\x04\0\x0dtool-finished\x01N\x01@\x01\x08activity\x16\x01\0\
-\x04\0\x0ctool-started\x01O\x01p&\x01@\0\0\xd0\0\x04\0\x0dpending-input\x01Q\x01\
-@\0\0(\x04\0\x0ecurrent-limits\x01R\x01@\0\0)\x04\0\x0beager-tools\x01S\x01p+\x01\
-@\0\0\xd4\0\x04\0\x10skill-operations\x01U\x01j\x01\x14\x01s\x01@\x01\x07request\
-\x0f\0\xd6\0\x04\0\x04chat\x01W\x01@\0\0-\x04\0\x0ccurrent-time\x01X\x01@\x01\x04\
-texts\x01\0\x04\0\x08progress\x01Y\x01@\x02\x05levels\x07messages\x01\0\x04\0\x03\
-log\x01Z\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\
-\x02\x03\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0c\
-conversation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outturn:a\
-gent/agent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\
-\0\x0bagent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-compone\
-nt\x070.227.1\x10wit-bindgen-rust\x060.41.0";
+\x04paths\x04sizew\x04\0\x0bobject-info\x03\0\x17\x01r\x02\x05theme\x07\x06accen\
+t\x07\x04\0\x09pdf-style\x03\0\x19\x04\0\x0dobject-writer\x03\x01\x04\0\x0dobjec\
+t-reader\x03\x01\x01o\x02ss\x01p\x1d\x01r\x06\x06methods\x03urls\x07headers\x1e\x04\
+body\x07\x09body-file\x07\x09operation\x07\x04\0\x0chttp-request\x03\0\x1f\x01r\x04\
+\x06status{\x07headers\x1e\x04bodys\x09truncated\x7f\x04\0\x0dhttp-response\x03\0\
+!\x01q\x02\x02at\x01s\0\x07seconds\x01w\0\x04\0\x09timer-due\x03\0#\x01r\x04\x02\
+ids\x07detailss\x07contents\x08is-error\x7f\x04\0\x0ctool-outcome\x03\0%\x01r\x02\
+\x07contents\x08deliverys\x04\0\x07arrival\x03\0'\x01r\x02\x0fmax-tool-roundsy\x09\
+cancelled\x7f\x04\0\x06limits\x03\0)\x01ps\x01r\x08\x04names\x0bdescriptions\x04\
+files\x06methods\x03urls\x04body+\x05query+\x06schemas\x04\0\x0fskill-operation\x03\
+\0,\x01r\x04\x03nows\x07weekdays\x08timezones\x0cabbreviations\x04\0\x05clock\x03\
+\0.\x01h\x1b\x01p}\x01j\0\x01s\x01@\x02\x04self0\x05chunk1\02\x04\0\x1b[method]o\
+bject-writer.write\x013\x01i\x1b\x01j\x01\x18\x01s\x01@\x01\x06writer4\05\x04\0\x1c\
+[static]object-writer.finish\x016\x01h\x1c\x01j\x011\x01s\x01@\x02\x04self7\x03l\
+eny\08\x04\0\x1a[method]object-reader.read\x019\x01@\x03\x04paths\x06offsetw\x03\
+leny\08\x04\0\x0bread-object\x01:\x01j\x01s\x01s\x01@\x02\x04paths\x08questions\0\
+;\x04\0\x0edescribe-image\x01<\x04\0\x0aread-bytes\x01:\x01@\x01\x04paths\05\x04\
+\0\x0bstat-object\x01=\x01j\x01w\x01s\x01@\x02\x04paths\x04data1\0>\x04\0\x0cwri\
+te-object\x01?\x01j\x014\x01s\x01@\x01\x04paths\0\xc0\0\x04\0\x0bopen-writer\x01\
+A\x01i\x1c\x01j\x01\xc2\0\x01s\x01@\x01\x04paths\0\xc3\0\x04\0\x0bopen-reader\x01\
+D\x01@\x03\x08markdowns\x0bdestinations\x05style\x1a\05\x04\0\x0arender-pdf\x01E\
+\x01@\x01\x04paths\02\x04\0\x0ddelete-object\x01F\x01j\x01\"\x01s\x01@\x01\x07re\
+quest\x20\0\xc7\0\x04\0\x05fetch\x01H\x01@\x02\x07secondsw\x06reasons\0;\x04\0\x05\
+sleep\x01I\x01@\x02\x03due$\x06reasons\0;\x04\0\x09set-timer\x01J\x01@\0\0;\x04\0\
+\x0blist-timers\x01K\x01@\x01\x02ids\0;\x04\0\x0ccancel-timer\x01L\x01p\x18\x01j\
+\x01\xcd\0\x01s\x01@\x01\x06prefixs\0\xce\0\x04\0\x0clist-objects\x01O\x01@\x01\x07\
+outcome&\x01\0\x04\0\x0dtool-finished\x01P\x01@\x01\x08activity\x16\x01\0\x04\0\x0c\
+tool-started\x01Q\x01p(\x01@\0\0\xd2\0\x04\0\x0dpending-input\x01S\x01@\0\0*\x04\
+\0\x0ecurrent-limits\x01T\x01@\0\0+\x04\0\x0beager-tools\x01U\x01p-\x01@\0\0\xd6\
+\0\x04\0\x10skill-operations\x01W\x01j\x01\x14\x01s\x01@\x01\x07request\x0f\0\xd8\
+\0\x04\0\x04chat\x01Y\x01@\0\0/\x04\0\x0ccurrent-time\x01Z\x01@\x01\x04texts\x01\
+\0\x04\0\x08progress\x01[\x01@\x02\x05levels\x07messages\x01\0\x04\0\x03log\x01\\\
+\x03\0\x18outturn:agent/host@0.1.0\x05\0\x02\x03\0\0\x07message\x01B\x06\x02\x03\
+\x02\x01\x01\x04\0\x07message\x03\0\0\x01p\x01\x01j\x01s\x01s\x01@\x02\x0cconver\
+sation\x02\x0dsystem-prompts\0\x03\x04\0\x03run\x01\x04\x04\0\x19outturn:agent/a\
+gent@0.1.0\x05\x02\x04\0\x1foutturn:agent/agent-world@0.1.0\x04\0\x0b\x11\x01\0\x0b\
+agent-world\x03\0\0\0G\x09producers\x01\x0cprocessed-by\x02\x0dwit-component\x07\
+0.227.1\x10wit-bindgen-rust\x060.41.0";
 #[inline(never)]
 #[doc(hidden)]
 pub fn __link_custom_section_describing_imports() {

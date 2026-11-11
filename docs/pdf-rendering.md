@@ -11,8 +11,16 @@ the agent the path and size; the document never passes through the guest. Headin
 paragraphs, bold, italic, inline code, links (clickable), ordered, unordered
 and task lists, block quotes, code blocks, rules and tables with column
 alignment are laid out on A4 with page numbers, and the first top-level
-heading becomes the document's title. Images are not drawn yet and appear as
-their alt text.
+heading becomes the document's title, set large under a rule when it opens the
+document and repeated in a running header from page 2. A table carried over a
+page repeats its header, and a column holding only figures is set to the right
+unless the markdown said otherwise.
+
+Images are drawn from files. `![alt](session/chart.png "Figure 1: Sales")`
+places the image as a block of its own, centered, at its own size taken as 96
+pixels to the inch and scaled down to the measure and to most of a page; the
+title, where there is one, is its caption. An image in a table cell or a
+heading is shown as its alt text.
 
 The renderer is `renderers/pdf`: markdown parsed by `pulldown-cmark`, laid out
 by a flow layout written here, and written out by
@@ -21,7 +29,7 @@ without the typesetting engine above it, which is what gets font subsetting
 and embedding right. Four DejaVu faces are built in (regular, bold,
 oblique, mono). They cover Latin, Greek and Cyrillic and a good deal else, but
 not CJK; a document in a script the fonts lack renders its missing glyphs as
-boxes.
+boxes -- unless the deployment runs the renderer with CJK fonts (below).
 
 Emoji are drawn in color from Twemoji, a fifth face that takes any character
 the text faces lack and it has -- or one followed by the emoji variation
@@ -69,6 +77,75 @@ Every refusal is a sentence the agent can act on -- too large, busy, too slow,
 not available here -- returned as an ordinary tool error, and the turn carries
 on.
 
+## CJK, where it is wanted
+
+Chinese, Japanese and Korean need fonts of about twenty megabytes a weight,
+which every deployment would carry in its image and in each pod's memory to
+serve the few that write in them. So they are an image of their own:
+`k8s/components/pdf-renderer-cjk` (`scripts/dev.sh --with pdf-renderer-cjk`,
+instead of `pdf-renderer`) is the same renderer and the same service, in an
+image with Noto Sans CJK, regular and bold, as Debian packages it.
+
+The renderer takes them as a fallback, named by `FALLBACK_FONT` and
+`FALLBACK_FONT_BOLD`, and `_INDEX` beside each for the face in a collection:
+a character no built-in face has, and the emoji face does not either, is
+drawn from it, bold where the text is. Noto's collections draw the same
+characters five ways, Japanese first; the image chooses Simplified Chinese,
+index 2. A path given that does not load stops the renderer at startup, rather
+than leaving boxes in somebody's document.
+
+| | Without | With |
+|---|---|---|
+| Image | 39 MB | 79 MB |
+| Idle | 4 MiB | 39 MiB |
+| After the 2 MiB input | 17 MiB | 52 MiB |
+
+## Themes
+
+A document takes one of three looks, named in `render_pdf`'s `theme`, with an
+optional `accent` in `#rrggbb` -- a brand color, say:
+
+| Theme | Looks like |
+|---|---|
+| `report`, the default | Navy headings, a large title over a rule, tinted table headers, a running header |
+| `letter` | Ink headings, a modest title with no rule, no running header |
+| `plain` | Black and grey, links in ink: for printing |
+
+Named rather than described, because a document looks professional when its
+design is good, not when its source language is rich: given more to write, a
+model mostly writes the same headings and tables. Choosing between three looks
+it does well, and every model gets the same output because the design lives
+here. An accent too pale to read on white is refused, and so is a theme the
+renderer does not have; both answers name what would be accepted. The runtime
+passes both on as query parameters without checking them, so the list lives in
+one place.
+
+## Images
+
+The renderer reaches nothing, so the runtime reads each image the markdown
+names -- through the agent's own scopes, as any read is -- and sends it with
+the markdown, as one body: each part a length-prefixed name and its bytes, the
+markdown first under the name "" (`application/x-outturn-bundle`). Markdown
+with no images is still sent alone, as `text/markdown`.
+
+An image on the web is refused with a sentence saying to save it first, and an
+image that is not there, or that cannot be read, fails the render by name:
+a document missing its figure is not what was asked for, and an agent told
+which path was wrong can fix it.
+
+| | Value | Why |
+|---|---|---|
+| Images | 32 at most, 24 MiB together | Checked by the runtime before any is read, and again here |
+| Pixels | 16 million in a PNG, GIF or WebP | Counted from the header before decoding; decoded, that is 64 MB |
+
+A JPEG is written into the PDF as it is, never decoded, so it is held to no
+pixel limit: a phone photo costs its file size. A phone stores a portrait
+photo on its side and says in EXIF how to turn it, so the orientation is read
+from the header and applied as the image is drawn; without it every portrait
+photo would lie down. The other formats are decoded once each, however often
+they are drawn, and what krilla keeps is the compressed result, so a render's
+peak is one decoded image at a time: six 16-megapixel PNGs peak at 53 MiB.
+
 ## Two passes
 
 Each page says "n / N", so N has to be known before page 1 is drawn. The first
@@ -94,6 +171,24 @@ would make it flat -- the format allows it; the offsets in the cross-reference
 table are of bytes already written -- but that means `pdf-writer` and font
 subsetting done here, and nothing the cap admits needs it yet.
 
+## Why not Typst
+
+Typst was measured as the layout engine, on the same generated report and
+pinned to two CPUs. Its output is good and its speed is close, but it holds the
+whole laid-out document, because outlines, cross-references and page totals are
+resolved over all of it:
+
+| Markdown | This renderer | Typst 0.15.1 |
+|---|---|---|
+| 200 KiB | 0.2 s, 13 MiB | 0.3 s, 127 MiB |
+| 2 MiB | 1.6 s, 20 MiB | 3.3 s, 1,020 MiB |
+
+Memory that grows with the document is the property this renderer was built to
+avoid. And Typst is a programming language: 101 bytes of source ran for 33 s, so
+the size cap that bounds a render here would bound nothing if a model wrote it.
+Should designed documents be wanted later, Typst is still the way to get them,
+with templates filled from inert data, capped to documents short enough to fit.
+
 ## Where it goes next
 
 **Queued rendering.** Large or many documents -- a month-end run of a few
@@ -106,15 +201,3 @@ followed by one too.
 `render-pdf` is a host import, so the swap is the host's decision per call:
 render now and return the file, or queue it and tell the guest when it will be
 woken. A guest's code does not change.
-
-**A better default look.** A document looks professional because its design
-is good, not because its source language is rich: given more to write, a model
-mostly writes the same headings and tables. So the next gain is in the
-renderer -- typography, a title block and running header, and a few named
-themes a model chooses between -- with an accent color and inline color for
-the figure that has to stand out. Every model gets the same good output,
-because the design lives here rather than in the prompt.
-
-**Images.** Read from storage by the runtime and sent with the markdown,
-decoded in the renderer, each capped in pixels before it is decoded -- a
-decoded image is the one thing that could change the memory picture above.

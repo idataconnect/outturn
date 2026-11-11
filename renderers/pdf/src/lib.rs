@@ -7,8 +7,12 @@
 //! is a different and much larger thing. Served over HTTP by the binary in
 //! `src/main.rs`; see docs/pdf-rendering.md.
 
+mod images;
 mod layout;
+mod theme;
 
-pub use layout::render;
+pub use images::{BUNDLE, Images, unbundle};
+pub use layout::{FontFile, render, set_fallback_fonts};
+pub use theme::{THEMES, Theme};
 
 pub mod service;

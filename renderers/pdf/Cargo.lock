@@ -566,8 +566,11 @@ name = "outturn-renderer-pdf"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "imagesize",
  "krilla",
+ "png",
  "pulldown-cmark",
+ "rustybuzz",
  "skrifa",
  "tokio",
  "tower",

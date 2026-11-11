@@ -41,6 +41,10 @@ build:
       docker:
         dockerfile: Dockerfile
         target: pdf-renderer
+    - image: outturn-pdf-renderer-cjk
+      docker:
+        dockerfile: Dockerfile
+        target: pdf-renderer-cjk
     - image: outturn-heic
       docker:
         dockerfile: Dockerfile

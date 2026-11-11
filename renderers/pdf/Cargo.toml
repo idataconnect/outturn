@@ -18,6 +18,10 @@ krilla = { version = "0.8.2", default-features = false, features = ["simple-text
 pulldown-cmark = { version = "0.13.4", default-features = false }
 # Advance widths for line breaking. The version krilla itself depends on.
 skrifa = "0.42.0"
+# An image's size and format from its header, before anything is decoded. The
+# version krilla itself depends on.
+imagesize = "0.14.0"
+rustybuzz = "0.20.1"
 # The service. Versions as the main crate's, so the two move together.
 axum = "0.8.9"
 tokio = { version = "1.53.1", features = ["full"] }
@@ -31,3 +35,5 @@ strip = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+# Test images. The version krilla itself depends on.
+png = "0.18.1"

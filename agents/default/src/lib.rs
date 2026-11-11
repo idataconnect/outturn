@@ -435,11 +435,18 @@ fn builtin_tools() -> Vec<ToolDefinition> {
         description: "Make a PDF from markdown and save it. Headings, \
                       paragraphs, bold, italic, links, lists, task lists, \
                       block quotes, code blocks and tables are laid out on \
-                      A4 pages with page numbers; images are not drawn yet \
-                      and appear as their alt text. The first top-level \
-                      heading becomes the document's title."
+                      A4 pages with page numbers. The first top-level \
+                      heading becomes the document's title. Images are \
+                      drawn from files, written as ![alt](session/chart.png) \
+                      or with a caption as ![alt](session/chart.png \"Figure \
+                      1: Sales by region\"); PNG, JPEG, GIF and WebP can be \
+                      drawn. An image on the web has to be saved as a file \
+                      first. The theme sets the look: report, the default, \
+                      is colored with a large title and suits most \
+                      documents; letter is quieter, for correspondence; \
+                      plain is black and grey, for printing."
             .to_string(),
-        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path for the PDF, e.g. session/report.pdf"},"markdown":{"type":"string","description":"The whole document, in markdown."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Making the quarterly report."}},"required":["path","markdown","action"]}"#
+        parameters: r#"{"type":"object","properties":{"path":{"type":"string","description":"Scoped path for the PDF, e.g. session/report.pdf"},"markdown":{"type":"string","description":"The whole document, in markdown."},"theme":{"type":"string","enum":["report","letter","plain"],"description":"The look. Defaults to report."},"accent":{"type":"string","description":"An accent color as #rrggbb, such as a brand color. Leave it out to keep the theme's own."},"action":{"type":"string","description":"A short phrase naming what you are doing, in the present continuous, for the user to read while it happens. For example: Making the quarterly report."}},"required":["path","markdown","action"]}"#
             .to_string(),
     },
     ToolDefinition {
@@ -1292,7 +1299,17 @@ fn content_bytes(args: &serde_json::Value) -> Result<Vec<u8>, String> {
 
 fn render_pdf(args: &serde_json::Value) -> String {
     let path = arg(args, "path");
-    match host::render_pdf(arg(args, "markdown"), path) {
+    let optional = |name: &str| {
+        args.get(name)
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    let style = host::PdfStyle {
+        theme: optional("theme"),
+        accent: optional("accent"),
+    };
+    match host::render_pdf(arg(args, "markdown"), path, &style) {
         Ok(info) => serde_json::json!({ "path": info.path, "bytes": info.size }).to_string(),
         Err(e) => serde_json::json!({ "path": path, "error": e }).to_string(),
     }

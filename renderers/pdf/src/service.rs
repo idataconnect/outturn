@@ -1,6 +1,7 @@
 //! The HTTP face of the renderer.
 //!
-//! One route: markdown in, PDF out. It holds nothing -- no credentials, no
+//! One route: markdown in, PDF out -- alone, or bundled with the images it
+//! draws. It holds nothing -- no credentials, no
 //! storage, no database -- and calls nothing; whoever asked stores the
 //! result. So the most a request can do here is spend this pod's time, and
 //! everything below is about bounding that: how much may be sent, how many
@@ -11,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Query, State};
+use axum::http::HeaderMap;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -42,15 +44,45 @@ pub fn app() -> Router {
         .route("/v1/render/pdf", post(render_pdf))
         .route("/healthz", get(|| async { "ok" }))
         .with_state(renders)
-        // Plus a little for the request around it, so the cap is on the
-        // markdown and not on whatever else rides along.
-        .layer(DefaultBodyLimit::max(MAX_MARKDOWN_BYTES + 1024))
+        // Plus a little for the framing around them, so the caps are on the
+        // markdown and the images and not on whatever else rides along.
+        .layer(DefaultBodyLimit::max(
+            MAX_MARKDOWN_BYTES + crate::images::MAX_IMAGE_BYTES + 64 * 1024,
+        ))
 }
 
-async fn render_pdf(State(renders): State<Arc<Semaphore>>, body: Bytes) -> Response {
-    let Ok(markdown) = String::from_utf8(body.to_vec()) else {
-        return (StatusCode::BAD_REQUEST, "the markdown is not UTF-8").into_response();
+async fn render_pdf(
+    State(renders): State<Arc<Semaphore>>,
+    // The look asked for: `theme` by name, and `accent` as `#rrggbb`.
+    Query(look): Query<std::collections::HashMap<String, String>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let theme = match crate::Theme::named(
+        look.get("theme").map(String::as_str),
+        look.get("accent").map(String::as_str),
+    ) {
+        Ok(theme) => theme,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
+    let bundled = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with(crate::BUNDLE));
+    let (markdown, images) = if bundled {
+        match crate::unbundle(&body) {
+            Ok(parts) => parts,
+            Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+        }
+    } else {
+        match String::from_utf8(body.to_vec()) {
+            Ok(markdown) => (markdown, crate::Images::new()),
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "the markdown is not UTF-8").into_response();
+            }
+        }
+    };
+    drop(body);
     if markdown.len() > MAX_MARKDOWN_BYTES {
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -76,7 +108,7 @@ async fn render_pdf(State(renders): State<Arc<Semaphore>>, body: Bytes) -> Respo
     // is actually done.
     let work = tokio::task::spawn_blocking(move || {
         let _slot = slot;
-        crate::render(&markdown)
+        crate::render(&markdown, &images, &theme)
     });
     let rendered = match tokio::time::timeout(TIME_LIMIT, work).await {
         Ok(Ok(rendered)) => rendered,
@@ -148,6 +180,57 @@ mod tests {
     async fn markdown_past_the_cap_is_refused() {
         let (status, _) = post(vec![b'a'; MAX_MARKDOWN_BYTES + 1]).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn a_bundle_draws_its_images() {
+        let png = crate::images::tests::png(40, 30);
+        let body = crate::images::tests::bundle("![a](a.png)\n", &[("a.png", &png)]);
+
+        let response = app()
+            .oneshot(
+                Request::post("/v1/render/pdf")
+                    .header(header::CONTENT_TYPE, crate::BUNDLE)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let pdf = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(pdf.starts_with(b"%PDF"));
+        // What the renderer makes of the markdown with its image, and not
+        // what it makes of the markdown alone.
+        let mut images = crate::Images::new();
+        images.insert("a.png".into(), png);
+        let drawn = crate::render("![a](a.png)\n", &images, &crate::Theme::default()).unwrap();
+        let alone = crate::render(
+            "![a](a.png)\n",
+            &crate::Images::new(),
+            &crate::Theme::default(),
+        )
+        .unwrap();
+        assert_ne!(drawn, alone);
+        assert_eq!(pdf.as_ref(), drawn.as_slice());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_theme_is_refused_with_the_real_ones() {
+        let response = app()
+            .oneshot(
+                Request::post("/v1/render/pdf?theme=fancy")
+                    .body(Body::from("# Karl"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let said = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&said).contains("report, letter, plain"));
     }
 
     #[tokio::test]

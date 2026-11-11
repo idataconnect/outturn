@@ -12,6 +12,9 @@ use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEn
 use skrifa::MetadataProvider;
 use skrifa::instance::{LocationRef, Size};
 
+use crate::images::{Images, Picture};
+use crate::theme::{Color, INK, Theme};
+
 static REGULAR: &[u8] = include_bytes!("../fonts/DejaVuSans.ttf");
 static BOLD: &[u8] = include_bytes!("../fonts/DejaVuSans-Bold.ttf");
 static ITALIC: &[u8] = include_bytes!("../fonts/DejaVuSans-Oblique.ttf");
@@ -19,6 +22,45 @@ static MONO: &[u8] = include_bytes!("../fonts/DejaVuSansMono.ttf");
 /// Color emoji, as PNG bitmaps. Drawn for whatever the text faces lack and it
 /// has, so an emoji in a report is an emoji rather than an empty box.
 static EMOJI: &[u8] = include_bytes!("../fonts/Twemoji.ttf");
+
+/// Fonts for whatever no built-in face has, where the deployment gave them:
+/// CJK, most often, which the built-in faces lack and which would take
+/// megabytes in every image to carry. A regular face, and a bold one where
+/// there is one for headings and strong text. Set once, at startup.
+static FALLBACK: std::sync::OnceLock<Fallback> = std::sync::OnceLock::new();
+
+/// A font given at startup: its bytes, and which face of a collection it is.
+type Given = (&'static [u8], u32);
+
+struct Fallback {
+    regular: Given,
+    bold: Option<Given>,
+}
+
+/// A font file and the face in it to use.
+pub struct FontFile {
+    pub data: Vec<u8>,
+    pub index: u32,
+}
+
+/// Takes fonts for characters no built-in face has: a regular face, and a
+/// bold one if there is one. Refused if either is not a font krilla can
+/// draw; they can be given only once.
+pub fn set_fallback_fonts(regular: FontFile, bold: Option<FontFile>) -> Result<(), String> {
+    fn checked(file: FontFile) -> Result<Given, String> {
+        let data: &'static [u8] = Box::leak(file.data.into_boxed_slice());
+        skrifa::FontRef::from_index(data, file.index).map_err(|e| format!("not a font: {e}"))?;
+        Font::new(data.into(), file.index).ok_or("a font krilla cannot draw")?;
+        Ok((data, file.index))
+    }
+    let fallback = Fallback {
+        regular: checked(regular)?,
+        bold: bold.map(checked).transpose()?,
+    };
+    FALLBACK
+        .set(fallback)
+        .map_err(|_| "fallback fonts are already set".to_string())
+}
 
 // A4, in points. Letter is an inch shorter and a little wider; A4 is what
 // most of the world prints on, and either prints acceptably on the other.
@@ -28,17 +70,16 @@ const MARGIN: f32 = 56.0;
 const BOTTOM: f32 = PAGE_H - MARGIN;
 const MEASURE: f32 = PAGE_W - 2.0 * MARGIN;
 
-const BODY: f32 = 10.5;
-const CODE: f32 = 9.0;
-const LEADING: f32 = 1.4;
+const BODY: f32 = 10.0;
+const CODE: f32 = 8.5;
+const CAPTION: f32 = 8.5;
+const LEADING: f32 = 1.45;
 const INDENT: f32 = 18.0;
+const CODE_PAD: f32 = 4.0;
 
-type Color = (u8, u8, u8);
-const INK: Color = (0x22, 0x22, 0x22);
 const MUTED: Color = (0x66, 0x66, 0x66);
-const LINK: Color = (0x1a, 0x55, 0xb0);
 const RULE: Color = (0xcc, 0xcc, 0xcc);
-const SHADE: Color = (0xf2, 0xf2, 0xf2);
+const SHADE: Color = (0xf3, 0xf4, 0xf6);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum FaceId {
@@ -47,32 +88,46 @@ enum FaceId {
     Italic,
     Mono,
     Emoji,
+    Fallback,
+    FallbackBold,
 }
 
-/// A font and the advance of each character in it, in ems.
+/// A font, and what a run of text in it measures.
 ///
-/// Measured from the font rather than from shaping: shaping is what draws,
-/// but breaking a line only needs to know whether a word fits, and kerning
-/// only ever makes a word narrower than its advances say.
+/// Measured by shaping, as krilla draws it: summing each character's advance
+/// leaves out kerning, so a run came out narrower than it was laid out and
+/// whatever followed it on the line started late.
+/// Shaped widths a face keeps before it starts over.
+const RUNS_KEPT: usize = 16 * 1024;
+
 struct Face {
     font: Font,
+    shaper: rustybuzz::Face<'static>,
     data: &'static [u8],
+    index: u32,
     emoji: bool,
     advances: RefCell<HashMap<char, f32>>,
+    /// Shaped widths in ems, by run. Words repeat, and shaping each again
+    /// more than doubled the time a long document took.
+    runs: RefCell<HashMap<String, f32>>,
     covers: RefCell<HashMap<char, bool>>,
 }
 
 impl Face {
-    fn new(data: &'static [u8], emoji: bool) -> Self {
+    fn new(data: &'static [u8], index: u32, emoji: bool) -> Self {
         // From the static bytes, not a copy of them: the fonts are most of
         // what this component holds, and holding them twice is most of its
         // memory.
-        let font = Font::new(data.into(), 0).expect("a bundled font did not parse");
+        let font = Font::new(data.into(), index).expect("a font that was checked did not parse");
+        let shaper = rustybuzz::Face::from_slice(data, index).expect("a font that was checked did not parse");
         Face {
             font,
+            shaper,
             data,
+            index,
             emoji,
             advances: RefCell::default(),
+            runs: RefCell::default(),
             covers: RefCell::default(),
         }
     }
@@ -106,7 +161,7 @@ impl Face {
     /// One character's advance, in ems.
     fn char_width(&self, c: char) -> f32 {
         *self.advances.borrow_mut().entry(c).or_insert_with(|| {
-            let font = skrifa::FontRef::new(self.data).expect("bundled font");
+            let font = skrifa::FontRef::from_index(self.data, self.index).expect("checked font");
             let upem = font
                 .metrics(Size::unscaled(), LocationRef::default())
                 .units_per_em as f32;
@@ -120,7 +175,7 @@ impl Face {
 
     fn has(&self, c: char) -> bool {
         *self.covers.borrow_mut().entry(c).or_insert_with(|| {
-            skrifa::FontRef::new(self.data)
+            skrifa::FontRef::from_index(self.data, self.index)
                 .map(|f| f.charmap().map(c).is_some())
                 .unwrap_or(false)
         })
@@ -130,25 +185,59 @@ impl Face {
         if self.emoji {
             return self.emoji_width(text, size);
         }
-        text.chars().map(|c| self.char_width(c)).sum::<f32>() * size
+        if let Some(ems) = self.runs.borrow().get(text) {
+            return ems * size;
+        }
+        let mut buffer = rustybuzz::UnicodeBuffer::new();
+        buffer.push_str(text);
+        buffer.guess_segment_properties();
+        let shaped = rustybuzz::shape(&self.shaper, &[], buffer);
+        let units: i32 = shaped.glyph_positions().iter().map(|p| p.x_advance).sum();
+        let ems = units as f32 / self.shaper.units_per_em() as f32;
+        let mut runs = self.runs.borrow_mut();
+        // Bounded, so a document of nothing but distinct words cannot grow it
+        // without end; starting over costs only time.
+        if runs.len() >= RUNS_KEPT {
+            runs.clear();
+        }
+        runs.insert(text.to_owned(), ems);
+        ems * size
     }
 }
 
-struct Faces([Face; 5]);
+struct Faces {
+    built_in: [Face; 5],
+    fallback: Option<Face>,
+    fallback_bold: Option<Face>,
+}
 
 impl Faces {
     fn new() -> Self {
-        Faces([
-            Face::new(REGULAR, false),
-            Face::new(BOLD, false),
-            Face::new(ITALIC, false),
-            Face::new(MONO, false),
-            Face::new(EMOJI, true),
-        ])
+        Faces {
+            built_in: [
+                Face::new(REGULAR, 0, false),
+                Face::new(BOLD, 0, false),
+                Face::new(ITALIC, 0, false),
+                Face::new(MONO, 0, false),
+                Face::new(EMOJI, 0, true),
+            ],
+            fallback: FALLBACK
+                .get()
+                .map(|f| Face::new(f.regular.0, f.regular.1, false)),
+            fallback_bold: FALLBACK
+                .get()
+                .and_then(|f| f.bold)
+                .map(|(data, index)| Face::new(data, index, false)),
+        }
     }
 
     fn get(&self, id: FaceId) -> &Face {
-        &self.0[id as usize]
+        match id {
+            // Only ever chosen where there is one: `segments` asks first.
+            FaceId::Fallback => self.fallback.as_ref().expect("a fallback face"),
+            FaceId::FallbackBold => self.fallback_bold.as_ref().expect("a bold fallback face"),
+            id => &self.built_in[id as usize],
+        }
     }
 
     /// A space beside text in `face`. The emoji font has none of its own, so
@@ -163,7 +252,8 @@ impl Faces {
     }
 
     /// Splits text into stretches each drawn in one face: `primary` where it
-    /// has the character, the emoji face where it does not and that does.
+    /// has the character, the emoji face where it does not and that does,
+    /// and the deployment's fallback where neither has it and that does.
     ///
     /// What joins an emoji to the next -- a zero-width joiner, a variation
     /// selector, a skin tone, a keycap -- stays with the emoji before it, so
@@ -184,10 +274,18 @@ impl Faces {
             let asks_for_emoji = next == Some('\u{FE0F}') && emoji.has(c);
             let face = if modifies_emoji || asks_for_emoji {
                 FaceId::Emoji
-            } else if main.has(c) || !emoji.has(c) {
+            } else if main.has(c) {
                 primary
-            } else {
+            } else if emoji.has(c) {
                 FaceId::Emoji
+            } else if primary == FaceId::Bold
+                && self.fallback_bold.as_ref().is_some_and(|f| f.has(c))
+            {
+                FaceId::FallbackBold
+            } else if self.fallback.as_ref().is_some_and(|f| f.has(c)) {
+                FaceId::Fallback
+            } else {
+                primary
             };
             if current.is_some_and(|f| f != face) {
                 out.push((current.unwrap(), &text[start..i]));
@@ -237,6 +335,14 @@ enum Op {
         w: f32,
         h: f32,
         url: String,
+    },
+    Image {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        name: String,
+        picture: Picture,
     },
 }
 
@@ -477,6 +583,7 @@ struct Frame {
 /// not grow with how long the document is, beyond what the PDF writer keeps.
 struct Pages<'f, 's> {
     faces: &'f Faces,
+    theme: &'f Theme,
     current: Vec<Op>,
     finished: &'s mut dyn FnMut(Vec<Op>),
     count: usize,
@@ -484,9 +591,10 @@ struct Pages<'f, 's> {
 }
 
 impl<'f, 's> Pages<'f, 's> {
-    fn new(faces: &'f Faces, finished: &'s mut dyn FnMut(Vec<Op>)) -> Self {
+    fn new(faces: &'f Faces, theme: &'f Theme, finished: &'s mut dyn FnMut(Vec<Op>)) -> Self {
         Pages {
             faces,
+            theme,
             current: Vec::new(),
             finished,
             count: 0,
@@ -520,6 +628,7 @@ impl<'f, 's> Pages<'f, 's> {
     }
 
     fn quote_bars(&mut self, frame: Frame, top: f32, height: f32) {
+        let color = self.theme.accent;
         for q in 0..frame.quotes {
             let x = MARGIN + q as f32 * INDENT + 2.0;
             self.ops().push(Op::Rect {
@@ -527,7 +636,7 @@ impl<'f, 's> Pages<'f, 's> {
                 y: top,
                 w: 2.0,
                 h: height,
-                color: RULE,
+                color,
             });
         }
     }
@@ -572,6 +681,15 @@ impl<'f, 's> Pages<'f, 's> {
                 });
             }
             for p in merge(self.faces, line, size) {
+                if p.face == FaceId::Mono {
+                    self.ops().push(Op::Rect {
+                        x: frame.x + p.dx - 1.5,
+                        y: top + size * 0.1,
+                        w: p.width + 3.0,
+                        h: size * 1.25,
+                        color: SHADE,
+                    });
+                }
                 if let Some(url) = &p.link {
                     self.ops().push(Op::Link {
                         x: frame.x + p.dx,
@@ -612,17 +730,23 @@ impl<'f, 's> Pages<'f, 's> {
                 lines.push(chunk.iter().collect());
             }
         }
-        for line in lines {
-            self.room_for(leading);
-            let top = self.y;
+        let last = lines.len() - 1;
+        for (i, line) in lines.into_iter().enumerate() {
+            // The ground runs a little past the first and last lines, so the
+            // text does not sit against its edge.
+            let above = if i == 0 { CODE_PAD } else { 0.0 };
+            let below = if i == last { CODE_PAD } else { 0.0 };
+            self.room_for(above + leading + below);
+            let top = self.y + above;
+            let ground = self.y;
             self.ops().push(Op::Rect {
                 x: frame.x - 4.0,
-                y: top,
+                y: ground,
                 w: frame.measure + 8.0,
-                h: leading,
+                h: above + leading + below,
                 color: SHADE,
             });
-            self.quote_bars(frame, top, leading);
+            self.quote_bars(frame, self.y, above + leading + below);
             let mut x = frame.x;
             for (face, text) in self.faces.segments(&line, FaceId::Mono) {
                 let w = self.faces.get(face).width(text, size);
@@ -635,6 +759,68 @@ impl<'f, 's> Pages<'f, 's> {
                     text: text.to_string(),
                 });
                 x += w;
+            }
+            self.y += above + leading + below;
+        }
+    }
+
+    /// Places an image as a block of its own, centered in the frame: at its
+    /// own size where it fits, taken as 96 pixels to the inch, and scaled
+    /// down to the measure and to most of a page where it does not.
+    fn image(&mut self, name: &str, picture: Picture, caption: &str, frame: Frame) {
+        let (pw, ph) = picture.upright();
+        let (natural_w, natural_h) = (pw as f32 * 0.75, ph as f32 * 0.75);
+        let caption_room = if caption.is_empty() {
+            0.0
+        } else {
+            CAPTION * LEADING * 2.0
+        };
+        let tallest = (BOTTOM - MARGIN) * 0.85 - caption_room;
+        let scale = 1f32.min(frame.measure / natural_w).min(tallest / natural_h);
+        let (w, h) = (natural_w * scale, natural_h * scale);
+        self.gap(BODY * 0.3);
+        self.room_for(h + caption_room);
+        let top = self.y;
+        self.quote_bars(frame, top, h);
+        self.ops().push(Op::Image {
+            x: frame.x + (frame.measure - w) / 2.0,
+            y: top,
+            w,
+            h,
+            name: name.to_string(),
+            picture,
+        });
+        self.y += h;
+        if !caption.is_empty() {
+            self.y += CAPTION * 0.5;
+            self.caption(caption, frame);
+        }
+        self.gap(BODY * 0.8);
+    }
+
+    /// A figure's caption, centered under it.
+    fn caption(&mut self, text: &str, frame: Frame) {
+        let run = [Run {
+            text: text.to_string(),
+            face: FaceId::Italic,
+            color: MUTED,
+            link: None,
+        }];
+        let leading = CAPTION * LEADING;
+        for line in wrap(self.faces, &run, CAPTION, frame.measure) {
+            self.room_for(leading);
+            let used = line.last().map(|p| p.dx + p.width).unwrap_or(0.0);
+            let shift = (frame.measure - used) / 2.0;
+            let baseline = self.y + CAPTION * 1.1;
+            for p in merge(self.faces, &line, CAPTION) {
+                self.ops().push(Op::Text {
+                    x: frame.x + shift + p.dx,
+                    y: baseline,
+                    face: p.face,
+                    size: CAPTION,
+                    color: p.color,
+                    text: p.text,
+                });
             }
             self.y += leading;
         }
@@ -653,18 +839,34 @@ impl<'f, 's> Pages<'f, 's> {
         self.y += BODY;
     }
 
-    fn table(&mut self, rows: &[(bool, Vec<Vec<Run>>)], aligns: &[Alignment], frame: Frame) {
+    /// The rule under the document's opening title, where the theme has one.
+    fn title_rule(&mut self) {
+        if !self.theme.title_rule {
+            self.y += BODY * 0.6;
+            return;
+        }
+        let (y, color) = (self.y, self.theme.accent);
+        self.ops().push(Op::Rect {
+            x: MARGIN,
+            y,
+            w: MEASURE,
+            h: 1.5,
+            color,
+        });
+        self.y += BODY * 1.2;
+    }
+
+    fn table(&mut self, rows: &[TableRow], aligns: &[Alignment], frame: Frame) {
         let columns = rows.iter().map(|(_, r)| r.len()).max().unwrap_or(0);
         if columns == 0 {
             return;
         }
-        let size = BODY - 1.0;
+        let size = BODY - 0.5;
         let leading = size * LEADING;
-        let pad = 4.0;
 
-        // Each column gets what its widest cell would take on one line, until
-        // that is more than there is; then each keeps a fair floor and the
-        // rest is shared by what they asked for.
+        // Each column gets what its widest cell would take on one line. Where
+        // that is less than the page, the spare is shared by what they asked
+        // for; where more, each keeps a fair floor and shares the rest.
         let mut natural = vec![0.0f32; columns];
         for (_, cells) in rows {
             for (i, cell) in cells.iter().enumerate() {
@@ -672,74 +874,181 @@ impl<'f, 's> Pages<'f, 's> {
                     .iter()
                     .map(|r| self.faces.get(r.face).width(&r.text, size))
                     .sum();
-                natural[i] = natural[i].max(w + 2.0 * pad);
+                natural[i] = natural[i].max(w + 2.0 * CELL_PAD);
             }
         }
         let total: f32 = natural.iter().sum();
         let widths: Vec<f32> = if total <= frame.measure {
-            natural
+            natural.iter().map(|n| n * frame.measure / total).collect()
         } else {
             let floor = frame.measure / columns as f32 / 2.0;
             let spare = frame.measure - floor * columns as f32;
             natural.iter().map(|n| floor + spare * n / total).collect()
         };
+        let shape = TableShape {
+            aligns: column_aligns(rows, aligns, columns),
+            widths,
+            size,
+            frame,
+        };
 
+        let head = rows.iter().find(|(header, _)| *header);
         for (header, cells) in rows {
-            let wrapped: Vec<Vec<Vec<Placed>>> = (0..columns)
-                .map(|i| {
-                    let cell = cells.get(i).map(Vec::as_slice).unwrap_or(&[]);
-                    wrap(self.faces, cell, size, (widths[i] - 2.0 * pad).max(1.0))
-                })
-                .collect();
-            let lines = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
-            let height = lines as f32 * leading + pad;
-            self.room_for(height);
-            let top = self.y;
-            if *header {
-                self.ops().push(Op::Rect {
-                    x: frame.x,
-                    y: top,
-                    w: widths.iter().sum(),
-                    h: height,
-                    color: SHADE,
-                });
+            let wrapped = self.wrap_row(cells, &shape);
+            let height = row_height(&wrapped, leading);
+            // A header alone at the foot of a page belongs with its first row.
+            let wanted = if *header {
+                height + leading + CELL_PAD
+            } else {
+                height
+            };
+            let page = self.count;
+            self.room_for(wanted);
+            // A table carried over a page says again what its columns are.
+            if self.count != page
+                && !*header
+                && let Some((_, head)) = head
+            {
+                let wrapped = self.wrap_row(head, &shape);
+                let height = row_height(&wrapped, leading);
+                self.draw_row(&wrapped, true, height, &shape);
             }
-            self.quote_bars(frame, top, height);
-            let mut x = frame.x;
-            for (i, cell) in wrapped.iter().enumerate() {
-                for (n, line) in cell.iter().enumerate() {
-                    let baseline = top + pad / 2.0 + n as f32 * leading + size * 1.1;
-                    let used = line.last().map(|p| p.dx + p.width).unwrap_or(0.0);
-                    let slack = (widths[i] - 2.0 * pad - used).max(0.0);
-                    let shift = match aligns.get(i) {
-                        Some(Alignment::Right) => slack,
-                        Some(Alignment::Center) => slack / 2.0,
-                        _ => 0.0,
-                    };
-                    for p in merge(self.faces, line, size) {
-                        self.ops().push(Op::Text {
-                            x: x + pad + shift + p.dx,
-                            y: baseline,
-                            face: p.face,
-                            size,
-                            color: p.color,
-                            text: p.text,
-                        });
-                    }
-                }
-                x += widths[i];
-            }
-            self.y += height;
-            let y = self.y - 0.5;
-            self.ops().push(Op::Rect {
-                x: frame.x,
-                y,
-                w: widths.iter().sum(),
-                h: 0.5,
-                color: RULE,
-            });
+            self.draw_row(&wrapped, *header, height, &shape);
         }
     }
+
+    fn wrap_row(&self, cells: &[Vec<Run>], shape: &TableShape) -> Vec<Vec<Vec<Placed>>> {
+        (0..shape.widths.len())
+            .map(|i| {
+                let cell = cells.get(i).map(Vec::as_slice).unwrap_or(&[]);
+                let room = (shape.widths[i] - 2.0 * CELL_PAD).max(1.0);
+                wrap(self.faces, cell, shape.size, room)
+            })
+            .collect()
+    }
+
+    fn draw_row(
+        &mut self,
+        wrapped: &[Vec<Vec<Placed>>],
+        header: bool,
+        height: f32,
+        shape: &TableShape,
+    ) {
+        let TableShape {
+            widths,
+            aligns,
+            size,
+            frame,
+        } = shape;
+        let (size, frame) = (*size, *frame);
+        let leading = size * LEADING;
+        let width: f32 = widths.iter().sum();
+        let top = self.y;
+        if header && let Some(color) = self.theme.header_fill {
+            self.ops().push(Op::Rect {
+                x: frame.x,
+                y: top,
+                w: width,
+                h: height,
+                color,
+            });
+        }
+        self.quote_bars(frame, top, height);
+        let mut x = frame.x;
+        for (i, cell) in wrapped.iter().enumerate() {
+            for (n, line) in cell.iter().enumerate() {
+                let baseline = top + CELL_PAD / 2.0 + n as f32 * leading + size * 1.1;
+                let used = line.last().map(|p| p.dx + p.width).unwrap_or(0.0);
+                let slack = (widths[i] - 2.0 * CELL_PAD - used).max(0.0);
+                let shift = match aligns.get(i) {
+                    Some(Alignment::Right) => slack,
+                    Some(Alignment::Center) => slack / 2.0,
+                    _ => 0.0,
+                };
+                for p in merge(self.faces, line, size) {
+                    self.ops().push(Op::Text {
+                        x: x + CELL_PAD + shift + p.dx,
+                        y: baseline,
+                        face: p.face,
+                        size,
+                        color: p.color,
+                        text: p.text,
+                    });
+                }
+            }
+            x += widths[i];
+        }
+        self.y += height;
+        let (rule, color) = if header {
+            (1.0, self.theme.accent)
+        } else {
+            (0.5, RULE)
+        };
+        let y = self.y - rule;
+        self.ops().push(Op::Rect {
+            x: frame.x,
+            y,
+            w: width,
+            h: rule,
+            color,
+        });
+    }
+}
+
+/// A table row: whether it is the header, and its cells.
+type TableRow = (bool, Vec<Vec<Run>>);
+
+const CELL_PAD: f32 = 5.0;
+
+/// What every row of a table shares.
+struct TableShape {
+    widths: Vec<f32>,
+    aligns: Vec<Alignment>,
+    size: f32,
+    frame: Frame,
+}
+
+fn row_height(wrapped: &[Vec<Vec<Placed>>], leading: f32) -> f32 {
+    let lines = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
+    lines as f32 * leading + CELL_PAD
+}
+
+/// Each column's alignment. A column the source left unaligned and that holds
+/// only figures is set to the right, so that its digits line up: a model
+/// rarely writes `---:`, and the figures should not depend on it.
+fn column_aligns(rows: &[TableRow], aligns: &[Alignment], columns: usize) -> Vec<Alignment> {
+    (0..columns)
+        .map(|i| match aligns.get(i) {
+            Some(Alignment::None) | None => {
+                let mut cells = rows
+                    .iter()
+                    .filter(|(header, _)| !*header)
+                    .filter_map(|(_, cells)| cells.get(i))
+                    .map(|cell| cell.iter().map(|r| r.text.as_str()).collect::<String>())
+                    .filter(|text| !text.trim().is_empty())
+                    .peekable();
+                if cells.peek().is_some() && cells.all(|text| is_figure(&text)) {
+                    Alignment::Right
+                } else {
+                    Alignment::None
+                }
+            }
+            Some(a) => *a,
+        })
+        .collect()
+}
+
+/// Whether a cell reads as a number: digits, with what surrounds a number in a
+/// report -- a sign, separators, a percent or a currency symbol.
+fn is_figure(text: &str) -> bool {
+    let text = text.trim();
+    text.chars().any(|c| c.is_ascii_digit())
+        && text.chars().all(|c| {
+            c.is_ascii_digit()
+                || c.is_whitespace()
+                || matches!(c, '.' | ',' | '+' | '-' | '\u{2212}' | '%' | '(' | ')')
+                || matches!(c, '$' | '\u{20AC}' | '\u{A3}' | '\u{A5}')
+        })
 }
 
 /// What the parser is inside of, outermost first.
@@ -750,8 +1059,8 @@ enum Container {
 }
 
 /// Inline style, as nested spans set it.
-#[derive(Default)]
 struct Inline {
+    link_color: Color,
     strong: usize,
     emphasis: usize,
     links: Vec<String>,
@@ -772,7 +1081,7 @@ impl Inline {
         Run {
             text: text.to_string(),
             face,
-            color: if link.is_some() { LINK } else { INK },
+            color: if link.is_some() { self.link_color } else { INK },
             link,
         }
     }
@@ -814,27 +1123,29 @@ fn take_marker(stack: &mut [Container]) -> Option<String> {
 /// finished. Layout depends on nothing but the markdown and the fonts, so the
 /// passes break pages in the same places, and laying out twice is cheap next
 /// to drawing once.
-pub fn render(markdown: &str) -> Result<Vec<u8>, String> {
+pub fn render(markdown: &str, images: &Images, theme: &Theme) -> Result<Vec<u8>, String> {
     let faces = Faces::new();
-    let (total, title) = lay_out(markdown, &faces, &mut |_| {});
+    let (total, title) = lay_out(markdown, &faces, images, theme, &mut |_| {})?;
 
     let mut doc = Document::new();
     let mut metadata = Metadata::new().producer("outturn".to_string());
-    if let Some(t) = title {
-        metadata = metadata.title(t);
+    if let Some(t) = &title {
+        metadata = metadata.title(t.clone());
     }
     doc.set_metadata(metadata);
 
     let mut n = 0;
     let mut failed: Option<String> = None;
-    lay_out(markdown, &faces, &mut |ops| {
+    // A theme without a running header has no title to repeat.
+    let running = title.as_deref().filter(|_| theme.running_header);
+    lay_out(markdown, &faces, images, theme, &mut |ops| {
         n += 1;
         if failed.is_none()
-            && let Err(e) = paint_page(&mut doc, &faces, ops, n, total)
+            && let Err(e) = paint_page(&mut doc, &faces, images, ops, n, total, running)
         {
             failed = Some(e);
         }
-    });
+    })?;
     if let Some(e) = failed {
         return Err(e);
     }
@@ -843,24 +1154,35 @@ pub fn render(markdown: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Lays out a document, handing each page to `finished` as it is completed.
-/// Says how many pages there were, and the document's title if it has one.
+/// Says how many pages there were, and the document's title if it has one,
+/// or why an image it names cannot be drawn.
 fn lay_out(
     markdown: &str,
     faces: &Faces,
+    images: &Images,
+    theme: &Theme,
     finished: &mut dyn FnMut(Vec<Op>),
-) -> (usize, Option<String>) {
-    let mut pages = Pages::new(faces, finished);
+) -> Result<(usize, Option<String>), String> {
+    let mut pages = Pages::new(faces, theme, finished);
 
     let mut stack: Vec<Container> = Vec::new();
-    let mut inline = Inline::default();
+    let mut inline = Inline {
+        link_color: theme.link,
+        strong: 0,
+        emphasis: 0,
+        links: Vec::new(),
+    };
     let mut runs: Vec<Run> = Vec::new();
     let mut heading: Option<f32> = None;
     let mut code: Option<String> = None;
-    let mut table: Option<Vec<(bool, Vec<Vec<Run>>)>> = None;
+    let mut table: Option<Vec<TableRow>> = None;
+    let mut opening = false;
     let mut aligns: Vec<Alignment> = Vec::new();
     let mut in_head = false;
     let mut title: Option<String> = None;
     let mut image_alt = false;
+    // An image that was sent, being drawn: its name and its caption.
+    let mut figure: Option<(String, String)> = None;
 
     // Lays out whatever inline text has gathered as one block.
     let flush = |runs: &mut Vec<Run>,
@@ -883,16 +1205,19 @@ fn lay_out(
         }
         match heading {
             Some(size) => {
-                pages.gap(size * 0.6);
+                pages.gap(size * 0.9);
                 // A heading alone at the foot of a page belongs on the next.
                 pages.room_for(size * LEADING + BODY * LEADING * 2.0);
                 for r in runs.iter_mut() {
                     if r.face == FaceId::Regular || r.face == FaceId::Italic {
                         r.face = FaceId::Bold;
                     }
+                    if r.link.is_none() && pages.theme.colored_headings {
+                        r.color = pages.theme.accent;
+                    }
                 }
                 pages.text_block(runs, size, frame, marker, false);
-                pages.gap(size * 0.25);
+                pages.gap(size * 0.35);
             }
             None => {
                 pages.text_block(runs, BODY, frame, marker, false);
@@ -915,10 +1240,17 @@ fn lay_out(
             }
             Event::Start(Tag::Heading { level, .. }) => {
                 flush(&mut runs, &mut stack, &mut pages, None, quoted);
+                // A top-level heading before anything else is the document's
+                // title, and is set as one.
+                opening = level == HeadingLevel::H1
+                    && pages.count == 0
+                    && pages.y == MARGIN
+                    && stack.is_empty();
                 heading = Some(match level {
-                    HeadingLevel::H1 => 20.0,
-                    HeadingLevel::H2 => 15.5,
-                    HeadingLevel::H3 => 12.5,
+                    _ if opening => pages.theme.title,
+                    HeadingLevel::H1 => 19.0,
+                    HeadingLevel::H2 => 14.5,
+                    HeadingLevel::H3 => 11.5,
                     _ => BODY,
                 });
             }
@@ -927,6 +1259,9 @@ fn lay_out(
                     title = Some(runs.iter().map(|r| r.text.as_str()).collect());
                 }
                 flush(&mut runs, &mut stack, &mut pages, heading.take(), quoted);
+                if std::mem::take(&mut opening) {
+                    pages.title_rule();
+                }
             }
             Event::Start(Tag::List(start)) => {
                 // A nested list ends the item text before it.
@@ -1045,9 +1380,25 @@ fn lay_out(
             Event::End(TagEnd::Link) => {
                 inline.links.pop();
             }
+            // Drawn where it was sent and the block can hold one -- not in a
+            // table cell, whose rows are text, nor in a heading.
+            Event::Start(Tag::Image {
+                dest_url, title, ..
+            }) if images.has(&dest_url) && table.is_none() && heading.is_none() => {
+                // Text before it in the paragraph is a block of its own.
+                flush(&mut runs, &mut stack, &mut pages, None, quoted);
+                figure = Some((dest_url.to_string(), title.to_string()));
+            }
+            Event::End(TagEnd::Image) if figure.is_some() => {
+                let (name, caption) = figure.take().unwrap();
+                let picture = images.measure(&name)?;
+                let frame = frame_for(&stack);
+                pages.image(&name, picture, caption.trim(), frame);
+            }
             Event::Start(Tag::Image { .. }) => {
-                // Images are not drawn yet; the alt text stands in, marked so
-                // a reader knows something was there.
+                // An image that was not sent, or that sits where none can be
+                // drawn: its alt text stands in, marked so a reader knows
+                // something was there.
                 image_alt = true;
                 runs.push(Run {
                     text: "[image: ".into(),
@@ -1066,7 +1417,9 @@ fn lay_out(
                 });
             }
             Event::Text(text) => {
-                if let Some(c) = &mut code {
+                if figure.is_some() {
+                    // Alt text, for a figure that is drawn instead.
+                } else if let Some(c) = &mut code {
                     c.push_str(&text);
                 } else if image_alt {
                     runs.push(Run {
@@ -1091,7 +1444,7 @@ fn lay_out(
     flush(&mut runs, &mut stack, &mut pages, None, quoted);
     pages.end_page();
 
-    (pages.count, title)
+    Ok((pages.count, title))
 }
 
 fn fill(color: Color) -> Fill {
@@ -1101,13 +1454,35 @@ fn fill(color: Color) -> Fill {
     }
 }
 
+/// As much of `text` as fits in `measure`, marked where it was cut.
+fn fit(faces: &Faces, text: &str, size: f32, measure: f32) -> String {
+    let wide = |t: &str| -> f32 {
+        faces
+            .segments(t, FaceId::Regular)
+            .iter()
+            .map(|(face, part)| faces.get(*face).width(part, size))
+            .sum()
+    };
+    if wide(text) <= measure {
+        return text.to_string();
+    }
+    let mut cut: String = text.to_string();
+    while !cut.is_empty() && wide(&cut) + wide("…") > measure {
+        cut.pop();
+    }
+    cut.push('…');
+    cut
+}
+
 /// Draws one page. `n` counts from one.
 fn paint_page(
     doc: &mut Document,
     faces: &Faces,
+    images: &Images,
     ops: Vec<Op>,
     n: usize,
     count: usize,
+    title: Option<&str>,
 ) -> Result<(), String> {
     let settings = PageSettings::from_wh(PAGE_W, PAGE_H).ok_or("bad page size")?;
     let mut page = doc.start_page_with(settings);
@@ -1149,6 +1524,21 @@ fn paint_page(
                     }
                 }
                 Op::Link { x, y, w, h, url } => links.push((x, y, w, h, url)),
+                Op::Image {
+                    x,
+                    y,
+                    w,
+                    h,
+                    name,
+                    picture,
+                } => {
+                    let image = images.image(&name, &picture)?;
+                    let (transform, (iw, ih)) = picture.placement(x, y, w, h);
+                    let size = krilla::geom::Size::from_wh(iw, ih).ok_or("bad image size")?;
+                    surface.push_transform(&transform);
+                    surface.draw_image(image, size);
+                    surface.pop();
+                }
             }
         }
         if count > 1 {
@@ -1156,13 +1546,40 @@ fn paint_page(
             let w = faces.get(FaceId::Regular).width(&label, 8.0);
             surface.set_fill(Some(fill(MUTED)));
             surface.draw_text(
-                Point::from_xy((PAGE_W - w) / 2.0, PAGE_H - MARGIN / 2.0),
+                Point::from_xy(PAGE_W - MARGIN - w, PAGE_H - MARGIN / 2.0),
                 faces.get(FaceId::Regular).font.clone(),
                 8.0,
                 &label,
                 false,
                 TextDirection::Auto,
             );
+        }
+        // The first page has the title itself; the rest say what they are from.
+        if n > 1
+            && let Some(title) = title
+        {
+            let mut x = MARGIN;
+            let running = fit(faces, title, 8.0, MEASURE);
+            surface.set_fill(Some(fill(MUTED)));
+            for (face, text) in faces.segments(&running, FaceId::Regular) {
+                surface.draw_text(
+                    Point::from_xy(x, MARGIN / 2.0 + 8.0),
+                    faces.get(face).font.clone(),
+                    8.0,
+                    text,
+                    false,
+                    TextDirection::Auto,
+                );
+                x += faces.get(face).width(text, 8.0);
+            }
+            if let Some(rect) = Rect::from_xywh(MARGIN, MARGIN / 2.0 + 12.0, MEASURE, 0.5) {
+                let mut path = PathBuilder::new();
+                path.push_rect(rect);
+                if let Some(path) = path.finish() {
+                    surface.set_fill(Some(fill(RULE)));
+                    surface.draw_path(&path);
+                }
+            }
         }
         surface.finish();
     }
@@ -1234,21 +1651,39 @@ mod tests {
         let md = "# Title\n\nSome **bold**, *italic*, `code` and [a link](https://example.com).\n\n\
                   - one\n- two\n  1. nested\n  2. again\n\n> quoted\n\n```\nfn main() {}\n```\n\n\
                   | a | b |\n|---|---|\n| 1 | 2 |\n\n---\n\n- [x] done\n- [ ] not\n\n![alt](x.png)\n";
-        let pdf = render(md).expect("rendered");
+        let pdf = render(md, &Images::new(), &Theme::default()).expect("rendered");
         assert!(pdf.starts_with(b"%PDF"));
-        let (_, title) = lay_out(md, &Faces::new(), &mut |_| {});
+        let (_, title) = lay_out(
+            md,
+            &Faces::new(),
+            &Images::new(),
+            &Theme::default(),
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(title.as_deref(), Some("Title"));
     }
 
     #[test]
     fn empty_input_is_still_a_document() {
-        assert!(render("").expect("rendered").starts_with(b"%PDF"));
+        assert!(
+            render("", &Images::new(), &Theme::default())
+                .expect("rendered")
+                .starts_with(b"%PDF")
+        );
     }
 
     #[test]
     fn long_input_paginates() {
         let md = "A paragraph of moderate length that wraps a line or two. ".repeat(20) + "\n\n";
-        let (pages, _) = lay_out(&md.repeat(60), &Faces::new(), &mut |_| {});
+        let (pages, _) = lay_out(
+            &md.repeat(60),
+            &Faces::new(),
+            &Images::new(),
+            &Theme::default(),
+            &mut |_| {},
+        )
+        .unwrap();
         assert!(pages > 3, "only {pages} pages");
     }
 
@@ -1284,9 +1719,15 @@ mod tests {
         let md = md.repeat(40);
         let faces = Faces::new();
         let mut first = Vec::new();
-        lay_out(&md, &faces, &mut |ops| first.push(ops.len()));
+        lay_out(&md, &faces, &Images::new(), &Theme::default(), &mut |ops| {
+            first.push(ops.len())
+        })
+        .unwrap();
         let mut second = Vec::new();
-        lay_out(&md, &faces, &mut |ops| second.push(ops.len()));
+        lay_out(&md, &faces, &Images::new(), &Theme::default(), &mut |ops| {
+            second.push(ops.len())
+        })
+        .unwrap();
         assert_eq!(first, second);
     }
 
@@ -1315,10 +1756,187 @@ mod tests {
         assert_eq!(segs, [(FaceId::Emoji, family)]);
     }
 
+    fn texts_by_page(md: &str) -> Vec<Vec<(f32, String)>> {
+        let mut pages = Vec::new();
+        lay_out(
+            md,
+            &Faces::new(),
+            &Images::new(),
+            &Theme::default(),
+            &mut |ops| {
+                pages.push(
+                    ops.into_iter()
+                        .filter_map(|op| match op {
+                            Op::Text { size, text, .. } => Some((size, text)),
+                            _ => None,
+                        })
+                        .collect(),
+                )
+            },
+        )
+        .unwrap();
+        pages
+    }
+
+    #[test]
+    fn only_an_opening_heading_is_set_as_the_title() {
+        let opening = texts_by_page("# Report\n\nWords.\n");
+        let title = Theme::default().title;
+        assert_eq!(opening[0][0], (title, "Report".to_string()));
+        let later = texts_by_page("Words.\n\n# Report\n");
+        assert!(later[0].iter().all(|(size, _)| *size != title));
+    }
+
+    #[test]
+    fn a_table_carried_over_a_page_repeats_its_header() {
+        let mut md = "| Region | Note |\n|---|---|\n".to_string();
+        for i in 0..200 {
+            md.push_str(&format!("| r{i} | note |\n"));
+        }
+        let pages = texts_by_page(&md);
+        assert!(pages.len() > 1);
+        for page in &pages {
+            assert_eq!(page[0].1, "Region");
+        }
+    }
+
+    #[test]
+    fn a_column_of_figures_is_set_right_unless_the_source_said_otherwise() {
+        let row = |cells: &[&str], header| (header, cells.iter().map(|c| runs(c)).collect());
+        let rows = vec![
+            row(&["Name", "Amount", "Pinned"], true),
+            row(&["north", "$1,204.50", "12"], false),
+            row(&["south", "(3%)", ""], false),
+        ];
+        let aligns = [Alignment::None, Alignment::None, Alignment::Left];
+        let got = column_aligns(&rows, &aligns, 3);
+        assert_eq!(got[0], Alignment::None);
+        assert_eq!(got[1], Alignment::Right);
+        assert_eq!(got[2], Alignment::Left);
+    }
+
+    #[test]
+    fn a_title_too_long_for_the_header_is_cut() {
+        let faces = Faces::new();
+        let cut = fit(&faces, &"long title ".repeat(40), 8.0, 200.0);
+        assert!(cut.ends_with('…'));
+        assert!(faces.get(FaceId::Regular).width(&cut, 8.0) <= 200.0);
+    }
+
+    fn ops_by_page(md: &str, images: &Images) -> Vec<Vec<Op>> {
+        let mut pages = Vec::new();
+        lay_out(md, &Faces::new(), images, &Theme::default(), &mut |ops| {
+            pages.push(ops)
+        })
+        .unwrap();
+        pages
+    }
+
+    fn one_image(name: &str, w: u32, h: u32) -> Images {
+        let mut images = Images::new();
+        images.insert(name.into(), crate::images::tests::png(w, h));
+        images
+    }
+
+    #[test]
+    fn an_image_sent_is_drawn_and_its_alt_text_is_not() {
+        let images = one_image("session/chart.png", 200, 100);
+        let pages = ops_by_page("Before ![a chart](session/chart.png) after.\n", &images);
+        let drawn: Vec<(f32, f32)> = pages[0]
+            .iter()
+            .filter_map(|op| match op {
+                Op::Image { w, h, .. } => Some((*w, *h)),
+                _ => None,
+            })
+            .collect();
+        // At its own size: 96 pixels to the inch.
+        assert_eq!(drawn, [(150.0, 75.0)]);
+        let texts = texts_by_page("Before ![a chart](session/chart.png) after.\n");
+        assert!(texts[0].iter().any(|(_, t)| t.contains("image")));
+        let with_image: Vec<String> = pages[0]
+            .iter()
+            .filter_map(|op| match op {
+                Op::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(with_image, ["Before", "after."]);
+    }
+
+    #[test]
+    fn a_wide_image_is_scaled_to_the_measure_and_keeps_its_shape() {
+        let images = one_image("wide.png", 3000, 1000);
+        let pages = ops_by_page("![](wide.png)\n", &images);
+        let Some(Op::Image { w, h, .. }) =
+            pages[0].iter().find(|op| matches!(op, Op::Image { .. }))
+        else {
+            panic!("no image drawn");
+        };
+        assert!((w - MEASURE).abs() < 0.01, "{w}");
+        assert!((w / h - 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_title_becomes_a_caption() {
+        let images = one_image("a.png", 10, 10);
+        let pages = ops_by_page("![alt](a.png \"Figure 1: sales\")\n", &images);
+        assert!(pages[0].iter().any(|op| matches!(
+            op,
+            Op::Text { text, size, .. } if text == "Figure 1: sales" && *size == CAPTION
+        )));
+    }
+
+    #[test]
+    fn an_image_that_cannot_be_drawn_fails_the_render_by_name() {
+        let mut images = Images::new();
+        images.insert("bad.png".into(), b"not a png".to_vec());
+        let err = render("![](bad.png)\n", &images, &Theme::default()).unwrap_err();
+        assert!(err.contains("bad.png"), "{err}");
+    }
+
+    #[test]
+    fn a_document_with_images_renders() {
+        let images = one_image("a.png", 64, 48);
+        let pdf = render(
+            "# Karl\n\n![a](a.png)\n\n![a](a.png \"again\")\n",
+            &images,
+            &Theme::default(),
+        )
+        .unwrap();
+        assert!(pdf.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn each_theme_renders_and_looks_different() {
+        let md = "# Report\n\n## Part\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n> quoted\n";
+        let pdfs: Vec<Vec<u8>> = crate::theme::THEMES
+            .iter()
+            .map(|name| {
+                let theme = Theme::named(Some(name), None).unwrap();
+                render(md, &Images::new(), &theme).unwrap()
+            })
+            .collect();
+        assert!(pdfs.iter().all(|pdf| pdf.starts_with(b"%PDF")));
+        assert_ne!(pdfs[0], pdfs[1]);
+        assert_ne!(pdfs[0], pdfs[2]);
+        assert_ne!(pdfs[1], pdfs[2]);
+    }
+
+    #[test]
+    fn without_a_fallback_a_character_no_face_has_stays_in_its_own_face() {
+        // No test sets one: the fallback is a deployment's, given at startup.
+        let faces = Faces::new();
+        assert!(faces.fallback.is_none());
+        let segs = faces.segments("Tokyo 東京", FaceId::Regular);
+        assert_eq!(segs, [(FaceId::Regular, "Tokyo 東京")]);
+    }
+
     #[test]
     fn a_document_with_emoji_renders() {
         let pdf = render(
             "# Karl 🌫️\n\nBirds 🐦 judging you 👀\n\n| Mood | Icon |\n|---|---|\n| Grumpy | 😾 |\n",
+            &Images::new(),
+            &Theme::default(),
         )
         .expect("rendered");
         assert!(pdf.starts_with(b"%PDF"));
