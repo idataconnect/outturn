@@ -2,6 +2,7 @@
 //! out, and the events a runtime posts back while it runs. Both tiers build
 //! and read these, so they live below both.
 
+use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -159,10 +160,10 @@ pub enum Claimed {
     /// Sent and answered; this is the answer.
     Completed {
         response: serde_json::Value,
-        at: chrono::DateTime<chrono::Utc>,
+        at: Timestamp,
     },
     /// Sent, and the answer never seen. Not sent again.
-    Attempted { at: chrono::DateTime<chrono::Utc> },
+    Attempted { at: Timestamp },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -426,7 +427,7 @@ pub struct TokenRefresh {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TokenRefreshed {
     pub gateway_token: String,
-    pub gateway_token_expires_at: chrono::DateTime<chrono::Utc>,
+    pub gateway_token_expires_at: Timestamp,
     /// The gates the new token commits to, when they are no longer the ones
     /// presented: a policy was revoked, expired or edited since the turn began.
     /// Absent, the runtime keeps the set it has.

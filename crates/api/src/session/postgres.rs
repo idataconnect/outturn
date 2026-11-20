@@ -1,3 +1,4 @@
+use outturn_core::time::Timestamp;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -146,10 +147,7 @@ impl SessionStore for PostgresSessionStore {
         };
 
         let family_id: Uuid = row.get("family_id");
-        if row
-            .get::<Option<chrono::DateTime<chrono::Utc>>, _>("revoked_at")
-            .is_some()
-            || row.get::<bool, _>("expired")
+        if row.get::<Option<Timestamp>, _>("revoked_at").is_some() || row.get::<bool, _>("expired")
         {
             return Err(SessionError::Invalid);
         }

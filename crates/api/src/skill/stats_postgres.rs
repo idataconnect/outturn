@@ -1,6 +1,7 @@
 //! The skill figures, computed where the rows are.
 
 use async_trait::async_trait;
+use outturn_core::time::Timestamp;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -39,8 +40,8 @@ impl SkillStatsStore for PostgresSkillStatsStore {
     async fn stats(
         &self,
         workspace_id: Uuid,
-        from: chrono::DateTime<chrono::Utc>,
-        to: chrono::DateTime<chrono::Utc>,
+        from: Timestamp,
+        to: Timestamp,
         limit: i64,
     ) -> Result<SkillStats, StatsError> {
         // Every window over turns is bounded twice: by the reply's id, which

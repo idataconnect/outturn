@@ -1,6 +1,7 @@
 //! Kill switches and holds, and what a held turn leaves behind.
 
 use super::*;
+use outturn::time::Timestamp;
 
 /// A workspace kill switch stops a turn before it runs.
 ///
@@ -798,7 +799,7 @@ async fn a_turn_that_finished_normally_does_not_latch() {
     let (status, body) = h.send(req).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "body: {body}");
 
-    let stopped: Option<chrono::DateTime<chrono::Utc>> =
+    let stopped: Option<Timestamp> =
         sqlx::query_scalar("select stopped_at from agent_sessions where id = $1")
             .bind(session_id.parse::<Uuid>().unwrap())
             .fetch_one(&h.db.pool)

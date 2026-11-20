@@ -3,6 +3,7 @@
 //! Built only under the integration-tests feature; needs TEST_DATABASE_URL
 //! naming a test database. See tests/api.rs.
 
+use outturn::time::{SignedDuration, Timestamp};
 use std::time::Duration;
 
 use outturn::events::{self, EventBus};
@@ -3844,7 +3845,7 @@ async fn parking_drops_the_lease() {
         .await
         .expect("park");
 
-    let (until, token): (Option<chrono::DateTime<chrono::Utc>>, Option<Uuid>) =
+    let (until, token): (Option<Timestamp>, Option<Uuid>) =
         sqlx::query_as("select leased_until, lease_token from jobs where id = $1")
             .bind(id)
             .fetch_one(pool)
@@ -4855,7 +4856,7 @@ async fn a_turn_finishes_on_the_version_it_began_on() {
     let (db, workspace) = setup_or_skip!();
     let pool = &db.pool;
     add_route(pool, None, "assistant", 10, "http://somewhere", "new").await;
-    let moved = chrono::Utc::now();
+    let moved = Timestamp::now();
     sqlx::query("update models set previous_model = 'old', changed_at = $1 where model = 'new'")
         .bind(moved)
         .execute(pool)
@@ -4869,8 +4870,8 @@ async fn a_turn_finishes_on_the_version_it_began_on() {
             .model
             .clone()
     };
-    assert_eq!(asked(moved - chrono::Duration::seconds(5)).await, "old");
-    assert_eq!(asked(moved + chrono::Duration::seconds(5)).await, "new");
+    assert_eq!(asked(moved - SignedDuration::from_secs(5)).await, "old");
+    assert_eq!(asked(moved + SignedDuration::from_secs(5)).await, "new");
 
     finish!(db);
 }
@@ -5114,7 +5115,7 @@ async fn a_timer_reaped_mid_fire_wakes_the_agent_once() {
         .await
         .expect("agent");
 
-    let now = chrono::Utc::now();
+    let now = Timestamp::now();
     let due = Due {
         workspace_id: workspace,
         session_id,

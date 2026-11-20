@@ -3,6 +3,7 @@
 //! docs/auto-approval.md.
 
 use super::*;
+use outturn::time::{SignedDuration, Timestamp};
 
 fn charge_policy() -> String {
     serde_json::json!({
@@ -44,9 +45,8 @@ async fn an_admin_sets_a_policy_that_starts_in_trial_and_names_them() {
     assert_eq!(created["created_by_name"], "Test User");
     assert_eq!(created["version"], 1);
     // Ninety days unless somebody says otherwise; never for ever.
-    let expires: chrono::DateTime<chrono::Utc> =
-        created["expires_at"].as_str().unwrap().parse().unwrap();
-    assert!(expires > chrono::Utc::now() + chrono::Duration::days(89));
+    let expires: Timestamp = created["expires_at"].as_str().unwrap().parse().unwrap();
+    assert!(expires > Timestamp::now() + SignedDuration::from_hours(24 * 89));
     let id = created["id"].as_str().unwrap().to_string();
 
     // Switched on by somebody choosing to, which is an edit and moves the

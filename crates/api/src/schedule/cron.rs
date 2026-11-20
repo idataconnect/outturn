@@ -3,11 +3,12 @@
 //! Written here rather than taken as a dependency because the parsing is small
 //! and the part that matters is not the parsing: it is that "every weekday at
 //! 9" means nine where somebody is, across the two days a year when that is
-//! not a fixed offset from UTC. `chrono-tz` already knows those rules, so what
+//! not a fixed offset from UTC. The zone database already knows those rules, so what
 //! is left is deciding which local times to ask it about.
 
-use chrono::{DateTime, Datelike, NaiveDate, TimeZone, Timelike, Utc};
-use chrono_tz::Tz;
+use jiff::civil::{Date, DateTime};
+use jiff::tz::{AmbiguousOffset, TimeZone};
+use outturn_core::time::{SignedDuration, Timestamp};
 
 /// A parsed five-field expression: minute, hour, day-of-month, month,
 /// day-of-week.
@@ -77,16 +78,16 @@ impl Cron {
     /// Strictly, so a schedule that has just fired computes its successor
     /// rather than itself, which is what keeps the firing loop from spinning
     /// on one row.
-    pub fn next_after(&self, after: DateTime<Utc>, tz: Tz) -> Option<DateTime<Utc>> {
-        let local = after.with_timezone(&tz);
+    pub fn next_after(&self, after: Timestamp, tz: &TimeZone) -> Option<Timestamp> {
+        let local = tz.to_datetime(after.as_jiff());
         // Seconds are not a field, so every candidate is on a minute boundary
         // and the one containing `after` has already been and gone.
-        let mut date = local.date_naive();
-        let start_minute = local.hour() * 60 + local.minute() + 1;
+        let mut date = local.date();
+        let start_minute = local.hour() as u32 * 60 + local.minute() as u32 + 1;
 
         for day_offset in 0..HORIZON_DAYS {
             if day_offset > 0 {
-                date = date.succ_opt()?;
+                date = date.tomorrow().ok()?;
             }
             if !self.matches_date(date) {
                 continue;
@@ -147,14 +148,14 @@ impl Cron {
         self.hours.len() == 24 || self.minutes.len() > 1
     }
 
-    fn matches_date(&self, date: NaiveDate) -> bool {
-        if !self.months.contains(&date.month()) {
+    fn matches_date(&self, date: Date) -> bool {
+        if !self.months.contains(&(date.month() as u32)) {
             return false;
         }
-        let dom = self.days.contains(&date.day());
+        let dom = self.days.contains(&(date.day() as u32));
         let dow = self
             .weekdays
-            .contains(&(date.weekday().num_days_from_sunday()));
+            .contains(&(date.weekday().to_sunday_zero_offset() as u32));
         if self.both_days {
             dom || dow
         } else {
@@ -182,22 +183,34 @@ impl Cron {
 /// unreachable: it always sits behind the firing that preceded it, so an
 /// hourly schedule skipped from 01:00 straight to 02:00 and lost an hour of
 /// work once a year with nothing recorded.
-fn resolve(date: NaiveDate, hour: u32, minute: u32, tz: Tz) -> Vec<DateTime<Utc>> {
-    let Some(naive) = date.and_hms_opt(hour, minute, 0) else {
+fn resolve(date: Date, hour: u32, minute: u32, tz: &TimeZone) -> Vec<Timestamp> {
+    let (Ok(hour), Ok(minute)) = (i8::try_from(hour), i8::try_from(minute)) else {
         return Vec::new();
     };
-    match tz.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(at) => vec![at.with_timezone(&Utc)],
-        chrono::LocalResult::Ambiguous(earlier, later) => {
-            vec![earlier.with_timezone(&Utc), later.with_timezone(&Utc)]
-        }
-        chrono::LocalResult::None => {
+    let Ok(time) = jiff::civil::Time::new(hour, minute, 0, 0) else {
+        return Vec::new();
+    };
+    let civil = date.to_datetime(time);
+    let at = |offset: jiff::tz::Offset, civil: DateTime| {
+        offset.to_timestamp(civil).ok().map(Timestamp::from)
+    };
+    match tz.to_ambiguous_timestamp(civil).offset() {
+        AmbiguousOffset::Unambiguous { offset } => at(offset, civil).into_iter().collect(),
+        AmbiguousOffset::Fold { before, after } => at(before, civil)
+            .into_iter()
+            .chain(at(after, civil))
+            .collect(),
+        AmbiguousOffset::Gap { .. } => {
             // Walk forward a minute at a time to the far side of the gap. A
             // gap is an hour at most, so this is bounded and short.
             for extra in 1..=120 {
-                let shifted = naive + chrono::Duration::minutes(extra);
-                if let chrono::LocalResult::Single(at) = tz.from_local_datetime(&shifted) {
-                    return vec![at.with_timezone(&Utc)];
+                let Ok(shifted) = civil.checked_add(SignedDuration::from_mins(extra)) else {
+                    break;
+                };
+                if let AmbiguousOffset::Unambiguous { offset } =
+                    tz.to_ambiguous_timestamp(shifted).offset()
+                {
+                    return at(offset, shifted).into_iter().collect();
                 }
             }
             Vec::new()
@@ -271,15 +284,16 @@ fn bound(value: &str, min: u32, max: u32, name: &str) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use outturn_core::time::zone;
 
-    fn at(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    fn at(s: &str) -> Timestamp {
+        Timestamp::parse_rfc3339(s).unwrap()
     }
 
     fn next(expr: &str, from: &str, tz: &str) -> String {
         Cron::parse(expr)
             .expect("parse")
-            .next_after(at(from), tz.parse().expect("tz"))
+            .next_after(at(from), &zone(tz).expect("tz"))
             .expect("a next firing")
             .to_rfc3339()
     }
@@ -332,11 +346,11 @@ mod tests {
         // the earlier made 09:00Z unreachable and lost an hour of work once a
         // year, silently.
         let c = Cron::parse("0 * * * *").expect("parse");
-        let tz: Tz = "America/Los_Angeles".parse().expect("tz");
+        let tz = zone("America/Los_Angeles").expect("tz");
         let mut at = at("2026-11-01T06:30:00Z");
         let mut seen = Vec::new();
         for _ in 0..5 {
-            at = c.next_after(at, tz).expect("next");
+            at = c.next_after(at, &tz).expect("next");
             seen.push(at.to_rfc3339());
         }
         assert_eq!(
@@ -403,7 +417,7 @@ mod tests {
         // Monday, not Mondays falling on the first. 2026-10-01 is a Thursday.
         let c = Cron::parse("0 0 1 * 1").expect("parse");
         let from = at("2026-09-29T00:00:00Z");
-        let first = c.next_after(from, Tz::UTC).expect("next");
+        let first = c.next_after(from, &TimeZone::UTC).expect("next");
         assert_eq!(first.to_rfc3339(), "2026-10-01T00:00:00+00:00");
     }
 
@@ -422,7 +436,10 @@ mod tests {
     #[test]
     fn an_expression_that_can_never_match_is_refused_rather_than_searched_forever() {
         let c = Cron::parse("0 0 31 2 *").expect("parses; it is the date that cannot happen");
-        assert!(c.next_after(at("2026-09-20T00:00:00Z"), Tz::UTC).is_none());
+        assert!(
+            c.next_after(at("2026-09-20T00:00:00Z"), &TimeZone::UTC)
+                .is_none()
+        );
     }
 
     #[test]

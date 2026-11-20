@@ -1,6 +1,7 @@
 //! Schedules, webhook triggers, deliveries and mail hooks.
 
 use super::*;
+use outturn::time::Timestamp;
 
 // ---------------------------------------------------------------------------
 // Schedules
@@ -187,7 +188,7 @@ async fn firing_a_schedule_produces_a_turn_nobody_sent() {
         .await
         .expect("set due");
 
-    let taken = outturn::api::schedule::postgres::take_due(&h.db.pool, chrono::Utc::now())
+    let taken = outturn::api::schedule::postgres::take_due(&h.db.pool, Timestamp::now())
         .await
         .expect("take_due")
         .expect("a schedule was due");
@@ -197,14 +198,14 @@ async fn firing_a_schedule_produces_a_turn_nobody_sent() {
     // separately -- passing `now` here is what made every firing look punctual
     // and the skip count permanently zero.
     assert!(
-        owed < chrono::Utc::now(),
+        owed < Timestamp::now(),
         "the firing this was owed came back as the present"
     );
 
     // Nothing is due a second time: the take cleared it, which is what stops
     // two API pods firing one schedule.
     assert!(
-        outturn::api::schedule::postgres::take_due(&h.db.pool, chrono::Utc::now())
+        outturn::api::schedule::postgres::take_due(&h.db.pool, Timestamp::now())
             .await
             .expect("take_due")
             .is_none(),
@@ -280,7 +281,7 @@ async fn a_signed_delivery_starts_a_turn_and_an_unsigned_one_does_not() {
     .await;
 
     let payload = r#"{"event":"booking.created","id":"bk_1"}"#;
-    let (sig, ts) = sign(&secret, payload, chrono::Utc::now().timestamp());
+    let (sig, ts) = sign(&secret, payload, Timestamp::now().unix_secs());
 
     assert_eq!(
         deliver(
@@ -319,7 +320,7 @@ async fn a_signed_delivery_starts_a_turn_and_an_unsigned_one_does_not() {
     // within the window is permitted and is recorded as such in
     // docs/triggers.md, because nothing here stores which signatures have
     // been seen.
-    let old = chrono::Utc::now().timestamp() - 3600;
+    let old = Timestamp::now().unix_secs() - 3600;
     let (old_sig, old_ts) = sign(&secret, payload, old);
     assert_eq!(
         deliver(
@@ -506,7 +507,7 @@ async fn a_refusal_before_the_credential_is_proved_writes_nothing() {
     .await;
 
     // Every refusal that happens before verification.
-    let stale = (chrono::Utc::now().timestamp() - 9999).to_string();
+    let stale = (Timestamp::now().unix_secs() - 9999).to_string();
     for headers in [
         vec![],
         vec![
@@ -684,11 +685,10 @@ async fn a_schedule_still_fires_through_the_shared_trigger_path() {
         .await
         .expect("set due");
 
-    let (schedule, owed) =
-        outturn::api::schedule::postgres::take_due(&h.db.pool, chrono::Utc::now())
-            .await
-            .expect("take_due")
-            .expect("due");
+    let (schedule, owed) = outturn::api::schedule::postgres::take_due(&h.db.pool, Timestamp::now())
+        .await
+        .expect("take_due")
+        .expect("due");
 
     let session = outturn::api::trigger::start(
         &h.db.pool,
@@ -705,7 +705,7 @@ async fn a_schedule_still_fires_through_the_shared_trigger_path() {
     )
     .await
     .expect("start");
-    assert!(owed < chrono::Utc::now());
+    assert!(owed < Timestamp::now());
 
     // All three steps the earlier review found missing from the old copy.
     let (live, account, sched, events): (i64, Option<String>, Option<Uuid>, i64) = sqlx::query_as(
@@ -1049,7 +1049,7 @@ async fn the_same_delivery_is_accepted_once_and_refused_after() {
     .await;
 
     let payload = r#"{"event":"booking.created","id":"bk_once"}"#;
-    let (sig, ts) = sign(&secret, payload, chrono::Utc::now().timestamp());
+    let (sig, ts) = sign(&secret, payload, Timestamp::now().unix_secs());
     let headers = [
         ("x-outturn-signature", sig.as_str()),
         ("x-outturn-timestamp", ts.as_str()),
@@ -1084,7 +1084,7 @@ async fn the_same_delivery_is_accepted_once_and_refused_after() {
     // A genuinely different event, signed at the same instant, is not a
     // replay -- the signature binds the body, so this must still get through.
     let other = r#"{"event":"booking.created","id":"bk_two"}"#;
-    let (sig2, ts2) = sign(&secret, other, chrono::Utc::now().timestamp());
+    let (sig2, ts2) = sign(&secret, other, Timestamp::now().unix_secs());
     assert_eq!(
         deliver(
             &h,
@@ -1143,7 +1143,7 @@ async fn a_forgotten_delivery_can_be_sent_again() {
     // accepted, but its record expires within the window rather than at some
     // point the test would have to wait for.
     let payload = r#"{"event":"sweep"}"#;
-    let behind = chrono::Utc::now().timestamp() - (TOLERANCE - 20);
+    let behind = Timestamp::now().unix_secs() - (TOLERANCE - 20);
     let (sig, ts) = sign(&secret, payload, behind);
     let headers = [
         ("x-outturn-signature", sig.as_str()),
@@ -1207,7 +1207,7 @@ async fn a_forgotten_delivery_can_be_sent_again() {
     let (sig2, ts2) = sign(
         &secret,
         stale,
-        chrono::Utc::now().timestamp() - TOLERANCE - 100,
+        Timestamp::now().unix_secs() - TOLERANCE - 100,
     );
     assert_eq!(
         deliver(
@@ -1262,7 +1262,7 @@ async fn a_delivery_the_ceiling_refused_can_be_sent_again() {
     .await;
 
     let first = r#"{"event":"first"}"#;
-    let (sig1, ts1) = sign(&secret, first, chrono::Utc::now().timestamp());
+    let (sig1, ts1) = sign(&secret, first, Timestamp::now().unix_secs());
     assert_eq!(
         deliver(
             &h,
@@ -1279,7 +1279,7 @@ async fn a_delivery_the_ceiling_refused_can_be_sent_again() {
 
     // A different event, refused because the ceiling is spent.
     let second = r#"{"event":"second"}"#;
-    let (sig2, ts2) = sign(&secret, second, chrono::Utc::now().timestamp());
+    let (sig2, ts2) = sign(&secret, second, Timestamp::now().unix_secs());
     let headers2 = [
         ("x-outturn-signature", sig2.as_str()),
         ("x-outturn-timestamp", ts2.as_str()),
@@ -1359,7 +1359,7 @@ async fn a_losing_racer_is_not_undone_by_the_winner_failing() {
     // refused by the ceiling -- the winner-fails half of the race, made
     // deterministic.
     let first = r#"{"event":"first"}"#;
-    let (sig1, ts1) = sign(&secret, first, chrono::Utc::now().timestamp());
+    let (sig1, ts1) = sign(&secret, first, Timestamp::now().unix_secs());
     assert_eq!(
         deliver(
             &h,
@@ -1375,7 +1375,7 @@ async fn a_losing_racer_is_not_undone_by_the_winner_failing() {
     );
 
     let racer = r#"{"event":"racer"}"#;
-    let (sig2, ts2) = sign(&secret, racer, chrono::Utc::now().timestamp());
+    let (sig2, ts2) = sign(&secret, racer, Timestamp::now().unix_secs());
     let headers2 = [
         ("x-outturn-signature", sig2.as_str()),
         ("x-outturn-timestamp", ts2.as_str()),
@@ -1518,7 +1518,7 @@ async fn a_future_dated_signature_is_remembered_until_it_stops_verifying() {
     .await;
 
     // Stamped near the far edge of the tolerance, which still verifies.
-    let ahead = chrono::Utc::now().timestamp() + (TOLERANCE - 60);
+    let ahead = Timestamp::now().unix_secs() + (TOLERANCE - 60);
     let payload = r#"{"event":"ahead"}"#;
     let (sig, ts) = sign(&secret, payload, ahead);
     let headers = [
@@ -1538,21 +1538,20 @@ async fn a_future_dated_signature_is_remembered_until_it_stops_verifying() {
         .expect("sweep");
     assert_eq!(gone, 0, "a still-valid signature was forgotten");
 
-    let expires: chrono::DateTime<chrono::Utc> =
-        sqlx::query_scalar("select expires_at from webhook_deliveries")
-            .fetch_one(&h.db.pool)
-            .await
-            .expect("expiry");
+    let expires: Timestamp = sqlx::query_scalar("select expires_at from webhook_deliveries")
+        .fetch_one(&h.db.pool)
+        .await
+        .expect("expiry");
     // Strictly past what arrival-anchoring would give. Signed at now+240 with
     // a 300s tolerance, the signature is good until now+540; an arrival
     // anchor would expire at now+300. Asserting past 300 is what makes the
     // two distinguishable -- an earlier version compared against 240, which
     // both satisfy, and so pinned nothing.
-    let floor = chrono::Utc::now().timestamp() + TOLERANCE;
+    let floor = Timestamp::now().unix_secs() + TOLERANCE;
     assert!(
-        expires.timestamp() > floor,
+        expires.unix_secs() > floor,
         "expiry {} is not past the arrival-anchored {floor}, so the record dies before the signature",
-        expires.timestamp()
+        expires.unix_secs()
     );
 
     assert_eq!(
@@ -1611,7 +1610,7 @@ async fn a_delivery_named_twice_starts_one_turn() {
             .await
         }
     };
-    let now = chrono::Utc::now().timestamp();
+    let now = Timestamp::now().unix_secs();
     assert_eq!(send("evt_1", now).await, StatusCode::ACCEPTED);
     assert_eq!(
         send("evt_1", now - 1).await,

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use outturn_core::time::Timestamp;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
@@ -302,8 +303,7 @@ fn replay(metadata: serde_json::Value, events: &serde_json::Value) -> serde_json
                 // live path measured rather than the time of the reload.
                 let at = event["at"]
                     .as_str()
-                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                    .map(|t| t.with_timezone(&chrono::Utc));
+                    .and_then(|t| Timestamp::parse_rfc3339(t).ok());
                 parts.reasoning(payload["text"].as_str().unwrap_or_default(), at);
             }
             Some("chat.steer") => {
@@ -813,7 +813,7 @@ impl ChatStore for PostgresChatStore {
         // The old reason, read from a subquery rather than from `returning`:
         // `returning` hands back the row as it now is, and as it now is the
         // reason has just been set to null.
-        let was: Option<(Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        let was: Option<(Option<String>, Timestamp)> = sqlx::query_as(
             "update agent_sessions s \
              set stopped_at = null, stopped_reason = null, updated_at = now() \
              from (select id, stopped_reason, stopped_at from agent_sessions where id = $1) old \

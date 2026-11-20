@@ -6,6 +6,7 @@
 //! object's own age: a long conversation lost its uploads mid-conversation
 //! because they were older than the window, however recently it was used.
 
+use outturn_core::time::Timestamp;
 use std::sync::Arc;
 
 use outturn_core::storage::StorageBackend;
@@ -95,8 +96,7 @@ async fn recount_one(
 ) -> anyhow::Result<()> {
     // Rows written after the listing began are the writes it may have missed,
     // so they are kept rather than replaced.
-    let began: chrono::DateTime<chrono::Utc> =
-        sqlx::query_scalar("select now()").fetch_one(pool).await?;
+    let began: Timestamp = sqlx::query_scalar("select now()").fetch_one(pool).await?;
     let mut keys = Vec::new();
     let mut sizes = Vec::new();
     for s in Scope::ALL {

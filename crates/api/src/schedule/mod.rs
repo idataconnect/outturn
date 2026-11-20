@@ -10,8 +10,8 @@
 
 pub mod cron;
 
-use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
+use jiff::tz::TimeZone;
+use outturn_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -37,12 +37,12 @@ pub struct Schedule {
     pub enabled: bool,
     pub account: Option<String>,
     pub owner_id: Option<Uuid>,
-    pub next_run_at: Option<DateTime<Utc>>,
-    pub last_run_at: Option<DateTime<Utc>>,
+    pub next_run_at: Option<Timestamp>,
+    pub last_run_at: Option<Timestamp>,
     pub last_status: Option<String>,
     pub last_error: Option<String>,
     pub skipped: i32,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 /// What a caller may set.
@@ -74,7 +74,7 @@ fn yes() -> bool {
 /// Checked here rather than at the firing loop because a schedule that cannot
 /// be parsed will never fire, and finding that out at 9am tomorrow is finding
 /// it out from its absence.
-pub fn validate(input: &ScheduleInput) -> Result<(Cron, Tz), String> {
+pub fn validate(input: &ScheduleInput) -> Result<(Cron, TimeZone), String> {
     if input.name.trim().is_empty() {
         return Err("a schedule needs a name".to_string());
     }
@@ -82,10 +82,8 @@ pub fn validate(input: &ScheduleInput) -> Result<(Cron, Tz), String> {
         return Err("a schedule needs something to say".to_string());
     }
     let cron = Cron::parse(&input.expression)?;
-    let tz: Tz = input
-        .timezone
-        .parse()
-        .map_err(|_| format!("'{}' is not an IANA timezone name", input.timezone))?;
+    let tz = outturn_core::time::zone(&input.timezone)
+        .ok_or_else(|| format!("'{}' is not an IANA timezone name", input.timezone))?;
     Ok((cron, tz))
 }
 
@@ -95,7 +93,7 @@ pub fn validate(input: &ScheduleInput) -> Result<(Cron, Tz), String> {
 /// The single most useful thing the editor shows: an expression is exact and
 /// unreadable, and dates are the only form in which a mistake is obvious
 /// before it has cost a day.
-pub fn upcoming(cron: &Cron, tz: Tz, from: DateTime<Utc>, count: usize) -> Vec<DateTime<Utc>> {
+pub fn upcoming(cron: &Cron, tz: &TimeZone, from: Timestamp, count: usize) -> Vec<Timestamp> {
     let mut out = Vec::with_capacity(count);
     let mut at = from;
     for _ in 0..count {
@@ -119,10 +117,10 @@ pub fn upcoming(cron: &Cron, tz: Tz, from: DateTime<Utc>, count: usize) -> Vec<D
 /// that quietly missed a week looks exactly like one that never worked.
 pub fn advance(
     cron: &Cron,
-    tz: Tz,
-    owed: DateTime<Utc>,
-    now: DateTime<Utc>,
-) -> (Option<DateTime<Utc>>, i32) {
+    tz: &TimeZone,
+    owed: Timestamp,
+    now: Timestamp,
+) -> (Option<Timestamp>, i32) {
     let mut at = owed;
     let mut skipped = 0;
     // Bounded so a pathological expression cannot hold the loop: at a firing a
@@ -146,10 +144,9 @@ pub mod worker;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::DateTime;
 
-    fn at(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    fn at(s: &str) -> Timestamp {
+        Timestamp::parse_rfc3339(s).unwrap()
     }
 
     #[test]
@@ -161,7 +158,7 @@ mod tests {
         let cron = Cron::parse("0 * * * *").expect("parse");
         let (next, skipped) = advance(
             &cron,
-            Tz::UTC,
+            &TimeZone::UTC,
             at("2026-09-20T00:00:00Z"),
             at("2026-09-20T09:30:00Z"),
         );
@@ -179,7 +176,7 @@ mod tests {
     fn a_schedule_that_is_up_to_date_skips_nothing() {
         let cron = Cron::parse("0 9 * * *").expect("parse");
         let now = at("2026-09-20T09:00:00Z");
-        let (next, skipped) = advance(&cron, Tz::UTC, now, now);
+        let (next, skipped) = advance(&cron, &TimeZone::UTC, now, now);
         assert_eq!(skipped, 0);
         assert_eq!(
             next.expect("next").to_rfc3339(),
@@ -192,7 +189,7 @@ mod tests {
         // Each entry has to be strictly after the last, or the editor shows
         // the same date three times and nobody can check a weekly pattern.
         let cron = Cron::parse("0 9 * * 1-5").expect("parse");
-        let next = upcoming(&cron, Tz::UTC, at("2026-09-18T18:00:00Z"), 3);
+        let next = upcoming(&cron, &TimeZone::UTC, at("2026-09-18T18:00:00Z"), 3);
         let shown: Vec<String> = next.iter().map(|d| d.to_rfc3339()).collect();
         assert_eq!(
             shown,
@@ -207,7 +204,7 @@ mod tests {
     #[test]
     fn an_expression_that_never_matches_yields_no_firings_rather_than_hanging() {
         let cron = Cron::parse("0 0 30 2 *").expect("parses");
-        assert!(upcoming(&cron, Tz::UTC, at("2026-09-20T00:00:00Z"), 3).is_empty());
+        assert!(upcoming(&cron, &TimeZone::UTC, at("2026-09-20T00:00:00Z"), 3).is_empty());
     }
 
     #[test]

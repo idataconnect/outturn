@@ -8,6 +8,7 @@
 mod postgres;
 
 use async_trait::async_trait;
+use outturn_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -21,7 +22,7 @@ pub const PLATFORM_WORKSPACE: Uuid = outturn_core::model_settings::PLATFORM_WORK
 pub struct UsageEntry {
     pub id: Uuid,
     pub workspace_id: Uuid,
-    pub occurred_at: chrono::DateTime<chrono::Utc>,
+    pub occurred_at: Timestamp,
     pub agent_id: Option<Uuid>,
     pub session_id: Option<Uuid>,
     pub user_id: Option<Uuid>,
@@ -134,8 +135,8 @@ pub struct UsagePage {
 pub struct UsageSummary {
     /// The window these figures cover, echoed back so a reader of the JSON
     /// knows what was asked rather than inferring it from the numbers.
-    pub from: chrono::DateTime<chrono::Utc>,
-    pub to: chrono::DateTime<chrono::Utc>,
+    pub from: Timestamp,
+    pub to: Timestamp,
     pub totals: UsageTotals,
     /// One entry per day in the window, including days nothing happened --
     /// see [`UsageStore::summarize`]. Ascending.
@@ -174,7 +175,7 @@ pub struct UsageTotals {
 #[derive(Debug, Clone, Serialize)]
 pub struct UsageBucket {
     /// Midnight UTC opening the day.
-    pub at: chrono::DateTime<chrono::Utc>,
+    pub at: Timestamp,
     pub calls: i64,
     pub prompt_tokens: i64,
     pub completion_tokens: i64,
@@ -213,8 +214,8 @@ pub trait UsageStore: Send + Sync {
     async fn export(
         &self,
         workspace_id: Uuid,
-        from: Option<chrono::DateTime<chrono::Utc>>,
-        to: Option<chrono::DateTime<chrono::Utc>>,
+        from: Option<Timestamp>,
+        to: Option<Timestamp>,
         after: Option<Uuid>,
         limit: i64,
     ) -> Result<UsagePage, UsageError>;
@@ -231,8 +232,8 @@ pub trait UsageStore: Send + Sync {
     async fn summarize(
         &self,
         workspace_id: Option<Uuid>,
-        from: chrono::DateTime<chrono::Utc>,
-        to: chrono::DateTime<chrono::Utc>,
+        from: Timestamp,
+        to: Timestamp,
     ) -> Result<UsageSummary, UsageError>;
 }
 

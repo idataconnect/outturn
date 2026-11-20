@@ -7,13 +7,14 @@
 //! table says what a turn would commit rather than a second reading of the
 //! rows.
 
+use outturn_core::time::SignedDuration;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use chrono::{DateTime, Utc};
+use outturn_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 use uuid::Uuid;
@@ -80,7 +81,7 @@ pub struct InForce {
     pub per_turn: i32,
     pub per_day: i32,
     pub daily_total: Option<Money>,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     pub set_by: Option<String>,
 }
 
@@ -182,7 +183,7 @@ pub fn row(
     policies: &[Policy],
     workspace_id: Uuid,
     ceiling: Option<Risk>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> RuleOperation {
     let banding = declared.banding.as_ref();
     let money = |v: i64, b: &Banding| Money::of(v, &b.currency, b.minor_units);
@@ -356,7 +357,7 @@ pub async fn list(
         .await
         .map_err(internal)?;
     let ceiling = super::ceiling(&state.pool, workspace_id).await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let mut rows: Vec<(Declared, RuleOperation)> = reached
         .into_iter()
         .map(|(d, skill, agents)| {
@@ -425,7 +426,7 @@ pub struct WriteRule {
     #[serde(default = "trial")]
     pub mode: String,
     #[serde(default)]
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
 }
 
 fn trial() -> String {
@@ -443,7 +444,7 @@ fn policy_for(
     d: &Declared,
     input: &WriteRule,
     ceiling: Option<Risk>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<super::api::Checked, ApiError> {
     let op = d.operation();
     if !d.auto {
@@ -526,7 +527,7 @@ fn policy_for(
 fn exclusion_for(
     d: &Declared,
     agent_id: Option<Uuid>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<super::api::Checked, ApiError> {
     super::api::check(
         super::api::WritePolicy {
@@ -546,7 +547,7 @@ fn exclusion_for(
             mode: "on".into(),
             note: None,
             // An exclusion stands as long as anything may.
-            expires_at: Some(now + chrono::Duration::days(super::MAX_LIFETIME_DAYS)),
+            expires_at: Some(now + SignedDuration::from_hours(24 * super::MAX_LIFETIME_DAYS)),
         },
         now,
     )
@@ -561,7 +562,7 @@ fn own<'a>(
     policies: &'a [Policy],
     d: &Declared,
     agent_id: Option<Uuid>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Vec<&'a Policy> {
     policies
         .iter()
@@ -602,7 +603,7 @@ pub async fn put(
         .await
         .map_err(internal)?;
     let ceiling = super::ceiling(&state.pool, workspace_id).await;
-    let now = Utc::now();
+    let now = Timestamp::now();
 
     let mut targets = Vec::new();
     for r in &input.operations {
@@ -737,7 +738,7 @@ pub async fn preview(
         .find(|(d, _, _)| r.names(d))
         .ok_or_else(|| invalid(format!("no agent here reaches {}", r.matches)))?;
     let ceiling = super::ceiling(&state.pool, workspace_id).await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let write = WriteRule {
         operations: vec![r],
         agent_id: q.agent_id,

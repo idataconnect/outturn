@@ -4,6 +4,7 @@
 //! secret are in `config`. Read back under the names a `Trigger` has always
 //! had, so nothing above this file knows the table changed.
 
+use outturn_core::time::Timestamp;
 use sqlx::{PgPool, Row, postgres::PgRow};
 use uuid::Uuid;
 
@@ -265,7 +266,7 @@ pub async fn remember(
     pool: &PgPool,
     trigger_id: Uuid,
     digest: &[u8],
-    expires_at: chrono::DateTime<chrono::Utc>,
+    expires_at: Timestamp,
     claimed_by: Uuid,
 ) -> Result<bool, sqlx::Error> {
     let stored = sqlx::query(

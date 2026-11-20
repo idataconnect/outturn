@@ -1,6 +1,7 @@
 //! Taking work: the runtime key, leases, reports and how a turn is prepared.
 
 use super::*;
+use outturn::time::Timestamp;
 
 // -- Work distribution --------------------------------------------------------
 
@@ -981,7 +982,7 @@ async fn a_turn_s_lease_is_renewed_while_its_summary_is_written() {
     // heartbeat renews from a spawned task, so it goes on without the poll
     // above being driven; renewal is waited for rather than timed, and
     // never comes if there is no heartbeat.
-    let (job, leased_until): (Uuid, chrono::DateTime<chrono::Utc>) = sqlx::query_as(
+    let (job, leased_until): (Uuid, Timestamp) = sqlx::query_as(
         "select id, leased_until from jobs where kind = 'chat.turn' and state = 'running'",
     )
     .fetch_one(&h.db.pool)
@@ -994,7 +995,7 @@ async fn a_turn_s_lease_is_renewed_while_its_summary_is_written() {
         .unwrap();
     let renewed = async {
         loop {
-            let now_until: chrono::DateTime<chrono::Utc> =
+            let now_until: Timestamp =
                 sqlx::query_scalar("select leased_until from jobs where id = $1")
                     .bind(job)
                     .fetch_one(&h.db.pool)

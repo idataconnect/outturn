@@ -9,6 +9,7 @@
 //! that with the real figure once the turn has grown into it. Asking is
 //! therefore a statement about memory, not about a counter.
 
+use outturn_core::time::Timestamp;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -61,7 +62,7 @@ struct Head {
     gateway_token: String,
     /// Absent from an API that predates refreshing, which then never happens.
     #[serde(default)]
-    gateway_token_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    gateway_token_expires_at: Option<Timestamp>,
     /// Quoted back on every report, so the API can tell this pod's account
     /// of the turn from a later holder's.
     lease_token: Uuid,

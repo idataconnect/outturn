@@ -15,6 +15,7 @@
 //! base64-encoded.
 
 use futures::{StreamExt, TryStreamExt};
+use outturn_core::time::Timestamp;
 
 use super::{BoxStream, LlmProvider, Provider, ProviderError};
 use crate::llm::translate::{self, AnthropicStream};
@@ -115,7 +116,10 @@ impl BedrockProvider {
                     .as_ref()
                     .map(|u| u.path().to_string())
                     .unwrap_or_default();
-                let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+                let amz_date = Timestamp::now()
+                    .as_jiff()
+                    .strftime("%Y%m%dT%H%M%SZ")
+                    .to_string();
                 let keys = credentials.current().await?;
                 let signed = super::sigv4::sign(
                     "POST", &host, &path, "", &bytes, &keys, region, "bedrock", &amz_date,

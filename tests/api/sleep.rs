@@ -1,6 +1,7 @@
 //! Sleep and timers.
 
 use super::*;
+use outturn::time::{SignedDuration, Timestamp};
 
 // --- sleep and timers -----------------------------------------------------
 //
@@ -306,7 +307,7 @@ async fn a_timer_holds_nothing_and_fires_a_turn() {
         .await;
     let (agent, session) = a_held_conversation(&h, workspace, &admin).await;
     let (job, lease) = a_running_turn(&h, workspace, agent, session).await;
-    let at = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+    let at = (Timestamp::now() + SignedDuration::from_hours(2)).to_rfc3339();
     let (status, body) = ask_to_wait(
         &h,
         lease,

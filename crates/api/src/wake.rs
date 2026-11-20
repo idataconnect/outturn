@@ -24,6 +24,7 @@
 //! sits after them -- the honest order -- and says how long before the wake each
 //! arrived, which stays true however long the turn takes to start.
 
+use outturn_core::time::{SignedDuration, Timestamp, zone};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -73,8 +74,8 @@ pub struct Due {
     pub agent_id: Uuid,
     pub kind: Kind,
     pub reason: String,
-    pub set_at: chrono::DateTime<chrono::Utc>,
-    pub due_at: chrono::DateTime<chrono::Utc>,
+    pub set_at: Timestamp,
+    pub due_at: Timestamp,
     #[serde(default)]
     pub timezone: Option<String>,
     /// For a sleep: the queue item and the hold it stands for.
@@ -92,9 +93,9 @@ pub struct Note {
     pub agent_id: Uuid,
     pub kind: Kind,
     pub reason: String,
-    pub set_at: chrono::DateTime<chrono::Utc>,
+    pub set_at: Timestamp,
     /// When it was due, so a sleep ended early can say so.
-    pub due_at: chrono::DateTime<chrono::Utc>,
+    pub due_at: Timestamp,
     pub timezone: Option<String>,
     /// The person who pressed Wake now, where one did.
     pub woken_by: Option<String>,
@@ -132,24 +133,28 @@ pub fn span(seconds: i64) -> String {
 }
 
 /// A moment as the agent's user would read it: their zone where known.
-fn clock(at: chrono::DateTime<chrono::Utc>, timezone: Option<&str>) -> String {
-    match timezone.and_then(|z| z.parse::<chrono_tz::Tz>().ok()) {
-        Some(tz) => at.with_timezone(&tz).format("%H:%M %Z").to_string(),
-        None => at.format("%H:%M UTC").to_string(),
+fn clock(at: Timestamp, timezone: Option<&str>) -> String {
+    match timezone.and_then(zone) {
+        Some(tz) => at
+            .as_jiff()
+            .to_zoned_datetime(tz)
+            .strftime("%H:%M %Z")
+            .to_string(),
+        None => at.as_jiff().strftime("%H:%M UTC").to_string(),
     }
 }
 
 /// A moment in full, as the confirmation says it: "Tuesday 29 September at
 /// 3:12 pm PDT". The day is named because a timer is as often tomorrow as
 /// today, and "3:12 pm" alone leaves the reader to guess which.
-fn when(at: chrono::DateTime<chrono::Utc>, timezone: Option<&str>) -> String {
+fn when(at: Timestamp, timezone: Option<&str>) -> String {
     const FORMAT: &str = "%A %-d %B at %-I:%M %P";
-    match timezone.and_then(|z| z.parse::<chrono_tz::Tz>().ok()) {
+    match timezone.and_then(zone) {
         Some(tz) => {
-            let local = at.with_timezone(&tz);
-            format!("{} {}", local.format(FORMAT), local.format("%Z"))
+            let local = at.as_jiff().to_zoned_datetime(tz);
+            format!("{} {}", local.strftime(FORMAT), local.strftime("%Z"))
         }
-        None => format!("{} UTC", at.format(FORMAT)),
+        None => format!("{} UTC", at.as_jiff().strftime(FORMAT)),
     }
 }
 
@@ -162,11 +167,7 @@ fn when(at: chrono::DateTime<chrono::Utc>, timezone: Option<&str>) -> String {
 /// minutes ago" would not. The messages keep their own words; only this note
 /// speaks about timing, since rewriting what somebody said to add a timestamp
 /// would put words in their mouth.
-pub fn compose(
-    note: &Note,
-    woke_at: chrono::DateTime<chrono::Utc>,
-    queued: &[chrono::DateTime<chrono::Utc>],
-) -> String {
+pub fn compose(note: &Note, woke_at: Timestamp, queued: &[Timestamp]) -> String {
     let zone = note.timezone.as_deref();
     let mut out = match note.kind {
         Kind::Sleep => {
@@ -174,7 +175,7 @@ pub fn compose(
                 "You slept from {} to {} ({}): {}",
                 clock(note.set_at, zone),
                 clock(woke_at, zone),
-                span((woke_at - note.set_at).num_seconds()),
+                span((woke_at - note.set_at).as_secs()),
                 note.reason.trim(),
             );
             if !s.ends_with(['.', '!', '?']) {
@@ -204,7 +205,7 @@ pub fn compose(
     if !queued.is_empty() {
         let before: Vec<String> = queued
             .iter()
-            .map(|at| span((woke_at - *at).num_seconds()))
+            .map(|at| span((woke_at - *at).as_secs()))
             .collect();
         let list = match before.as_slice() {
             [one] => one.clone(),
@@ -241,10 +242,10 @@ pub async fn write_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     note: Note,
 ) -> Result<Uuid, sqlx::Error> {
-    let woke_at = chrono::Utc::now();
+    let woke_at = Timestamp::now();
 
     // Unanswered, unabsorbed messages from people, in the order they arrived.
-    let waiting: Vec<(Uuid, chrono::DateTime<chrono::Utc>, Uuid)> = if note.kind == Kind::Sleep {
+    let waiting: Vec<(Uuid, Timestamp, Uuid)> = if note.kind == Kind::Sleep {
         sqlx::query_as(
             "select u.id, u.created_at, u.user_id from agent_messages u \
              where u.session_id = $1 and u.role = 'user' and u.absorbed_by is null \
@@ -266,7 +267,7 @@ pub async fn write_tx(
     // either. Anybody else's message keeps its own turn, parked behind the
     // sleep and run once it lifts, as a steer from them would be.
     let asker = waiting.first().map(|(_, _, who)| *who);
-    let queued: Vec<(Uuid, chrono::DateTime<chrono::Utc>)> = waiting
+    let queued: Vec<(Uuid, Timestamp)> = waiting
         .iter()
         .filter(|(_, _, who)| Some(*who) == asker)
         .map(|(id, at, _)| (*id, *at))
@@ -468,11 +469,11 @@ fn refuse(why: impl Into<String>) -> ApiError {
 /// the turn is for, which is what "remind me at 3pm" means -- and it spares the
 /// model the offset arithmetic, which is where one set a timer for 21:12-07:00
 /// having converted 14:12 to UTC and then put the local offset back on.
-fn moment(at: &str, timezone: Option<&str>) -> Result<chrono::DateTime<chrono::Utc>, ApiError> {
-    use chrono::TimeZone as _;
+fn moment(at: &str, timezone: Option<&str>) -> Result<Timestamp, ApiError> {
+    use jiff::tz::AmbiguousOffset;
     let at = at.trim();
-    if let Ok(exact) = chrono::DateTime::parse_from_rfc3339(at) {
-        return Ok(exact.with_timezone(&chrono::Utc));
+    if let Ok(exact) = Timestamp::parse_rfc3339(at) {
+        return Ok(exact);
     }
     let naive = [
         "%Y-%m-%dT%H:%M:%S",
@@ -481,22 +482,27 @@ fn moment(at: &str, timezone: Option<&str>) -> Result<chrono::DateTime<chrono::U
         "%Y-%m-%d %H:%M",
     ]
     .iter()
-    .find_map(|f| chrono::NaiveDateTime::parse_from_str(at, f).ok())
+    .find_map(|f| jiff::civil::DateTime::strptime(f, at).ok())
     .ok_or_else(|| {
         refuse("at must be a date and time, e.g. 2026-10-01T09:00:00 in the user's own zone")
     })?;
-    let tz = timezone
-        .and_then(|z| z.parse::<chrono_tz::Tz>().ok())
-        .unwrap_or(chrono_tz::UTC);
-    match tz.from_local_datetime(&naive) {
-        chrono::LocalResult::Single(t) => Ok(t.with_timezone(&chrono::Utc)),
+    let tz = timezone.and_then(zone).unwrap_or(jiff::tz::TimeZone::UTC);
+    let offset = match tz.to_ambiguous_timestamp(naive).offset() {
+        AmbiguousOffset::Unambiguous { offset } => offset,
         // The hour a clock goes back happens twice; the first is what a person
         // setting a reminder for it means.
-        chrono::LocalResult::Ambiguous(first, _) => Ok(first.with_timezone(&chrono::Utc)),
-        chrono::LocalResult::None => Err(refuse(format!(
-            "{at} does not exist in {tz}: the clocks change then. Pick a time either side"
-        ))),
-    }
+        AmbiguousOffset::Fold { before, .. } => before,
+        AmbiguousOffset::Gap { .. } => {
+            let name = tz.iana_name().unwrap_or("UTC");
+            return Err(refuse(format!(
+                "{at} does not exist in {name}: the clocks change then. Pick a time either side"
+            )));
+        }
+    };
+    offset
+        .to_timestamp(naive)
+        .map(Timestamp::from)
+        .map_err(|_| refuse("that time is out of range"))
 }
 
 /// When a wait is due, or why it cannot be. The words are the model's to read,
@@ -504,17 +510,17 @@ fn moment(at: &str, timezone: Option<&str>) -> Result<chrono::DateTime<chrono::U
 fn due_at(
     input: &Wait,
     kind: Kind,
-    now: chrono::DateTime<chrono::Utc>,
+    now: Timestamp,
     timezone: Option<&str>,
-) -> Result<chrono::DateTime<chrono::Utc>, ApiError> {
-    let longest = chrono::Duration::from_std(LONGEST).expect("fits");
+) -> Result<Timestamp, ApiError> {
+    let longest = SignedDuration::try_from(LONGEST).expect("fits");
     let due = match (kind, input.seconds, input.at.as_deref()) {
         (_, Some(s), None) => {
             if s == 0 {
                 return Err(refuse("seconds must be above zero"));
             }
             let s = i64::try_from(s).map_err(|_| refuse("that is longer than 30 days"))?;
-            now + chrono::Duration::seconds(s.min(longest.num_seconds() + 1))
+            now + SignedDuration::from_secs(s.min(longest.as_secs() + 1))
         }
         (Kind::Timer, None, Some(at)) => moment(at, timezone)?,
         (Kind::Sleep, None, Some(_)) => {
@@ -585,7 +591,7 @@ pub async fn wait(
         )));
     }
 
-    let now = chrono::Utc::now();
+    let now = Timestamp::now();
     let zone = turn.timezone.as_deref();
     let due_at = due_at(&input, kind, now, zone)?;
     let internal = |e: String| (StatusCode::INTERNAL_SERVER_ERROR, e);
@@ -681,7 +687,7 @@ pub async fn wait(
     }
 
     let payload = serde_json::to_value(&due).map_err(|e| internal(e.to_string()))?;
-    let delay = (due_at - now).to_std().unwrap_or_default();
+    let delay = std::time::Duration::try_from(due_at - now).unwrap_or_default();
     let id = jobs::enqueue(
         &state.pool,
         turn.workspace_id,
@@ -717,7 +723,7 @@ pub async fn wait(
         Kind::Sleep => serde_json::json!({
             "sleeping_until": due_at,
             "when": when(due_at, zone),
-            "in": span((due_at - now).num_seconds()),
+            "in": span((due_at - now).as_secs()),
             "note": format!(
                 "Asleep until {}. Your turn ends now. Anything sent meanwhile will be \
                  shown to you when you wake.",
@@ -736,7 +742,7 @@ pub async fn wait(
                 "Timer {id} set for {}, {} from now. Carry on; you will be woken then. \
                  Check this is the time the user asked for.",
                 when(due_at, zone),
-                span((due_at - now).num_seconds())
+                span((due_at - now).as_secs())
             );
             if !others.is_empty() {
                 note.push_str(&format!(
@@ -751,7 +757,7 @@ pub async fn wait(
                 "id": id,
                 "timer_set_for": due_at,
                 "when": when(due_at, zone),
-                "in": span((due_at - now).num_seconds()),
+                "in": span((due_at - now).as_secs()),
                 "reason": reason,
                 "other_timers": others,
                 "note": note,
@@ -790,12 +796,12 @@ async fn pending_timers(
 }
 
 /// One timer as a tool result shows it.
-fn described(id: Uuid, due: &Due, now: chrono::DateTime<chrono::Utc>) -> serde_json::Value {
+fn described(id: Uuid, due: &Due, now: Timestamp) -> serde_json::Value {
     serde_json::json!({
         "id": id,
         "at": due.due_at,
         "when": when(due.due_at, due.timezone.as_deref()),
-        "in": span((due.due_at - now).num_seconds()),
+        "in": span((due.due_at - now).as_secs()),
         "reason": due.reason,
     })
 }
@@ -806,7 +812,7 @@ async fn list(
     pool: &sqlx::PgPool,
     turn: &super::worker::ChatTurnPayload,
 ) -> Result<Json<Arranged>, ApiError> {
-    let now = chrono::Utc::now();
+    let now = Timestamp::now();
     let timers: Vec<serde_json::Value> = pending_timers(pool, turn.session_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -856,7 +862,7 @@ async fn cancel(
     let due: Due = removed
         .and_then(|p| serde_json::from_value(p).ok())
         .ok_or_else(not_found)?;
-    let cancelled = described(id, &due, chrono::Utc::now());
+    let cancelled = described(id, &due, Timestamp::now());
     Ok(Json(Arranged {
         message: serde_json::json!({
             "cancelled": cancelled,
@@ -1090,8 +1096,8 @@ pub async fn fire_timer_on(
 mod tests {
     use super::*;
 
-    fn at(seconds: i64) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::from_timestamp(1_800_000_000 + seconds, 0).unwrap()
+    fn at(seconds: i64) -> Timestamp {
+        Timestamp::from_unix(1_800_000_000 + seconds, 0).unwrap()
     }
 
     fn note(kind: Kind) -> Note {
@@ -1186,10 +1192,7 @@ mod tests {
         (wait, kind)
     }
 
-    fn due(
-        (wait, kind): (Wait, Kind),
-        now: chrono::DateTime<chrono::Utc>,
-    ) -> Result<chrono::DateTime<chrono::Utc>, ApiError> {
+    fn due((wait, kind): (Wait, Kind), now: Timestamp) -> Result<Timestamp, ApiError> {
         due_at(&wait, kind, now, None)
     }
 
@@ -1237,9 +1240,7 @@ mod tests {
 
     #[test]
     fn a_confirmation_names_the_day_and_the_zone() {
-        let at = chrono::DateTime::parse_from_rfc3339("2026-09-29T22:12:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let at = Timestamp::parse_rfc3339("2026-09-29T22:12:00Z").unwrap();
         assert_eq!(
             when(at, Some("America/Los_Angeles")),
             "Tuesday 29 September at 3:12 pm PDT"

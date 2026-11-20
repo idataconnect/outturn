@@ -13,7 +13,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use chrono::{DateTime, Utc};
+use outturn_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use uuid::Uuid;
@@ -36,7 +36,7 @@ pub struct Feedback {
     pub by: Actor,
     /// Whether it is the reader's own, which is what they may change.
     pub mine: bool,
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
 }
 
 #[derive(Debug, Deserialize)]

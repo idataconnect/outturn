@@ -18,6 +18,7 @@
 
 use outturn::api::grant::{self, NewGrant};
 use outturn::egress::grant::{Extent, Granted};
+use outturn::time::Timestamp;
 use uuid::Uuid;
 
 mod common;
@@ -559,7 +560,7 @@ async fn a_reply_records_when_it_finished() {
         .await
         .expect("placeholder");
 
-    let before: Option<chrono::DateTime<chrono::Utc>> =
+    let before: Option<Timestamp> =
         sqlx::query_scalar("select finished_at from agent_messages where id = $1")
             .bind(reply.message.id)
             .fetch_one(&db.pool)
@@ -578,7 +579,7 @@ async fn a_reply_records_when_it_finished() {
     .await
     .expect("finish");
 
-    let after: Option<chrono::DateTime<chrono::Utc>> =
+    let after: Option<Timestamp> =
         sqlx::query_scalar("select finished_at from agent_messages where id = $1")
             .bind(reply.message.id)
             .fetch_one(&db.pool)

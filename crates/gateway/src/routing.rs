@@ -11,6 +11,7 @@
 //! configuration rather than a deployment. Each link becomes a route: where
 //! to go, what to ask for, and what that model accepts.
 
+use outturn_core::time::Timestamp;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -68,7 +69,7 @@ pub async fn routes_for_turn(
     pool: &PgPool,
     workspace_id: Uuid,
     traffic_type: &str,
-    began: Option<chrono::DateTime<chrono::Utc>>,
+    began: Option<Timestamp>,
 ) -> Result<Vec<Route>, sqlx::Error> {
     Ok(
         outturn_core::chains::links_for(pool, workspace_id, traffic_type)

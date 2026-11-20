@@ -21,7 +21,7 @@ tokio = { version = "1.54.1", features = ["full"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
 uuid = { version = "1.26.0", features = ["v7", "serde"] }
-sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres", "uuid", "migrate", "chrono"] }
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres", "uuid", "migrate", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 async-stream = "0.3"
@@ -80,13 +80,17 @@ crc32fast = "1.5.1"
 # The model catalog ships gzipped in the image (crates/core/src/catalog.rs).
 flate2 = "1.1.10"
 subtle = "2"
-chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+# Instants and time zones. The zone rules are bundled rather than read from
+# the host, as chrono-tz had them, so a slim image schedules as a full one does.
+jiff = { version = "1.0.1", default-features = false, features = ["std", "serde", "tzdb-bundle-always"] }
+# Only for sqlx, which decodes timestamps into no other maintained crate;
+# crates/core/src/time.rs converts at the boundary.
+time = { version = "0.3.47", default-features = false }
 # fail-on-err is in the crate's default set and default-features = false had
 # quietly dropped it, so every non-2xx answer came back as Ok: a rejected PUT
 # reported success, a 403 body was returned as a file's contents, and the
 # classifier below it never saw an error at all.
 rust-s3 = { version = "0.38.0", default-features = false, features = ["tokio-rustls-tls", "fail-on-err"] }
-chrono-tz = { version = "0.10.4", default-features = false }
 serde-saphyr = "1.3.0"
 hpke = { version = "0.14.1", default-features = false, features = ["alloc", "getrandom", "x25519", "aes"] }
 zeroize = "1.9.0"
@@ -139,9 +143,8 @@ sha2 = { workspace = true }
 hmac = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
-chrono = { workspace = true }
+jiff = { workspace = true }
 rust-s3 = { workspace = true }
-chrono-tz = { workspace = true }
 zeroize = { workspace = true }
 anyhow = { workspace = true }
 

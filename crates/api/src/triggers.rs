@@ -7,6 +7,7 @@
 //! webhook's secret is never in it: that is said once, when the hook is made.
 //! Creating and editing stay with each kind's own routes, whose forms differ.
 
+use outturn_core::time::Timestamp;
 use std::sync::Arc;
 
 use axum::Json;
@@ -30,10 +31,10 @@ pub struct Trigger {
     pub max_per_hour: Option<i32>,
     pub max_concurrent: Option<i32>,
     pub refused: i32,
-    pub last_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_at: Option<Timestamp>,
     pub last_status: Option<String>,
     pub last_error: Option<String>,
-    pub next_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub next_at: Option<Timestamp>,
 }
 
 pub async fn list_for_agent(

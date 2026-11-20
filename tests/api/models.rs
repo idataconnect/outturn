@@ -1,6 +1,7 @@
 //! The model catalog, accounts, models, chains and recipes.
 
 use super::*;
+use outturn::time::{SignedDuration, Timestamp};
 
 /// A deployment holds a catalog from its first start, with nothing outside
 /// reachable: the one the release shipped. Starting again keeps no second
@@ -132,13 +133,13 @@ async fn a_catalog_check_asks_whether_anything_changed() {
         kept, 2,
         "the shipped catalog and the fetched one, and nothing for the 304"
     );
-    let (next, checked): (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
+    let (next, checked): (Timestamp, Timestamp) =
         sqlx::query_as("select next_check_at, checked_at from catalog_checks")
             .fetch_one(pool)
             .await
             .unwrap();
     assert!(
-        next - checked >= chrono::Duration::days(7),
+        next - checked >= SignedDuration::from_hours(24 * 7),
         "checked again before the week is up"
     );
 }

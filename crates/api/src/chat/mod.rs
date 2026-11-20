@@ -6,7 +6,7 @@ pub mod trim;
 pub use postgres::{PostgresChatStore, forget_streamed};
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use outturn_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -14,7 +14,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct Stopped {
     pub reason: String,
-    pub at: chrono::DateTime<chrono::Utc>,
+    pub at: Timestamp,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,7 +34,7 @@ pub struct AgentSession {
     /// so the workspace can split its bill; meaningless to the platform.
     pub account: Option<String>,
     /// When a message was last stored in it. What the recent list orders by.
-    pub last_active_at: DateTime<Utc>,
+    pub last_active_at: Timestamp,
     /// The state of its live turn -- `pending`, `running` or `parked` -- or
     /// none when nothing is in flight.
     pub turn: Option<String>,
@@ -56,7 +56,7 @@ pub struct StartedBy {
 /// list is ordered on. Opaque to a client, which hands back what it was given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Recent {
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
     pub id: Uuid,
 }
 
@@ -71,13 +71,13 @@ impl Recent {
     /// Microseconds, since that is what Postgres keeps: a coarser cursor
     /// would land between two sessions active in the same millisecond.
     pub fn encode(&self) -> String {
-        format!("{}.{}", self.at.timestamp_micros(), self.id)
+        format!("{}.{}", self.at.unix_micros(), self.id)
     }
 
     pub fn decode(cursor: &str) -> Option<Self> {
         let (micros, id) = cursor.split_once('.')?;
         Some(Self {
-            at: DateTime::from_timestamp_micros(micros.parse().ok()?)?,
+            at: Timestamp::from_unix_micros(micros.parse().ok()?)?,
             id: id.parse().ok()?,
         })
     }
@@ -119,7 +119,7 @@ pub struct Message {
     ///
     /// Null while a reply is still being written.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub finished_at: Option<Timestamp>,
     /// On a user message, the reply that took it mid-turn. Such a message is
     /// answered inside that reply and never gets one of its own.
     pub absorbed_by: Option<Uuid>,
@@ -545,7 +545,7 @@ mod recent_tests {
 
     #[test]
     fn a_cursor_survives_the_round_trip_to_the_microsecond() {
-        let at = DateTime::from_timestamp_micros(1_791_050_000_123_456).unwrap();
+        let at = Timestamp::from_unix_micros(1_791_050_000_123_456).unwrap();
         let recent = Recent {
             at,
             id: Uuid::now_v7(),

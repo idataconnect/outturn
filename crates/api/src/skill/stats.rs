@@ -22,6 +22,7 @@
 //! these itself would page the whole transcript down the wire to show a count.
 
 use async_trait::async_trait;
+use outturn_core::time::Timestamp;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -31,8 +32,8 @@ use crate::actor::Actor;
 /// JSON knows what was asked rather than inferring it from the numbers.
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillStats {
-    pub from: chrono::DateTime<chrono::Utc>,
-    pub to: chrono::DateTime<chrono::Utc>,
+    pub from: Timestamp,
+    pub to: Timestamp,
     pub totals: SkillTotals,
     /// Most-used first, capped. A skill that served nothing in the window is
     /// not here -- it is in `idle` if an agent carries it, and nowhere if not.
@@ -75,7 +76,7 @@ pub struct SkillUse {
     /// Versions of it written in the window, so a skill being edited while it
     /// is being used is visible as such.
     pub versions: i64,
-    pub last_used: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_used: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,7 +89,7 @@ pub struct IdleSkill {
     pub agents: i64,
     /// When it last served a turn, ever -- not just in the window. `None` means
     /// it never has, which is a stronger statement than "not lately".
-    pub last_used: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_used: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,8 +134,8 @@ pub trait SkillStatsStore: Send + Sync {
     async fn stats(
         &self,
         workspace_id: Uuid,
-        from: chrono::DateTime<chrono::Utc>,
-        to: chrono::DateTime<chrono::Utc>,
+        from: Timestamp,
+        to: Timestamp,
         limit: i64,
     ) -> Result<SkillStats, StatsError>;
 }

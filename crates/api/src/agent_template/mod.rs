@@ -6,6 +6,7 @@ mod postgres;
 pub use postgres::PostgresAgentTemplateStore;
 
 use async_trait::async_trait;
+use outturn_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -72,7 +73,7 @@ pub struct TemplateVersion {
     /// the agent's own.
     pub settings: serde_json::Map<String, serde_json::Value>,
     pub note: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: Timestamp,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -346,7 +347,7 @@ mod tests {
             skills: vec![],
             settings: Default::default(),
             note: String::new(),
-            created_at: chrono::Utc::now(),
+            created_at: Timestamp::now(),
         }
     }
 

@@ -13,6 +13,7 @@
 //! compromised runtime pod -- the tier that executes workspace code -- cannot
 //! mint anything for anyone. See `RuntimeKey`.
 
+use crate::time::{SignedDuration, Timestamp};
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
@@ -344,13 +345,12 @@ impl TokenMinter {
         asker: Option<Uuid>,
         lifetime: Duration,
     ) -> Result<String, AuthError> {
-        use chrono::SecondsFormat;
+        use crate::time::SecondsFormat;
 
         let internal = |e: PasetoError| AuthError::Internal(e.to_string());
-        let now = chrono::Utc::now();
+        let now = Timestamp::now();
         let exp = now
-            + chrono::Duration::from_std(lifetime)
-                .map_err(|e| AuthError::Internal(e.to_string()))?;
+            + SignedDuration::try_from(lifetime).map_err(|e| AuthError::Internal(e.to_string()))?;
 
         let mut claims = Claims::new().map_err(internal)?;
         claims
@@ -951,11 +951,11 @@ mod tests {
         let gateway = TokenValidator::new(&public, AUDIENCE_GATEWAY).expect("validator");
 
         let internal = |e: PasetoError| e;
-        let now = chrono::Utc::now();
-        let exp = now + chrono::Duration::seconds(300);
+        let now = Timestamp::now();
+        let exp = now + SignedDuration::from_secs(300);
         let mut claims = Claims::new().expect("claims");
         claims
-            .expiration(&exp.to_rfc3339_opts(chrono::SecondsFormat::Secs, false))
+            .expiration(&exp.to_rfc3339_opts(crate::time::SecondsFormat::Secs, false))
             .map_err(internal)
             .expect("exp");
         claims.audience(AUDIENCE_GATEWAY).expect("aud");

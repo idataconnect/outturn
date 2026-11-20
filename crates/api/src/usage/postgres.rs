@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use outturn_core::time::Timestamp;
 use sqlx::AssertSqlSafe;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
@@ -120,8 +121,8 @@ impl PostgresUsageStore {
     async fn slice(
         &self,
         workspace_id: Option<Uuid>,
-        from: chrono::DateTime<chrono::Utc>,
-        to: chrono::DateTime<chrono::Utc>,
+        from: Timestamp,
+        to: Timestamp,
         dimension: Dimension,
     ) -> Result<Vec<UsageSlice>, UsageError> {
         // `AssertSqlSafe` waives sqlx's refusal to run a built string, so what
@@ -261,8 +262,8 @@ impl UsageStore for PostgresUsageStore {
     async fn export(
         &self,
         workspace_id: Uuid,
-        from: Option<chrono::DateTime<chrono::Utc>>,
-        to: Option<chrono::DateTime<chrono::Utc>>,
+        from: Option<Timestamp>,
+        to: Option<Timestamp>,
         after: Option<Uuid>,
         limit: i64,
     ) -> Result<UsagePage, UsageError> {
@@ -297,8 +298,8 @@ impl UsageStore for PostgresUsageStore {
     async fn summarize(
         &self,
         workspace_id: Option<Uuid>,
-        from: chrono::DateTime<chrono::Utc>,
-        to: chrono::DateTime<chrono::Utc>,
+        from: Timestamp,
+        to: Timestamp,
     ) -> Result<UsageSummary, UsageError> {
         // One predicate, chosen once and bound the same way in every statement
         // below: a null workspace means every workspace, which the route only

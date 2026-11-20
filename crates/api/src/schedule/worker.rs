@@ -5,8 +5,7 @@
 //! prompt, and queues a turn -- then writes when the schedule should fire
 //! again.
 
-use chrono::Utc;
-use chrono_tz::Tz;
+use outturn_core::time::Timestamp;
 use uuid::Uuid;
 
 use super::{Cron, TICK, advance, postgres};
@@ -41,7 +40,7 @@ pub async fn run(pool: sqlx::PgPool, shutdown: outturn_core::lifecycle::Shutdown
         // outcome worth avoiding -- the drain is at most 64 firings and each
         // is two short statements.
         for _ in 0..64 {
-            match postgres::take_due(&pool, Utc::now()).await {
+            match postgres::take_due(&pool, Timestamp::now()).await {
                 Ok(Some((schedule, owed))) => fire(&pool, schedule, owed).await,
                 Ok(None) => break,
                 Err(e) => {
@@ -54,15 +53,15 @@ pub async fn run(pool: sqlx::PgPool, shutdown: outturn_core::lifecycle::Shutdown
 }
 
 /// One firing: a session, a message nobody sent, and a queued turn.
-async fn fire(pool: &sqlx::PgPool, schedule: super::Schedule, owed: chrono::DateTime<Utc>) {
-    let now = Utc::now();
+async fn fire(pool: &sqlx::PgPool, schedule: super::Schedule, owed: Timestamp) {
+    let now = Timestamp::now();
 
     // Reparsed at firing time rather than trusted from when it was saved. The
     // row is the only durable thing, and a schedule written by an older
     // version -- or by hand -- may not parse at all. Recording that is better
     // than panicking in a background loop nobody is watching.
     let parsed = Cron::parse(&schedule.expression);
-    let zone: Result<Tz, _> = schedule.timezone.parse();
+    let zone = outturn_core::time::zone(&schedule.timezone).ok_or(());
 
     let (cron, tz) = match (parsed, zone) {
         (Ok(c), Ok(z)) => (c, z),
@@ -86,7 +85,7 @@ async fn fire(pool: &sqlx::PgPool, schedule: super::Schedule, owed: chrono::Date
     // for both -- which an earlier version did -- makes the first candidate
     // strictly later than `now` by construction, so nothing is ever counted
     // and every firing looks punctual.
-    let (next, skipped) = advance(&cron, tz, owed, now);
+    let (next, skipped) = advance(&cron, &tz, owed, now);
 
     match start_turn(pool, &schedule, owed).await {
         crate::trigger::Fired::Started(session_id) => {
@@ -102,7 +101,7 @@ async fn fire(pool: &sqlx::PgPool, schedule: super::Schedule, owed: chrono::Date
         // This firing already ran -- the time it was due is its name, and a
         // second taking of it is the same firing. Moved on without a turn.
         crate::trigger::Fired::Duplicate => {
-            tracing::warn!(schedule_id = %schedule.id, %owed, "a schedule's firing had already run");
+            tracing::warn!(schedule_id = %schedule.id, owed = ?owed, "a schedule's firing had already run");
             record(pool, schedule.id, "ok", None, next, skipped).await;
         }
         crate::trigger::Fired::OverCeiling(ceiling) => {
@@ -133,7 +132,7 @@ async fn record(
     id: Uuid,
     status: &str,
     error: Option<&str>,
-    next: Option<chrono::DateTime<Utc>>,
+    next: Option<Timestamp>,
     skipped: i32,
 ) {
     if let Err(e) = postgres::record_run(pool, id, status, error, next, skipped).await {
@@ -151,7 +150,7 @@ async fn record(
 async fn start_turn(
     pool: &sqlx::PgPool,
     schedule: &super::Schedule,
-    owed: chrono::DateTime<Utc>,
+    owed: Timestamp,
 ) -> crate::trigger::Fired {
     crate::trigger::fire(
         pool,

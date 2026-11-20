@@ -21,7 +21,7 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use outturn_core::time::Timestamp;
 
 use super::ProviderError;
 use super::sigv4::Credentials;
@@ -47,7 +47,7 @@ enum Source {
 pub struct AwsCredentials {
     source: Source,
     client: reqwest::Client,
-    held: tokio::sync::Mutex<Option<(Credentials, Option<DateTime<Utc>>)>>,
+    held: tokio::sync::Mutex<Option<(Credentials, Option<Timestamp>)>>,
 }
 
 impl AwsCredentials {
@@ -113,7 +113,7 @@ impl AwsCredentials {
     pub async fn current(&self) -> Result<Credentials, ProviderError> {
         let mut held = self.held.lock().await;
         if let Some((keys, expires)) = held.as_ref()
-            && expires.is_none_or(|at| Utc::now() + REFRESH_BEFORE < at)
+            && expires.is_none_or(|at| Timestamp::now() + REFRESH_BEFORE < at)
         {
             return Ok(keys.clone());
         }
@@ -122,7 +122,7 @@ impl AwsCredentials {
         Ok(fresh.0)
     }
 
-    async fn fetch(&self) -> Result<(Credentials, Option<DateTime<Utc>>), ProviderError> {
+    async fn fetch(&self) -> Result<(Credentials, Option<Timestamp>), ProviderError> {
         let failed = |what: String| ProviderError::Upstream {
             status: None,
             detail: format!("no AWS credentials: {what}"),
@@ -211,10 +211,8 @@ fn read_token(path: &str) -> Result<String, String> {
         .map_err(|e| format!("the token at {path} could not be read: {e}"))
 }
 
-fn parse_time(text: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(text.trim())
-        .ok()
-        .map(|t| t.with_timezone(&Utc))
+fn parse_time(text: &str) -> Option<Timestamp> {
+    Timestamp::parse_rfc3339(text.trim()).ok()
 }
 
 /// The text of the first `<name>` element in an STS answer. STS answers in
@@ -230,6 +228,7 @@ fn element<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use outturn_core::time::SignedDuration;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -307,7 +306,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_role_is_assumed_with_the_mounted_token_and_held_until_near_expiry() {
-        let later = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let later = (Timestamp::now() + SignedDuration::from_hours(1)).to_rfc3339();
         let answer = format!(
             "<AssumeRoleWithWebIdentityResponse><AssumeRoleWithWebIdentityResult><Credentials>\
              <AccessKeyId>ASIAROLE</AccessKeyId><SecretAccessKey>secret</SecretAccessKey>\
@@ -341,7 +340,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_pods_identity_is_asked_again_when_its_keys_are_about_to_expire() {
-        let soon = (Utc::now() + chrono::Duration::minutes(2)).to_rfc3339();
+        let soon = (Timestamp::now() + SignedDuration::from_mins(2)).to_rfc3339();
         let answer = serde_json::json!({
             "AccessKeyId": "ASIAPOD", "SecretAccessKey": "secret",
             "Token": "session", "Expiration": soon,

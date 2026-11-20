@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Utc};
+use outturn_core::time::Timestamp;
 use sqlx::Row as _;
 use uuid::Uuid;
 
@@ -51,7 +51,7 @@ pub fn waiting(
     policies: &[Policy],
     workspace_id: Uuid,
     ceiling: Option<Risk>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> BTreeMap<Uuid, BTreeSet<String>> {
     let mut out: BTreeMap<Uuid, BTreeSet<String>> = BTreeMap::new();
     for agent in agents {
@@ -141,7 +141,7 @@ async fn reconcile_inner(state: &ApiState, workspace_id: Uuid) -> Result<(), Str
     use crate::skill::SkillStore as _;
     let err = |e: &dyn std::fmt::Display| e.to_string();
 
-    let now = Utc::now();
+    let now = Timestamp::now();
     let ceiling = super::ceiling(&state.pool, workspace_id).await;
     let policies: Vec<Policy> = super::list(&state.pool, workspace_id)
         .await
@@ -310,6 +310,7 @@ async fn settle(state: &ApiState, workspace_id: Uuid, item: Uuid, to: State) {
 mod tests {
     use super::super::tests::{agent, declared, policy, workspace};
     use super::*;
+    use outturn_core::time::SignedDuration;
 
     fn names() -> BTreeMap<Uuid, String> {
         BTreeMap::from([(declared("charge", Risk::Low).skill_id, "Charging".into())])
@@ -318,7 +319,7 @@ mod tests {
     #[test]
     fn a_broad_policy_on_lists_what_was_published_after_it_was_accepted() {
         let mut later = declared("charge", Risk::Low);
-        later.published_at = Utc::now() + chrono::Duration::seconds(5);
+        later.published_at = Timestamp::now() + SignedDuration::from_secs(5);
         let earlier = declared("charge", Risk::Low);
         let p = policy("act");
         let names = names();
@@ -338,7 +339,7 @@ mod tests {
             std::slice::from_ref(&p),
             workspace(),
             Some(Risk::High),
-            Utc::now(),
+            Timestamp::now(),
         );
         assert_eq!(
             found
@@ -351,7 +352,7 @@ mod tests {
     #[test]
     fn nothing_waits_on_a_policy_in_trial_one_naming_the_operation_or_one_kept_out() {
         let mut later = declared("charge", Risk::Low);
-        later.published_at = Utc::now() + chrono::Duration::seconds(5);
+        later.published_at = Timestamp::now() + SignedDuration::from_secs(5);
         let names = names();
         let agents = [Agent {
             id: agent(),
@@ -359,7 +360,7 @@ mod tests {
             skill_names: &names,
         }];
         let run = |policies: &[Policy], ceiling| {
-            waiting(&agents, policies, workspace(), ceiling, Utc::now())
+            waiting(&agents, policies, workspace(), ceiling, Timestamp::now())
         };
 
         let mut trial = policy("act");

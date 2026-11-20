@@ -1,3 +1,4 @@
+use outturn_core::time::Timestamp;
 use std::sync::Arc;
 
 use axum::{
@@ -665,7 +666,7 @@ pub struct AgentActivity {
     pub running: i64,
     pub queued: i64,
     pub waiting: i64,
-    pub last_active_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_active_at: Option<Timestamp>,
     /// The most recently active session with a live turn, to open from the
     /// panel. None when nothing is in flight.
     pub live_session_id: Option<Uuid>,
