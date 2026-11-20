@@ -11,7 +11,9 @@ all-features = false
 
 [advisories]
 # Every advisory fails the check, unmaintained and unsound included. One that
-# has to be lived with goes in `ignore` with the reason and what would clear it.
+# has to be lived with goes in `ignore` with the reason and what would clear it,
+# and comes out once cleared: CI fails on an ignore that matches nothing, so
+# run `cargo deny check -D advisory-not-detected` to see what it will.
 unmaintained = "all"
 yanked = "deny"
 ignore = [

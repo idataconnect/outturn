@@ -79,6 +79,11 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2.1.1
         with:
           command: check
+          # An ignored advisory or a license exception that matches nothing
+          # any more is a claim deny.toml no longer backs: that we depend on
+          # the crate, and decided to live with it. cargo-deny only warns
+          # about one; failing on it keeps the file true.
+          command-arguments: -D advisory-not-detected -D license-exception-not-encountered
 
   # k8s/deploy and k8s/base are kept apart, and must still agree on what a
   # local cluster is there to teach about production: grace periods, the
