@@ -11,10 +11,19 @@ all-features = false
 
 [advisories]
 # Every advisory fails the check, unmaintained and unsound included. One that
-# has to be lived with goes in `ignore` with the reason and what would clear it.
+# has to be lived with goes in `ignore` with the reason and what would clear it,
+# and comes out once cleared: CI fails on an ignore that matches nothing, so
+# run `cargo deny check -D advisory-not-detected` to see what it will.
 unmaintained = "all"
 yanked = "deny"
-ignore = []
+ignore = [
+    # chrono and chrono-tz were declared unmaintained with no release to move
+    # to. Every tier uses chrono, and sqlx decodes timestamps into it, so
+    # leaving it is a migration of its own rather than an update. Cleared by
+    # moving to a maintained time crate that sqlx also supports.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; replacing it is its own migration" },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained; leaves with chrono" },
+]
 
 [licenses]
 # The project is Apache-2.0. Everything below is permissive and compatible

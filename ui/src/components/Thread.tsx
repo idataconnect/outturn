@@ -8,7 +8,7 @@ import {
   useAuiEvent,
   useAuiState,
 } from '@assistant-ui/react'
-import { useDictation } from '../lib/dictation'
+import { dictationFailure, useDictation } from '../lib/dictation'
 import { ReplyFeedback, ReplyThumbs } from './Feedback'
 import { ReplyModelChange } from './ModelChange'
 import TriggerIcon from './TriggerIcon'
@@ -1271,7 +1271,22 @@ export default function Thread({
           )}
         </ComposerPrimitive.Root>
         </SkillMenu>
+        {dictation && <DictationFailure />}
       </ThreadPrimitive.Root>
     </NewSessionHref.Provider>
+  )
+}
+
+/** Why the last dictation ended, when it ended on an error. Without it a
+ *  blocked microphone looks like a button that does nothing: the pulsing
+ *  stop turns back into the microphone and the box stays empty. Gone when
+ *  the next attempt starts. */
+function DictationFailure() {
+  const failure = useAuiState((s) => dictationFailure(s.composer.lastDictationEnd))
+  if (!failure) return null
+  return (
+    <p role="status" className="mt-1 px-1 text-xs text-surface-600 dark:text-surface-400">
+      {failure}
+    </p>
   )
 }
