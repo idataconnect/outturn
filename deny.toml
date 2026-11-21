@@ -16,14 +16,7 @@ all-features = false
 # run `cargo deny check -D advisory-not-detected` to see what it will.
 unmaintained = "all"
 yanked = "deny"
-ignore = [
-    # chrono and chrono-tz were declared unmaintained with no release to move
-    # to. Every tier uses chrono, and sqlx decodes timestamps into it, so
-    # leaving it is a migration of its own rather than an update. Cleared by
-    # moving to a maintained time crate that sqlx also supports.
-    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; replacing it is its own migration" },
-    { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained; leaves with chrono" },
-]
+ignore = []
 
 [licenses]
 # The project is Apache-2.0. Everything below is permissive and compatible
