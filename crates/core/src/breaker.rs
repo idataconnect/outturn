@@ -44,10 +44,11 @@
 //! from stored timestamps are clamped, so a clock stepped backwards reads as
 //! zero elapsed rather than as a negative or absurd interval.
 
+use crate::time::SignedDuration;
 use std::collections::HashSet;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 
 /// Consecutive unambiguous failures before the circuit opens.
 ///
@@ -188,7 +189,7 @@ pub enum State {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sighting {
     pub caller: Caller,
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
 }
 
 /// Everything known about one endpoint's circuit.
@@ -199,9 +200,9 @@ pub struct Health {
     /// Consecutive unambiguous failures. Reset by a success.
     pub failures: u32,
     /// When a probe may next be attempted, once open.
-    pub probe_after: Option<DateTime<Utc>>,
+    pub probe_after: Option<Timestamp>,
     /// When the circuit opened, which is what the backoff grows from.
-    pub opened_at: Option<DateTime<Utc>>,
+    pub opened_at: Option<Timestamp>,
     /// Undetermined failures still inside the window, one per report.
     pub sightings: Vec<Sighting>,
 }
@@ -239,9 +240,8 @@ pub enum Verdict {
 /// different replicas. A negative interval reads as no time passed, and
 /// anything beyond the ceiling is capped, so a clock jump costs at worst an
 /// early probe rather than a circuit that never reopens.
-fn elapsed(now: DateTime<Utc>, since: DateTime<Utc>, ceiling: Duration) -> Duration {
-    now.signed_duration_since(since)
-        .to_std()
+fn elapsed(now: Timestamp, since: Timestamp, ceiling: Duration) -> Duration {
+    Duration::try_from(now - since)
         .unwrap_or(Duration::ZERO)
         .min(ceiling)
 }
@@ -250,7 +250,7 @@ fn elapsed(now: DateTime<Utc>, since: DateTime<Utc>, ceiling: Duration) -> Durat
 ///
 /// Doubles with each backoff already served rather than with a failure count,
 /// so an endpoint nobody is calling does not creep towards the ceiling.
-pub fn backoff_for(now: DateTime<Utc>, opened_at: Option<DateTime<Utc>>) -> Duration {
+pub fn backoff_for(now: Timestamp, opened_at: Option<Timestamp>) -> Duration {
     let Some(opened_at) = opened_at else {
         return BASE_BACKOFF;
     };
@@ -262,7 +262,7 @@ pub fn backoff_for(now: DateTime<Utc>, opened_at: Option<DateTime<Utc>>) -> Dura
 }
 
 /// Whether a call to this endpoint may go out.
-pub fn check(health: &Health, now: DateTime<Utc>) -> Verdict {
+pub fn check(health: &Health, now: Timestamp) -> Verdict {
     match health.state {
         State::Closed => Verdict::Allow,
         // A claimed probe holds the circuit for its lease. Without that, every
@@ -286,12 +286,7 @@ pub fn check(health: &Health, now: DateTime<Utc>) -> Verdict {
 ///
 /// Returns the health as it should now be stored. The caller writes it; this
 /// decides it.
-pub fn record(
-    health: &Health,
-    observation: Observation,
-    caller: Caller,
-    now: DateTime<Utc>,
-) -> Health {
+pub fn record(health: &Health, observation: Observation, caller: Caller, now: Timestamp) -> Health {
     let mut next = health.clone();
     next.sightings
         .retain(|s| elapsed(now, s.at, BREADTH_WINDOW) < BREADTH_WINDOW);
@@ -359,13 +354,13 @@ pub fn record(
     next
 }
 
-/// `chrono`'s own duration, from the standard one, for adding to a timestamp.
-fn backoff(d: Duration) -> chrono::Duration {
-    chrono::Duration::from_std(d).unwrap_or_else(|_| chrono::Duration::seconds(30))
+/// A signed duration, from the standard one, for adding to a timestamp.
+fn backoff(d: Duration) -> SignedDuration {
+    SignedDuration::try_from(d).unwrap_or_else(|_| SignedDuration::from_secs(30))
 }
 
 /// Marks a probe as taken, for the replica that won the claim.
-pub fn claim_probe(health: &Health, now: DateTime<Utc>) -> Health {
+pub fn claim_probe(health: &Health, now: Timestamp) -> Health {
     let mut next = health.clone();
     next.state = State::HalfOpen;
     next.probe_after = Some(now + backoff(PROBE_LEASE));
@@ -413,20 +408,15 @@ mod tests {
             .collect()
     }
 
-    fn t0() -> DateTime<Utc> {
-        DateTime::from_timestamp(1_700_000_000, 0).expect("a fixed instant")
+    fn t0() -> Timestamp {
+        Timestamp::from_unix(1_700_000_000, 0).expect("a fixed instant")
     }
 
-    fn after(base: DateTime<Utc>, secs: i64) -> DateTime<Utc> {
-        base + chrono::Duration::seconds(secs)
+    fn after(base: Timestamp, secs: i64) -> Timestamp {
+        base + SignedDuration::from_secs(secs)
     }
 
-    fn observe(
-        health: Health,
-        observation: Observation,
-        caller: Caller,
-        at: DateTime<Utc>,
-    ) -> Health {
+    fn observe(health: Health, observation: Observation, caller: Caller, at: Timestamp) -> Health {
         record(&health, observation, caller, at)
     }
 
@@ -591,7 +581,7 @@ mod tests {
 
         let due = health.probe_after.expect("scheduled");
         assert_eq!(
-            check(&health, due - chrono::Duration::seconds(1)),
+            check(&health, due - SignedDuration::from_secs(1)),
             Verdict::Reject
         );
         assert_eq!(check(&health, due), Verdict::Probe);
@@ -614,7 +604,7 @@ mod tests {
         assert_eq!(
             check(
                 &claimed,
-                due + chrono::Duration::seconds(PROBE_LEASE.as_secs() as i64)
+                due + SignedDuration::from_secs(PROBE_LEASE.as_secs() as i64)
             ),
             Verdict::Probe,
             "a probe that never reported back must not hold the circuit forever"

@@ -18,6 +18,7 @@ mod storage;
 mod stream;
 mod timers;
 
+use outturn_core::time::{SignedDuration, Timestamp};
 use std::sync::Arc;
 
 use wasmtime_wasi::{ResourceTable, WasiCtx, WasiCtxView, WasiView};
@@ -273,8 +274,8 @@ impl AgentHost {
     /// which is a better-placed error than one raised speculatively.
     async fn current_token(&mut self) -> String {
         let due = self.gateway_token_expires_at.is_some_and(|at| {
-            at - chrono::Utc::now()
-                < chrono::Duration::seconds(
+            at - Timestamp::now()
+                < SignedDuration::from_secs(
                     outturn_core::auth::TURN_TOKEN_REFRESH_BELOW_SECS as i64,
                 )
         });
@@ -307,7 +308,7 @@ pub struct AgentHost {
     gateway_token: String,
     /// When `gateway_token` stops being good. `None` from an API that does not
     /// say, in which case the token is never refreshed -- what it always was.
-    gateway_token_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    gateway_token_expires_at: Option<Timestamp>,
     refresh_token: Option<TokenRefresher>,
     /// What the API said gates this turn, as the bytes it sent. Relayed to the
     /// gateway with every outbound request exactly as received, never written
@@ -329,7 +330,7 @@ pub struct AgentHost {
     session_id: uuid::Uuid,
     /// IANA zone of the user this turn belongs to. None when the client did
     /// not say, in which case the clock answers in UTC rather than guessing.
-    timezone: Option<chrono_tz::Tz>,
+    timezone: Option<jiff::tz::TimeZone>,
     /// What this turn's work is for, so the gateway can route it. Pinned by
     /// the runtime and resolved there: the agent asks for a completion, not
     /// for a particular endpoint.

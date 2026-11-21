@@ -5,6 +5,7 @@
 //! real provider makes awkward to arrange -- failures, truncation, and exactly
 //! what the host sent.
 
+use outturn::time::Timestamp;
 use std::sync::{Arc, Mutex};
 
 use axum::http::StatusCode;
@@ -527,10 +528,11 @@ async fn runs_a_tool_and_answers_with_its_result() {
     // whole reason the host computes it.
     let clock: serde_json::Value = serde_json::from_str(content).expect("the result is JSON");
     let stamp = clock["now"].as_str().expect("now");
-    let parsed = chrono::DateTime::parse_from_rfc3339(stamp).expect("now is RFC 3339");
+    Timestamp::parse_rfc3339(stamp).expect("now is RFC 3339");
+    let local_date: jiff::civil::Date = stamp[..10].parse().expect("a date leads the stamp");
     assert_eq!(
         clock["weekday"].as_str().expect("weekday"),
-        parsed.format("%A").to_string(),
+        local_date.strftime("%A").to_string(),
         "weekday must match the timestamp it is sent with"
     );
     assert!(
@@ -3751,7 +3753,7 @@ impl outturn::runtime::component::InvocationRecord for Record {
                 held.insert(
                     key,
                     Claimed::Attempted {
-                        at: chrono::Utc::now(),
+                        at: Timestamp::now(),
                     },
                 );
                 Claimed::New
@@ -3772,7 +3774,7 @@ impl outturn::runtime::component::InvocationRecord for Record {
                     key,
                     outturn::protocol::work::Claimed::Completed {
                         response,
-                        at: chrono::Utc::now(),
+                        at: Timestamp::now(),
                     },
                 );
             }
@@ -3873,7 +3875,7 @@ async fn a_write_with_no_answer_is_not_sent_again() {
         > {
             Box::pin(async {
                 Ok(outturn::protocol::work::Claimed::Attempted {
-                    at: chrono::Utc::now(),
+                    at: Timestamp::now(),
                 })
             })
         }

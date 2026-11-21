@@ -22,6 +22,7 @@
 
 pub use outturn_core::breaker as policy;
 
+use outturn_core::time::Timestamp;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 
@@ -191,7 +192,7 @@ pub async fn check(pool: &PgPool, endpoint: &str, workspace_id: Option<uuid::Uui
         return Verdict::Allow;
     };
 
-    match policy::check(&health, chrono::Utc::now()) {
+    match policy::check(&health, Timestamp::now()) {
         policy::Verdict::Allow => Verdict::Allow,
         policy::Verdict::Reject => Verdict::Reject,
         policy::Verdict::Probe => {
@@ -240,7 +241,7 @@ pub async fn observe(
         return;
     }
 
-    let now = chrono::Utc::now();
+    let now = Timestamp::now();
 
     // The sighting is written first, so the read that follows includes it and
     // two replicas seeing the same thing at once both count.

@@ -11,6 +11,7 @@
 //! under. The gateway checks it again, and checks whose turn it is, on every
 //! use.
 
+use outturn_core::time::Timestamp;
 use std::sync::Arc;
 
 use axum::Json;
@@ -39,7 +40,7 @@ pub struct Connection {
 #[derive(Debug, serde::Serialize)]
 pub struct Connected {
     pub credential_id: Uuid,
-    pub connected_at: chrono::DateTime<chrono::Utc>,
+    pub connected_at: Timestamp,
 }
 
 #[derive(serde::Serialize)]
@@ -183,7 +184,7 @@ pub(crate) async fn store(
     .execute(&mut *tx)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let connected_at: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+    let connected_at: Timestamp = sqlx::query_scalar(
         "insert into credentials \
              (id, workspace_id, name, binding, sealed, key_id, created_by, user_id, rule_id) \
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning created_at",

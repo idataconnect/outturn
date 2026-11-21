@@ -1,6 +1,7 @@
 //! Running one turn: building the host, instantiating the guest, and
 //! reading back what it produced.
 
+use outturn_core::time::Timestamp;
 use std::sync::Arc;
 
 use wasmtime::component::{Component, Linker};
@@ -40,7 +41,7 @@ pub struct RunOptions {
     pub session_id: uuid::Uuid,
     pub gateway_url: String,
     pub gateway_token: String,
-    pub gateway_token_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub gateway_token_expires_at: Option<Timestamp>,
     /// Asks the API for a fresh turn token. A turn has no upper bound while it
     /// works, and its token has to outlast it.
     pub refresh_token: Option<TokenRefresher>,
@@ -293,9 +294,11 @@ impl AgentRunner {
             malformed_reply: false,
             refused: None,
             timezone: options.timezone.as_deref().and_then(|tz| {
-                tz.parse::<chrono_tz::Tz>()
-                    .inspect_err(|_| tracing::warn!(timezone = tz, "unknown timezone, using UTC"))
-                    .ok()
+                let zone = outturn_core::time::zone(tz);
+                if zone.is_none() {
+                    tracing::warn!(timezone = tz, "unknown timezone, using UTC");
+                }
+                zone
             }),
         };
 

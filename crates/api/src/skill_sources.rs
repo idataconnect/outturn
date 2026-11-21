@@ -6,6 +6,7 @@
 //! have; what is here is where people work, and publishing is the moment it
 //! becomes something an agent is given.
 
+use outturn_core::time::Timestamp;
 use std::sync::Arc;
 
 use axum::Json;
@@ -44,7 +45,7 @@ pub struct AnnotationRow {
     #[serde(default)]
     pub value: String,
     #[serde(default)]
-    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Option<Timestamp>,
 }
 
 impl AnnotationRow {
@@ -220,7 +221,7 @@ pub struct Revision {
     pub id: Uuid,
     pub spec_sha256: String,
     pub spec_bytes: i32,
-    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: Timestamp,
 }
 
 async fn latest_revision(

@@ -7,13 +7,14 @@
 //! write endpoints refuse every token that is not a browser session's. An agent
 //! may one day propose a policy; a person confirms it here.
 
+use outturn_core::time::SignedDuration;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use chrono::{DateTime, Utc};
+use outturn_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 use uuid::Uuid;
@@ -77,7 +78,7 @@ pub struct PolicyView {
 }
 
 fn view(policy: Policy) -> PolicyView {
-    let state = policy.state(Utc::now());
+    let state = policy.state(Timestamp::now());
     let daily_totals_money = policy
         .daily_totals
         .iter()
@@ -126,7 +127,7 @@ pub struct WritePolicy {
     pub note: Option<String>,
     /// Absent: ninety days from now.
     #[serde(default)]
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
 }
 
 pub(super) fn include() -> String {
@@ -154,14 +155,14 @@ pub(super) struct Checked {
     daily_totals: BTreeMap<String, i64>,
     mode: &'static str,
     note: Option<String>,
-    expires_at: DateTime<Utc>,
+    expires_at: Timestamp,
 }
 
 fn invalid(why: impl Into<String>) -> ApiError {
     (StatusCode::BAD_REQUEST, why.into())
 }
 
-pub(super) fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, ApiError> {
+pub(super) fn check(input: WritePolicy, now: Timestamp) -> Result<Checked, ApiError> {
     let effect = match input.effect.as_str() {
         "include" => "include",
         "exclude" => "exclude",
@@ -232,11 +233,11 @@ pub(super) fn check(input: WritePolicy, now: DateTime<Utc>) -> Result<Checked, A
 
     let expires_at = input
         .expires_at
-        .unwrap_or(now + chrono::Duration::days(DEFAULT_LIFETIME_DAYS));
+        .unwrap_or(now + SignedDuration::from_hours(24 * DEFAULT_LIFETIME_DAYS));
     if expires_at <= now {
         return Err(invalid("a policy's expiry has to be in the future"));
     }
-    if expires_at > now + chrono::Duration::days(MAX_LIFETIME_DAYS) {
+    if expires_at > now + SignedDuration::from_hours(24 * MAX_LIFETIME_DAYS) {
         return Err(invalid(format!(
             "a policy may stand for at most {MAX_LIFETIME_DAYS} days; renew it when it runs out"
         )));
@@ -398,7 +399,7 @@ pub(super) async fn found(
 
 /// A checked policy as it would read once written, for asking what it would
 /// have done before anybody sets it.
-pub(super) fn draft(workspace_id: Uuid, c: &Checked, now: DateTime<Utc>) -> Policy {
+pub(super) fn draft(workspace_id: Uuid, c: &Checked, now: Timestamp) -> Policy {
     Policy {
         id: Uuid::nil(),
         workspace_id,
@@ -486,7 +487,7 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<PolicyView>), ApiError> {
     let claims = authenticate(&state, &headers)?;
     may_write(&state, &claims).await?;
-    let checked = check(input, Utc::now())?;
+    let checked = check(input, Timestamp::now())?;
     check_references(&state, claims.workspace_id, &checked).await?;
 
     let id = Uuid::now_v7();
@@ -524,7 +525,7 @@ pub async fn update(
 ) -> Result<Json<PolicyView>, ApiError> {
     let claims = authenticate(&state, &headers)?;
     may_write(&state, &claims).await?;
-    let checked = check(input, Utc::now())?;
+    let checked = check(input, Timestamp::now())?;
     check_references(&state, claims.workspace_id, &checked).await?;
 
     let updated = sqlx::query(
@@ -690,7 +691,7 @@ pub struct Evidence {
 #[derive(Debug, Serialize)]
 pub struct Past {
     pub item_id: Uuid,
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
     pub requires: String,
     pub binds: serde_json::Value,
     /// approved, declined or pending.
@@ -710,7 +711,7 @@ pub struct Past {
 /// One question as the history reads it.
 pub struct Asked {
     pub item_id: Uuid,
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
     pub payload: serde_json::Value,
     pub state: String,
 }
@@ -735,7 +736,7 @@ pub fn replay(
     let max = super::bound(policy, ceiling);
     // What it would have let out in each currency, oldest first, for the day's
     // total.
-    let mut let_out: Vec<(DateTime<Utc>, String, i64)> = Vec::new();
+    let mut let_out: Vec<(Timestamp, String, i64)> = Vec::new();
     let mut past: Vec<Past> = asked
         .iter()
         .rev()
@@ -818,7 +819,8 @@ pub fn replay(
                             let day: i64 = let_out
                                 .iter()
                                 .filter(|(at, c, _)| {
-                                    *c == banding.currency && *at > a.at - chrono::Duration::days(1)
+                                    *c == banding.currency
+                                        && *at > a.at - SignedDuration::from_hours(24)
                                 })
                                 .map(|(_, _, v)| v)
                                 .sum();
@@ -1155,7 +1157,7 @@ mod tests {
 
     #[test]
     fn a_policy_needs_its_caps() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         assert!(check(write(json!({"selector": "risk", "max_risk": "low"})), now).is_err());
         assert!(
             check(
@@ -1174,15 +1176,15 @@ mod tests {
 
     #[test]
     fn a_policy_without_an_expiry_runs_out_in_ninety_days() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let ok = check(
             write(json!({"selector": "risk", "max_risk": "low", "per_turn": 1, "per_day": 5})),
             now,
         )
         .unwrap();
-        assert_eq!(ok.expires_at, now + chrono::Duration::days(90));
+        assert_eq!(ok.expires_at, now + SignedDuration::from_hours(24 * 90));
 
-        let too_far = now + chrono::Duration::days(MAX_LIFETIME_DAYS + 1);
+        let too_far = now + SignedDuration::from_hours(24 * (MAX_LIFETIME_DAYS + 1));
         assert!(
             check(
                 write(json!({"selector": "risk", "max_risk": "low", "per_turn": 1,
@@ -1191,7 +1193,7 @@ mod tests {
             )
             .is_err()
         );
-        let past = now - chrono::Duration::seconds(1);
+        let past = now - SignedDuration::from_secs(1);
         assert!(
             check(
                 write(json!({"selector": "risk", "max_risk": "low", "per_turn": 1,
@@ -1204,7 +1206,7 @@ mod tests {
 
     #[test]
     fn a_selector_says_exactly_one_thing() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         for bad in [
             json!({"selector": "risk", "per_turn": 1, "per_day": 1}),
             json!({"selector": "risk", "max_risk": "huge", "per_turn": 1, "per_day": 1}),
@@ -1228,14 +1230,14 @@ mod tests {
 
     #[test]
     fn a_rule_over_every_operation_needing_an_act_is_refused() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let act = json!({"selector": "act", "requires": "charge", "per_turn": 1, "per_day": 5});
         assert!(check(write(act), now).is_err());
     }
 
     #[test]
     fn an_exclusion_carries_no_tests() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         assert!(
             check(
                 write(
@@ -1256,7 +1258,7 @@ mod tests {
 
     #[test]
     fn a_daily_total_is_in_a_currency_and_never_on_an_exclusion() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let ok = check(
             write(json!({"selector": "risk", "max_risk": "low",
                          "daily_totals": {"GBP": 50000}, "per_turn": 5, "per_day": 50})),
@@ -1281,7 +1283,7 @@ mod tests {
 
     #[test]
     fn the_language_is_checked_on_the_way_in() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         assert!(
             check(
                 write(
@@ -1298,7 +1300,7 @@ mod tests {
     fn charge_asked(pence: i64, hours: i64) -> Asked {
         Asked {
             item_id: Uuid::now_v7(),
-            at: Utc::now() - chrono::Duration::hours(hours),
+            at: Timestamp::now() - SignedDuration::from_hours(hours),
             payload: json!({
                 "method": "POST", "host": "api.example.com", "path": "/charges",
                 "binds": [

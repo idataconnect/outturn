@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use outturn_core::time::Timestamp;
 use sqlx::Row;
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
@@ -63,9 +64,7 @@ fn read_identity(row: &sqlx::postgres::PgRow) -> Identity {
         id: row.get("id"),
         provider: row.get("provider"),
         subject: row.get("provider_subject"),
-        verified: row
-            .get::<Option<chrono::DateTime<chrono::Utc>>, _>("verified_at")
-            .is_some(),
+        verified: row.get::<Option<Timestamp>, _>("verified_at").is_some(),
     }
 }
 

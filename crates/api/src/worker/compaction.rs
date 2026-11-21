@@ -1,3 +1,4 @@
+use outturn_core::time::Timestamp;
 use uuid::Uuid;
 
 use super::Worker;
@@ -9,7 +10,7 @@ use super::turn::{model_for, source_of, traffic_type_for};
 #[derive(Debug, serde::Serialize)]
 pub struct PromptStatus {
     /// When it was composed. Absent before the first turn.
-    pub composed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub composed_at: Option<Timestamp>,
     /// Whether it is what would be composed now. False also when only the
     /// agent's own prompt changed, which `skills` cannot show.
     pub current: bool,

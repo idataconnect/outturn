@@ -1,3 +1,4 @@
+use outturn_core::time::Timestamp;
 use std::sync::Arc;
 
 use axum::response::{IntoResponse, Response};
@@ -344,7 +345,7 @@ impl GatewayState {
         &self,
         workspace_id: uuid::Uuid,
         traffic_type: &str,
-        began: Option<chrono::DateTime<chrono::Utc>>,
+        began: Option<Timestamp>,
     ) -> (Vec<Attempt>, Vec<String>) {
         // Why each configured route was turned away, for the message when
         // none is left: a chain that exists and was refused is not a class
@@ -675,9 +676,9 @@ fn reply_id(headers: &axum::http::HeaderMap) -> Option<uuid::Uuid> {
 /// made then, and its id is a UUIDv7, which says when. Forged, it can only
 /// choose the version a model was on before its last move -- one the
 /// operator configured -- so it is taken as given.
-fn turn_began(headers: &axum::http::HeaderMap) -> Option<chrono::DateTime<chrono::Utc>> {
+fn turn_began(headers: &axum::http::HeaderMap) -> Option<Timestamp> {
     let (secs, nanos) = reply_id(headers)?.get_timestamp()?.to_unix();
-    chrono::DateTime::from_timestamp(i64::try_from(secs).ok()?, nanos)
+    Timestamp::from_unix(i64::try_from(secs).ok()?, nanos)
 }
 
 fn traffic_type(headers: &axum::http::HeaderMap) -> String {

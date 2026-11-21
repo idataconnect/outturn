@@ -2,6 +2,7 @@
 //! provider account (docs/models.md). Read by the gateway, which walks it,
 //! and by the API, which sizes a turn's conversation for every model on it.
 
+use crate::time::Timestamp;
 use std::sync::Arc;
 
 use sqlx::Row;
@@ -25,7 +26,7 @@ pub struct Link {
     /// What the model asked for before it last moved, with its facts, and
     /// when it moved: a turn begun before then is finished on it.
     pub previous: Option<(String, Arc<ModelFacts>)>,
-    pub changed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub changed_at: Option<Timestamp>,
 }
 
 impl Link {
@@ -33,7 +34,7 @@ impl Link {
     /// changes between turns, never between a turn's rounds: a thinking
     /// block is valid only for the model that wrote it, and the cache is per
     /// model, so a turn that crossed versions would lose both partway.
-    pub fn for_turn_begun(mut self, began: Option<chrono::DateTime<chrono::Utc>>) -> Self {
+    pub fn for_turn_begun(mut self, began: Option<Timestamp>) -> Self {
         if let (Some(began), Some(changed), Some(_)) = (began, self.changed_at, &self.previous)
             && began < changed
             && let Some((model, facts)) = self.previous.take()

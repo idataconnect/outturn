@@ -7,6 +7,7 @@
 //! stored, so nothing written here is the enforcement. See
 //! docs/sealed-credentials.md.
 
+use outturn_core::time::Timestamp;
 use std::sync::Arc;
 
 use axum::Json;
@@ -76,9 +77,9 @@ pub struct Credential {
     pub key_id: String,
     pub generation: i64,
     pub created_by: Option<Uuid>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-    pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    pub revoked_at: Option<Timestamp>,
 }
 
 fn read(row: &sqlx::postgres::PgRow) -> Credential {

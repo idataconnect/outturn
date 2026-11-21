@@ -1,3 +1,4 @@
+use outturn_core::time::Timestamp;
 use std::sync::Arc;
 
 use axum::{
@@ -269,7 +270,7 @@ pub struct VersionChoice {
     pub id: Uuid,
     pub ordinal: i32,
     pub note: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: Timestamp,
 }
 
 /// The versions of the template an agent was made from, newest first.

@@ -12,6 +12,7 @@
 //! answer. This is the store and the report endpoint; what travels between the
 //! tiers is in `outturn_core::egress::held`.
 
+use outturn_core::time::Timestamp;
 use std::sync::Arc;
 
 use axum::Json;
@@ -169,7 +170,7 @@ pub struct Held {
     pub outcome: Option<Outcome>,
     /// When a send of it was last settled, which is where a note about it
     /// goes when its refusal cannot be found.
-    pub settled_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub settled_at: Option<Timestamp>,
     /// Who said yes, by name, as the model is told it.
     pub approved_by: String,
     /// Whose turn it was refused on: see `NewHeld::asker`.
@@ -384,7 +385,7 @@ pub async fn in_session(
         serde_json::Value,
         Option<String>,
         Option<serde_json::Value>,
-        Option<chrono::DateTime<chrono::Utc>>,
+        Option<Timestamp>,
         Option<String>,
         Option<Uuid>,
     );

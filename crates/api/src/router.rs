@@ -1,3 +1,4 @@
+use outturn_core::time::{SignedDuration, Timestamp};
 use std::sync::Arc;
 
 use axum::{
@@ -1367,10 +1368,10 @@ async fn delete_role(
 #[derive(Debug, serde::Deserialize)]
 struct UsageQuery {
     /// Inclusive start, RFC 3339.
-    from: Option<chrono::DateTime<chrono::Utc>>,
+    from: Option<Timestamp>,
     /// Exclusive end, RFC 3339. A closed month is `from` the first and `to`
     /// the first of the next.
-    to: Option<chrono::DateTime<chrono::Utc>>,
+    to: Option<Timestamp>,
     /// The `next` of the previous page.
     after: Option<Uuid>,
     limit: Option<i64>,
@@ -1418,20 +1419,20 @@ async fn skill_statistics(
     // closed so the figures mean something without knowing when they were
     // asked for, and bounded so nobody asks for everything by accident.
     let to = query.to.unwrap_or_else(|| {
-        let now = chrono::Utc::now();
-        now.date_naive()
-            .succ_opt()
-            .and_then(|d| d.and_hms_opt(0, 0, 0))
-            .map(|d| d.and_utc())
+        let now = Timestamp::now();
+        now.utc_date()
+            .tomorrow()
+            .ok()
+            .and_then(Timestamp::utc_midnight)
             .unwrap_or(now)
     });
     let from = query
         .from
-        .unwrap_or_else(|| to - chrono::Duration::days(30));
+        .unwrap_or_else(|| to - SignedDuration::from_hours(24 * 30));
     if from >= to {
         return Err((StatusCode::BAD_REQUEST, "`from` must be before `to`".into()));
     }
-    if to - from > chrono::Duration::days(370) {
+    if to - from > SignedDuration::from_hours(24 * 370) {
         return Err((
             StatusCode::BAD_REQUEST,
             "window may not exceed 370 days".into(),
@@ -1478,23 +1479,23 @@ async fn summarize_usage(
     // ending at the next midnight, which makes today a whole bucket rather than
     // a partial one that reads as a collapse in traffic.
     let to = query.to.unwrap_or_else(|| {
-        let now = chrono::Utc::now();
-        now.date_naive()
-            .succ_opt()
-            .and_then(|d| d.and_hms_opt(0, 0, 0))
-            .map(|d| d.and_utc())
+        let now = Timestamp::now();
+        now.utc_date()
+            .tomorrow()
+            .ok()
+            .and_then(Timestamp::utc_midnight)
             .unwrap_or(now)
     });
     let from = query
         .from
-        .unwrap_or_else(|| to - chrono::Duration::days(30));
+        .unwrap_or_else(|| to - SignedDuration::from_hours(24 * 30));
     if from >= to {
         return Err((StatusCode::BAD_REQUEST, "`from` must be before `to`".into()));
     }
     // A window is bounded, because the statement behind it scans every
     // partition of the ledger and an unbounded one is a way to ask the database
     // for everything by accident.
-    if to - from > chrono::Duration::days(370) {
+    if to - from > SignedDuration::from_hours(24 * 370) {
         return Err((
             StatusCode::BAD_REQUEST,
             "window may not exceed 370 days".into(),
@@ -1511,8 +1512,8 @@ async fn summarize_usage(
 
 #[derive(Debug, serde::Deserialize)]
 struct SummaryQuery {
-    from: Option<chrono::DateTime<chrono::Utc>>,
-    to: Option<chrono::DateTime<chrono::Utc>>,
+    from: Option<Timestamp>,
+    to: Option<Timestamp>,
     /// `all` for every workspace, which only a system administrator may ask.
     scope: Option<String>,
     workspace_id: Option<Uuid>,

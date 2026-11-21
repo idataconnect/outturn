@@ -23,7 +23,7 @@ pub mod waiting;
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
+use outturn_core::time::Timestamp;
 use serde::Serialize;
 use sqlx::Row as _;
 use uuid::Uuid;
@@ -54,7 +54,7 @@ pub struct Declared {
     pub free: Vec<String>,
     /// When the version declaring it was published, which is what tells a gate
     /// a broad policy was accepted with from one that arrived later.
-    pub published_at: DateTime<Utc>,
+    pub published_at: Timestamp,
     /// What the operator declared about money, where the operation moves any.
     pub amount: Option<Declaration>,
     /// The bands it runs under in this workspace: the operator's defaults from
@@ -103,15 +103,15 @@ pub struct Policy {
     pub note: Option<String>,
     pub created_by: Option<Uuid>,
     pub created_by_name: Option<String>,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     pub updated_by: Option<Uuid>,
     pub updated_by_name: Option<String>,
-    pub updated_at: DateTime<Utc>,
-    pub accepted_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
+    pub accepted_at: Timestamp,
+    pub expires_at: Timestamp,
     pub revoked_by: Option<Uuid>,
     pub revoked_by_name: Option<String>,
-    pub revoked_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<Timestamp>,
     /// Whether whoever set it is still in the workspace. A policy whose setter
     /// left lapses rather than standing on nobody's word.
     pub setter_present: bool,
@@ -121,7 +121,7 @@ pub struct Policy {
 
 impl Policy {
     /// What the page says it is: `on`, `trial`, or why it is neither.
-    pub fn state(&self, now: DateTime<Utc>) -> &'static str {
+    pub fn state(&self, now: Timestamp) -> &'static str {
         if self.revoked_at.is_some() {
             "revoked"
         } else if self.expires_at <= now {
@@ -135,7 +135,7 @@ impl Policy {
         }
     }
 
-    fn live(&self, now: DateTime<Utc>) -> bool {
+    fn live(&self, now: Timestamp) -> bool {
         matches!(self.state(now), "on" | "trial")
     }
 
@@ -228,7 +228,7 @@ pub fn choose<'a>(
     workspace_id: Uuid,
     agent_id: Uuid,
     ceiling: Option<Risk>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Option<Chosen<'a>> {
     // The gate's own ceiling and the deployment's, before any policy is read.
     // A host gate binds nothing and is never covered: see "Host gates".
@@ -618,7 +618,7 @@ pub async fn for_turn(
             return Ok::<_, sqlx::Error>(Vec::new());
         }
         let declared = declared_in(pool, workspace_id, skills).await?;
-        let now = Utc::now();
+        let now = Timestamp::now();
         Ok(declared
             .iter()
             .filter_map(|d| {
@@ -672,14 +672,10 @@ pub async fn still_standing(
             return Vec::new();
         }
     };
-    standing(committed, &policies, Utc::now())
+    standing(committed, &policies, Timestamp::now())
 }
 
-fn standing(
-    committed: &[PolicyGrant],
-    policies: &[Policy],
-    now: DateTime<Utc>,
-) -> Vec<PolicyGrant> {
+fn standing(committed: &[PolicyGrant], policies: &[Policy], now: Timestamp) -> Vec<PolicyGrant> {
     committed
         .iter()
         .filter(|g| {
@@ -722,7 +718,7 @@ pub async fn would_approve(
         workspace_id,
         agent_id,
         Some(ceiling),
-        Utc::now(),
+        Timestamp::now(),
     )?
     else {
         return None;
@@ -738,6 +734,7 @@ pub async fn would_approve(
 mod tests {
     use super::*;
     use outturn_core::egress::policy::Op;
+    use outturn_core::time::SignedDuration;
     use serde_json::json;
 
     pub(super) fn workspace() -> Uuid {
@@ -768,14 +765,14 @@ mod tests {
             auto: true,
             numbers: vec!["amount_pence".into()],
             free: vec!["description".into()],
-            published_at: Utc::now() - chrono::Duration::days(30),
+            published_at: Timestamp::now() - SignedDuration::from_hours(24 * 30),
             amount: None,
             banding: None,
         }
     }
 
     pub(super) fn policy(selector: &str) -> Policy {
-        let now = Utc::now();
+        let now = Timestamp::now();
         Policy {
             id: Uuid::now_v7(),
             workspace_id: workspace(),
@@ -808,7 +805,7 @@ mod tests {
             updated_by_name: None,
             updated_at: now,
             accepted_at: now,
-            expires_at: now + chrono::Duration::days(30),
+            expires_at: now + SignedDuration::from_hours(24 * 30),
             revoked_by: None,
             revoked_by_name: None,
             revoked_at: None,
@@ -818,7 +815,7 @@ mod tests {
     }
 
     fn pick<'a>(d: &Declared, policies: &'a [Policy], ceiling: Option<Risk>) -> Option<Chosen<'a>> {
-        choose(d, policies, workspace(), agent(), ceiling, Utc::now())
+        choose(d, policies, workspace(), agent(), ceiling, Timestamp::now())
     }
 
     #[test]
@@ -895,7 +892,7 @@ mod tests {
                 workspace(),
                 night_desk,
                 Some(Risk::High),
-                Utc::now()
+                Timestamp::now()
             )
             .is_none(),
             "an agent the rule does not name keeps asking"
@@ -976,9 +973,9 @@ mod tests {
     fn an_expired_revoked_or_lapsed_policy_covers_nothing() {
         let d = declared("charge", Risk::Low);
         let mut expired = policy("act");
-        expired.expires_at = Utc::now() - chrono::Duration::seconds(1);
+        expired.expires_at = Timestamp::now() - SignedDuration::from_secs(1);
         let mut revoked = policy("act");
-        revoked.revoked_at = Some(Utc::now());
+        revoked.revoked_at = Some(Timestamp::now());
         let mut lapsed = policy("act");
         lapsed.setter_present = false;
         for p in [expired, revoked, lapsed] {
@@ -1006,7 +1003,7 @@ mod tests {
         ));
 
         let mut later = declared("charge", Risk::Low);
-        later.published_at = Utc::now() + chrono::Duration::seconds(5);
+        later.published_at = Timestamp::now() + SignedDuration::from_secs(5);
         assert!(matches!(
             pick(&later, &[policy("act")], Some(Risk::High)),
             Some(Chosen::Trial(_))
@@ -1034,7 +1031,7 @@ mod tests {
         let d = declared("charge", Risk::Low);
         let kept = policy("act");
         let mut revoked = policy("operation");
-        revoked.revoked_at = Some(Utc::now());
+        revoked.revoked_at = Some(Timestamp::now());
         let mut edited = policy("risk");
         let grants: Vec<PolicyGrant> = [&kept, &revoked, &edited]
             .iter()
@@ -1046,13 +1043,17 @@ mod tests {
         let mut grants = grants;
         grants.push(grant(workspace(), Uuid::nil(), &d, &trial, None));
 
-        let left = standing(&grants, &[kept.clone(), revoked, edited, trial], Utc::now());
+        let left = standing(
+            &grants,
+            &[kept.clone(), revoked, edited, trial],
+            Timestamp::now(),
+        );
         assert_eq!(
             left.iter().map(|g| g.policy_id).collect::<Vec<_>>(),
             vec![kept.id]
         );
         // A policy gone from the live set altogether -- expired -- goes too.
-        assert!(standing(&grants, &[], Utc::now()).is_empty());
+        assert!(standing(&grants, &[], Timestamp::now()).is_empty());
     }
 
     /// A charge whose base risk is high, with bands from the operator: low

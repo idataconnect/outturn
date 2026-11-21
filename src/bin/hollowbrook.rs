@@ -29,6 +29,7 @@
 //! mock provider marks its own responses: somebody finding this data later
 //! should be able to tell it is not real without knowing this file exists.
 
+use outturn::time::Timestamp;
 use std::sync::{Arc, Mutex};
 
 use axum::{
@@ -38,7 +39,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use chrono::{DateTime, NaiveDate, Utc};
+use jiff::civil::Date as NaiveDate;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -110,7 +111,7 @@ struct Booking {
     departure: NaiveDate,
     /// What the whole stay costs, so a caller is not asked to multiply.
     total_pence: u32,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,7 +146,7 @@ struct Charge {
     payment_account_id: String,
     booking_id: String,
     amount_pence: u32,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,11 +352,19 @@ async fn get_room(State(state): State<Arc<Fixture>>, Path(id): Path<String>) -> 
 /// clock of the place it books, and an agent reaching it from a platform in
 /// another zone -- or on behalf of somebody in a third -- is the ordinary case
 /// a demonstration should show rather than hide.
-const HOUSE_ZONE: chrono_tz::Tz = chrono_tz::Europe::London;
+const HOUSE_ZONE: &str = "Europe/London";
 
 /// Today, at the house.
 fn house_today() -> NaiveDate {
-    Utc::now().with_timezone(&HOUSE_ZONE).date_naive()
+    let zone = outturn::time::zone(HOUSE_ZONE).expect("the house's zone is in the database");
+    Timestamp::now().as_jiff().to_zoned_datetime(zone).date()
+}
+
+/// Nights between two dates, none when they are the wrong way round.
+fn nights(arrival: NaiveDate, departure: NaiveDate) -> u32 {
+    arrival
+        .until(departure)
+        .map_or(0, |span| span.get_days().max(0) as u32)
 }
 
 /// What is wrong with a stay's dates, if anything.
@@ -394,7 +403,7 @@ async fn availability(
     }
 
     let bookings = state.bookings.lock().expect("bookings");
-    let nights = (q.departure - q.arrival).num_days().max(0) as u32;
+    let nights = nights(q.arrival, q.departure);
     let free: Vec<_> = state
         .rooms
         .iter()
@@ -471,7 +480,7 @@ async fn create_booking(
         if clash {
             return refuse(StatusCode::CONFLICT, "that room is taken for those dates");
         }
-        let nights = (input.departure - input.arrival).num_days().max(0) as u32;
+        let nights = nights(input.arrival, input.departure);
         let booking = Booking {
             id: format!("bk_{}", &Uuid::now_v7().simple().to_string()[..12]),
             room_id: input.room_id,
@@ -479,7 +488,7 @@ async fn create_booking(
             arrival: input.arrival,
             departure: input.departure,
             total_pence: room.rate_pence * nights,
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
         };
         bookings.push(booking.clone());
         booking
@@ -593,7 +602,7 @@ async fn create_charge(
         payment_account_id: input.payment_account_id,
         booking_id: input.booking_id,
         amount_pence: input.amount_pence,
-        created_at: Utc::now(),
+        created_at: Timestamp::now(),
     };
     charges.push(charge.clone());
 
@@ -641,7 +650,7 @@ async fn announce(state: &Fixture, booking: &Booking) {
             // Signed over the bytes being sent, not over a reserialization of
             // them: the receiver verifies what arrived, and two JSON documents
             // that mean the same thing have different bytes.
-            let timestamp = Utc::now().timestamp().to_string();
+            let timestamp = Timestamp::now().unix_secs().to_string();
             let signed = format!("{timestamp}.{body}");
             let digest = hmac_sha256(target.secret.as_bytes(), signed.as_bytes());
             req = req
@@ -1325,10 +1334,10 @@ mod charging_helpers {
                 id: "bk_test".into(),
                 room_id: "orchard".into(),
                 guest_name: "J. Okafor".into(),
-                arrival: NaiveDate::from_ymd_opt(2026, 10, 2).expect("date"),
-                departure: NaiveDate::from_ymd_opt(2026, 10, 4).expect("date"),
+                arrival: jiff::civil::date(2026, 10, 2),
+                departure: jiff::civil::date(2026, 10, 4),
                 total_pence: 26_000,
-                created_at: Utc::now(),
+                created_at: Timestamp::now(),
             }]),
             payment_accounts: vec![PaymentAccount {
                 id: "pa_4471".into(),

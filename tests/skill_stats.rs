@@ -11,6 +11,7 @@ mod common;
 use outturn::api::actor::Actor;
 use outturn::api::skill::PostgresSkillStatsStore;
 use outturn::api::skill::stats::SkillStatsStore;
+use outturn::time::{SignedDuration, Timestamp};
 use uuid::Uuid;
 
 struct World {
@@ -133,9 +134,9 @@ async fn a_turn_using(w: &World, skill: Uuid, version: Uuid) {
     .expect("turn_skills");
 }
 
-fn window() -> (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) {
-    let to = chrono::Utc::now() + chrono::Duration::days(1);
-    (to - chrono::Duration::days(30), to)
+fn window() -> (Timestamp, Timestamp) {
+    let to = Timestamp::now() + SignedDuration::from_hours(24);
+    (to - SignedDuration::from_hours(24 * 30), to)
 }
 
 #[tokio::test]

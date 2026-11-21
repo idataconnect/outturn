@@ -1,3 +1,4 @@
+use outturn_core::time::Timestamp;
 use std::time::Duration;
 
 use sqlx::postgres::PgPool;
@@ -453,7 +454,7 @@ impl Worker {
                         // Placed where it happened, with the clock restarting on
                         // each thought: time spent waiting on a tool is not time
                         // the model spent thinking.
-                        parts.reasoning(&text, Some(chrono::Utc::now()));
+                        parts.reasoning(&text, Some(Timestamp::now()));
                         events::append(
                             &self.pool,
                             payload.workspace_id,

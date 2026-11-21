@@ -19,6 +19,7 @@ pub use frontmatter::{ApprovalRule, FrontmatterError, Operation, Parsed, parse};
 pub use postgres::PostgresSkillStore;
 
 use async_trait::async_trait;
+use outturn_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -69,7 +70,7 @@ pub struct Skill {
     pub base_skill_id: Option<Uuid>,
     pub forked_from_skill_id: Option<Uuid>,
     pub forked_from_version_id: Option<Uuid>,
-    pub retired_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub retired_at: Option<Timestamp>,
     /// What the live version says it will reach.
     pub hosts: Vec<String>,
     /// The declared hosts this workspace has not allowed.
@@ -109,7 +110,7 @@ pub struct SkillVersion {
     /// file's links are not yet known, which is not the same as none missing.
     pub unreached: Option<Vec<String>>,
     pub created_by: Option<Uuid>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: Timestamp,
     /// Who wrote it, as the workspace reading it should see them. Known only
     /// where the version was read for the history, so not sent with a version
     /// read on its own, where it would always say nobody was recorded.
@@ -153,7 +154,7 @@ pub struct VersionSummary {
     pub changed: Vec<FileChange>,
     pub unreached: Option<Vec<String>>,
     pub created_by: Option<Uuid>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: Timestamp,
     pub author: Actor,
 }
 

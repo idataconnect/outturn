@@ -22,6 +22,7 @@
 //! it runs -- and asking for one is the same statement of capacity that
 //! admission control used to make by refusing.
 
+use outturn_core::time::{SignedDuration, Timestamp};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -71,7 +72,7 @@ pub struct Assignment {
     /// When `gateway_token` stops being good, so the runtime knows when to ask
     /// for another rather than learning it from a refused call. Taken just
     /// before minting, so it is never later than the token's own expiry.
-    pub gateway_token_expires_at: chrono::DateTime<chrono::Utc>,
+    pub gateway_token_expires_at: Timestamp,
     /// The claim this turn was handed out under. Quoted back when the turn
     /// is reported or handed back, so a pod whose lease lapsed cannot write
     /// over the pod that now holds it.
@@ -482,9 +483,9 @@ async fn asker_of(
 ///
 /// Read before minting, so the runtime is told a moment no later than the
 /// token's real expiry and refreshes a moment early rather than late.
-fn token_expiry() -> chrono::DateTime<chrono::Utc> {
-    chrono::Utc::now()
-        + chrono::Duration::seconds(outturn_core::auth::SERVICE_TOKEN_LIFETIME_SECS as i64)
+fn token_expiry() -> Timestamp {
+    Timestamp::now()
+        + SignedDuration::from_secs(outturn_core::auth::SERVICE_TOKEN_LIFETIME_SECS as i64)
 }
 
 /// Reissues a running turn's gateway token before it runs out.

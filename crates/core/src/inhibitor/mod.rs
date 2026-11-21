@@ -6,6 +6,7 @@
 //! version being that a flag cannot say who is holding it, so releasing becomes
 //! indistinguishable from overriding.
 
+use crate::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -120,7 +121,7 @@ pub struct Inhibitor {
     /// because a spend cap and a person are both legitimate holders and only
     /// one of them has a row in `users`.
     pub held_by: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: Timestamp,
 }
 
 /// What the set says, and what said it.
@@ -301,7 +302,7 @@ mod tests {
             strength,
             reason: "because".into(),
             held_by: "test".into(),
-            created_at: chrono::Utc::now(),
+            created_at: Timestamp::now(),
         }
     }
 

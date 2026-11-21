@@ -1,6 +1,7 @@
 //! Where the model catalog is kept, and what this deployment holds of it
 //! (docs/models.md, *The catalog*).
 
+use outturn_core::time::{SignedDuration, Timestamp};
 use std::sync::Arc;
 
 use axum::Json;
@@ -23,11 +24,11 @@ pub const DEFAULT_URL: &str = "https://models.dev/api.json";
 pub const FETCH_VAR: &str = "OUTTURN_CATALOG_FETCH";
 
 /// How often the catalog is checked: new models arrive weekly at most.
-const EVERY: chrono::Duration = chrono::Duration::days(7);
+const EVERY: SignedDuration = SignedDuration::from_hours(24 * 7);
 
 /// The most an operator may ask for a check, so a button pressed in a loop is
 /// not a loop of fetches against somebody else's free service.
-const AT_MOST_EVERY: chrono::Duration = chrono::Duration::hours(1);
+const AT_MOST_EVERY: SignedDuration = SignedDuration::from_hours(1);
 
 /// A file to load the catalog from at startup -- a mounted ConfigMap, say --
 /// for a deployment that keeps it with the rest of its configuration.
@@ -193,15 +194,15 @@ pub async fn link_models(pool: &PgPool) -> Result<u64, sqlx::Error> {
 #[derive(Debug, Serialize)]
 pub struct Held {
     pub source: String,
-    pub fetched_at: chrono::DateTime<chrono::Utc>,
+    pub fetched_at: Timestamp,
     pub providers: usize,
     pub models: usize,
     /// How many versions of it have been kept.
     pub snapshots: i64,
     /// When the source was last asked, when it will be next, and what went
     /// wrong last time, if anything did.
-    pub checked_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub next_check_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub checked_at: Option<Timestamp>,
+    pub next_check_at: Option<Timestamp>,
     pub last_error: Option<String>,
     /// Whether this deployment fetches at all.
     pub fetching: bool,
@@ -333,7 +334,7 @@ pub async fn check(
     .bind(&url)
     .bind(etag)
     .bind(&error)
-    .bind(EVERY.num_seconds() as f64)
+    .bind(EVERY.as_secs() as f64)
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -393,7 +394,7 @@ pub async fn refresh(
     let recent: Option<bool> = sqlx::query_scalar(
         "select checked_at > now() - make_interval(secs => $1) from catalog_checks",
     )
-    .bind(AT_MOST_EVERY.num_seconds() as f64)
+    .bind(AT_MOST_EVERY.as_secs() as f64)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?

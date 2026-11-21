@@ -1,3 +1,4 @@
+use outturn_core::time::{SignedDuration, Timestamp};
 use uuid::Uuid;
 
 /// Rebuilds the conversation a model should be shown from what was stored.
@@ -798,8 +799,7 @@ pub(super) fn answered(
         let after = |source: &Uuid| match (h.settled_at, source.get_timestamp()) {
             (Some(at), Some(written)) => {
                 let (secs, nanos) = written.to_unix();
-                chrono::DateTime::from_timestamp(secs as i64, nanos)
-                    .is_some_and(|written| written > at)
+                Timestamp::from_unix(secs as i64, nanos).is_some_and(|written| written > at)
             }
             _ => false,
         };
@@ -899,7 +899,7 @@ pub(super) fn marked(
         return projected;
     };
     let reason = &stopped.reason;
-    let waited = elapsed(chrono::Utc::now() - stopped.at);
+    let waited = elapsed(Timestamp::now() - stopped.at);
 
     // The restarting prompt is the last message, so what decides the shape is
     // the one before it: an assistant message there is a reply that was cut.
@@ -957,14 +957,14 @@ pub(super) fn marked(
 /// Coarse on purpose. What the reader needs is the order of magnitude -- a
 /// minute against three weeks -- and "1209600 seconds" is a number somebody has
 /// to convert before it means anything.
-fn elapsed(span: chrono::TimeDelta) -> String {
-    let seconds = span.num_seconds().max(0);
+fn elapsed(span: SignedDuration) -> String {
+    let seconds = span.as_secs().max(0);
     let (n, unit) = match seconds {
         0..=89 => (seconds.max(1), "second"),
-        90..=5399 => (span.num_minutes(), "minute"),
-        5400..=172_799 => (span.num_hours(), "hour"),
-        172_800..=5_183_999 => (span.num_days(), "day"),
-        _ => (span.num_days() / 30, "month"),
+        90..=5399 => (span.as_mins(), "minute"),
+        5400..=172_799 => (span.as_hours(), "hour"),
+        172_800..=5_183_999 => (span.as_hours() / 24, "day"),
+        _ => (span.as_hours() / 24 / 30, "month"),
     };
     if n == 1 {
         format!("1 {unit}")
@@ -1582,7 +1582,7 @@ mod projection_tests {
     fn a_sent_request_with_no_refusal_found_is_told_on_every_later_turn() {
         let before = Uuid::now_v7();
         let spent = [crate::held::Held {
-            settled_at: Some(chrono::Utc::now()),
+            settled_at: Some(Timestamp::now()),
             ..held_charge("spent", Some(charged()))
         }];
         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -2171,7 +2171,7 @@ mod projection_tests {
     fn stopped(reason: &str, ago_secs: i64) -> crate::chat::Stopped {
         crate::chat::Stopped {
             reason: reason.to_string(),
-            at: chrono::Utc::now() - chrono::TimeDelta::seconds(ago_secs),
+            at: Timestamp::now() - SignedDuration::from_secs(ago_secs),
         }
     }
 
@@ -2198,14 +2198,14 @@ mod projection_tests {
     fn a_pause_is_described_at_the_scale_a_person_would_use() {
         // The order of magnitude is the point; seconds since the epoch is a
         // number somebody has to convert before it means anything.
-        assert_eq!(elapsed(chrono::TimeDelta::seconds(1)), "1 second");
-        assert_eq!(elapsed(chrono::TimeDelta::seconds(45)), "45 seconds");
-        assert_eq!(elapsed(chrono::TimeDelta::minutes(5)), "5 minutes");
-        assert_eq!(elapsed(chrono::TimeDelta::hours(3)), "3 hours");
-        assert_eq!(elapsed(chrono::TimeDelta::days(9)), "9 days");
-        assert_eq!(elapsed(chrono::TimeDelta::days(90)), "3 months");
+        assert_eq!(elapsed(SignedDuration::from_secs(1)), "1 second");
+        assert_eq!(elapsed(SignedDuration::from_secs(45)), "45 seconds");
+        assert_eq!(elapsed(SignedDuration::from_mins(5)), "5 minutes");
+        assert_eq!(elapsed(SignedDuration::from_hours(3)), "3 hours");
+        assert_eq!(elapsed(SignedDuration::from_hours(24 * 9)), "9 days");
+        assert_eq!(elapsed(SignedDuration::from_hours(24 * 90)), "3 months");
         // A clock that went backwards says something rather than a negative.
-        assert_eq!(elapsed(chrono::TimeDelta::seconds(-5)), "1 second");
+        assert_eq!(elapsed(SignedDuration::from_secs(-5)), "1 second");
     }
 
     /// A restarted conversation says why it stopped, and says it truthfully.

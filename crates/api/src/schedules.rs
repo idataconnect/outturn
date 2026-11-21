@@ -12,7 +12,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use chrono::{DateTime, Utc};
+use outturn_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -38,7 +38,7 @@ pub struct ListQuery {
 pub struct WithUpcoming {
     #[serde(flatten)]
     schedule: Schedule,
-    upcoming: Vec<DateTime<Utc>>,
+    upcoming: Vec<Timestamp>,
     /// Why this schedule will never fire, when that is the case. A row that
     /// says nothing about itself is how a broken expression goes unnoticed.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,11 +51,11 @@ const UPCOMING: usize = 3;
 
 fn decorate(schedule: Schedule) -> WithUpcoming {
     let parsed = schedule::Cron::parse(&schedule.expression);
-    let zone = schedule.timezone.parse();
+    let zone = outturn_core::time::zone(&schedule.timezone).ok_or(());
 
     match (parsed, zone) {
         (Ok(cron), Ok(tz)) => {
-            let upcoming = schedule::upcoming(&cron, tz, Utc::now(), UPCOMING);
+            let upcoming = schedule::upcoming(&cron, &tz, Timestamp::now(), UPCOMING);
             let problem = if upcoming.is_empty() {
                 Some("this expression never matches a real date".to_string())
             } else {
@@ -150,7 +150,7 @@ pub async fn create_schedule(
     // parsed will never fire, and finding that out tomorrow morning means
     // finding it out from its absence.
     let (cron, tz) = schedule::validate(&input).map_err(bad_request)?;
-    let next = cron.next_after(Utc::now(), tz);
+    let next = cron.next_after(Timestamp::now(), &tz);
 
     // The owner is the person creating it, which is a different question from
     // who is waiting for the reply -- nobody is. See docs/triggers.md.
@@ -208,7 +208,7 @@ pub async fn update_schedule(
     // more before the new one took effect -- at a time the person editing it
     // has just decided they did not want.
     let next = if input.enabled {
-        cron.next_after(Utc::now(), tz)
+        cron.next_after(Timestamp::now(), &tz)
     } else {
         // A disabled schedule points nowhere, so re-enabling it computes a
         // fresh time rather than firing immediately for one it slept through.
@@ -259,7 +259,7 @@ pub struct PreviewInput {
 
 #[derive(Debug, Serialize)]
 pub struct Preview {
-    upcoming: Vec<DateTime<Utc>>,
+    upcoming: Vec<Timestamp>,
     #[serde(skip_serializing_if = "Option::is_none")]
     problem: Option<String>,
 }
@@ -281,9 +281,9 @@ pub async fn preview_schedule(
             }));
         }
     };
-    let tz = match tz_name.parse() {
-        Ok(tz) => tz,
-        Err(_) => {
+    let tz = match outturn_core::time::zone(&tz_name) {
+        Some(tz) => tz,
+        None => {
             return Ok(Json(Preview {
                 upcoming: Vec::new(),
                 problem: Some(format!("'{tz_name}' is not an IANA timezone name")),
@@ -293,7 +293,7 @@ pub async fn preview_schedule(
 
     // Five here rather than the three a row shows: somebody watching this
     // while typing is checking a pattern, and two more costs nothing.
-    let upcoming = schedule::upcoming(&cron, tz, Utc::now(), 5);
+    let upcoming = schedule::upcoming(&cron, &tz, Timestamp::now(), 5);
     let problem = if upcoming.is_empty() {
         Some("this expression never matches a real date".to_string())
     } else {

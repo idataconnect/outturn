@@ -5,7 +5,7 @@
 //! table's `next_at`. Read back under the names a `Schedule` has always had,
 //! so nothing above this file knows the table changed.
 
-use chrono::{DateTime, Utc};
+use outturn_core::time::Timestamp;
 use sqlx::{PgPool, Row, postgres::PgRow};
 use uuid::Uuid;
 
@@ -88,7 +88,7 @@ pub async fn create(
     workspace_id: Uuid,
     owner_id: Option<Uuid>,
     input: &ScheduleInput,
-    next_run_at: Option<DateTime<Utc>>,
+    next_run_at: Option<Timestamp>,
 ) -> Result<Schedule, sqlx::Error> {
     let r = sqlx::query(concat!(
         "insert into triggers \
@@ -126,7 +126,7 @@ pub async fn update(
     workspace_id: Uuid,
     id: Uuid,
     input: &ScheduleInput,
-    next_run_at: Option<DateTime<Utc>>,
+    next_run_at: Option<Timestamp>,
 ) -> Result<Option<Schedule>, sqlx::Error> {
     let found = sqlx::query(concat!(
         "update triggers set \
@@ -186,8 +186,8 @@ pub async fn delete(pool: &PgPool, workspace_id: Uuid, id: Uuid) -> Result<bool,
 /// punctual and the skip count permanently zero.
 pub async fn take_due(
     pool: &PgPool,
-    now: DateTime<Utc>,
-) -> Result<Option<(Schedule, DateTime<Utc>)>, sqlx::Error> {
+    now: Timestamp,
+) -> Result<Option<(Schedule, Timestamp)>, sqlx::Error> {
     // The due row is chosen in a CTE, which is what makes its `next_run_at`
     // readable at all: RETURNING sees the new row, and Postgres has no OLD to
     // ask. `for update skip locked` in the CTE is also what stops two API pods
@@ -213,7 +213,7 @@ pub async fn take_due(
     .fetch_optional(pool)
     .await?;
     Ok(found.as_ref().map(|r| {
-        let owed: Option<DateTime<Utc>> = r.get("was_due");
+        let owed: Option<Timestamp> = r.get("was_due");
         // `owed` cannot be null -- the row was selected on `next_run_at is not
         // null` -- but falling back to `now` degrades to "nothing was missed"
         // rather than panicking in a loop nobody is watching.
@@ -227,7 +227,7 @@ pub async fn record_run(
     id: Uuid,
     status: &str,
     error: Option<&str>,
-    next_run_at: Option<DateTime<Utc>>,
+    next_run_at: Option<Timestamp>,
     skipped: i32,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(

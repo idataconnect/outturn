@@ -2,6 +2,7 @@
 //! the idempotency every declared write gets.
 
 use super::{AgentHost, GatedRequest, HttpRequest, HttpResponse, MAX_FETCHES_PER_TURN};
+use outturn_core::time::Timestamp;
 
 /// A request as `dispatch` sent it, keyed and all.
 struct Sent {
@@ -435,7 +436,7 @@ fn keyed_body(
 
 /// A recorded answer, given again, marked as such so the model is not told a
 /// write happened twice.
-fn replayed(response: &serde_json::Value, at: chrono::DateTime<chrono::Utc>) -> HttpResponse {
+fn replayed(response: &serde_json::Value, at: Timestamp) -> HttpResponse {
     let mut headers: Vec<(String, String)> = response["headers"]
         .as_array()
         .map(|h| {

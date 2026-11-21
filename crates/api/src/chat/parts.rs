@@ -11,6 +11,7 @@
 //! language, so `ui/src/lib/useChatRuntime.ts` restates the rule and this
 //! comment is the pointer between them.
 
+use outturn_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
 /// One piece of a reply, in the order it happened.
@@ -62,7 +63,7 @@ pub struct Builder {
     /// When the thought now being written began, for the duration below. Only
     /// meaningful while the last part is a thought, which is the only time it
     /// is read.
-    thinking_since: Option<chrono::DateTime<chrono::Utc>>,
+    thinking_since: Option<Timestamp>,
 }
 
 impl Builder {
@@ -91,12 +92,12 @@ impl Builder {
     /// ones -- the worker measures wall time as fragments arrive, a reload
     /// measures from the timestamps the events were stored with -- and a thought
     /// nothing timed passes `None` and reports no duration.
-    pub fn reasoning(&mut self, fragment: &str, at: Option<chrono::DateTime<chrono::Utc>>) {
+    pub fn reasoning(&mut self, fragment: &str, at: Option<Timestamp>) {
         match self.parts.last_mut() {
             Some(Part::Reasoning { text, ms }) => {
                 text.push_str(fragment);
                 if let (Some(at), Some(began)) = (at, self.thinking_since) {
-                    *ms = Some((at - began).num_milliseconds().max(0));
+                    *ms = Some(i64::try_from((at - began).as_millis().max(0)).unwrap_or(i64::MAX));
                 }
             }
             _ => {
@@ -155,8 +156,8 @@ impl Builder {
 mod tests {
     use super::*;
 
-    fn at(seconds: i64) -> Option<chrono::DateTime<chrono::Utc>> {
-        chrono::DateTime::from_timestamp(1_800_000_000 + seconds, 0)
+    fn at(seconds: i64) -> Option<Timestamp> {
+        Timestamp::from_unix(1_800_000_000 + seconds, 0)
     }
 
     #[test]

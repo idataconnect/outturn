@@ -14,7 +14,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
-use chrono::Utc;
+use outturn_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -395,7 +395,7 @@ pub async fn deliver(
         header(webhook::TIMESTAMP_HEADER),
         header(webhook::TOKEN_HEADER),
         header("authorization"),
-        Utc::now(),
+        Timestamp::now(),
     ) {
         Ok(until) => until,
         Err(why) => return refuse_quietly(why, &path),

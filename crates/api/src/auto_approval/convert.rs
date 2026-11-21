@@ -19,7 +19,7 @@
 //! operations each workspace's agents reach and what each amount works out to,
 //! which is skill resolution and the bands arithmetic, not SQL.
 
-use chrono::Utc;
+use outturn_core::time::Timestamp;
 use sqlx::Row as _;
 use uuid::Uuid;
 
@@ -165,7 +165,7 @@ async fn workspace(state: &ApiState, tx: &mut sqlx::PgConnection, ws: Uuid) -> a
     .collect();
     let reached = super::rules::reachable(state, ws).await?;
     let ceiling = super::ceiling(&state.pool, ws).await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let live: Vec<Policy> = super::list(&state.pool, ws)
         .await?
         .into_iter()

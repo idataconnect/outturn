@@ -34,9 +34,8 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
-chrono = { workspace = true }
+jiff = { workspace = true }
 rust-s3 = { workspace = true }
-chrono-tz = { workspace = true }
 # Which images a document draws, so they can be read and sent with it. The
 # version the PDF renderer parses the same markdown with.
 pulldown-cmark = { version = "0.13.6", default-features = false }

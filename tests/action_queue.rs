@@ -19,6 +19,7 @@
 use outturn::api::actions::{
     ActionError, ActionStore, Delivery, NewItem, PostgresActionStore, Settle, State, Target,
 };
+use outturn::time::{SignedDuration, Timestamp};
 use sqlx::postgres::PgPool;
 use uuid::Uuid;
 
@@ -674,7 +675,7 @@ async fn an_expired_item_is_swept_out_of_the_queue() {
     let user = make_user(&db.pool).await;
 
     let mut expiring = item("approval.charge", vec![Target::User(user)]);
-    expiring.expires_at = Some(chrono::Utc::now() - chrono::Duration::minutes(1));
+    expiring.expires_at = Some(Timestamp::now() - SignedDuration::from_mins(1));
     store.raise(ws, expiring).await.expect("raise");
 
     // Still counted until the sweep runs: the count filters on state, not on
@@ -694,7 +695,7 @@ async fn the_sweep_leaves_items_that_have_not_expired() {
     let user = make_user(&db.pool).await;
 
     let mut later = item("approval.charge", vec![Target::User(user)]);
-    later.expires_at = Some(chrono::Utc::now() + chrono::Duration::hours(1));
+    later.expires_at = Some(Timestamp::now() + SignedDuration::from_hours(1));
     store.raise(ws, later).await.expect("raise");
     // And one with no expiry at all.
     store
@@ -715,7 +716,7 @@ async fn the_sweep_is_bounded_by_its_limit() {
 
     for _ in 0..3 {
         let mut expiring = item("approval.charge", vec![Target::User(user)]);
-        expiring.expires_at = Some(chrono::Utc::now() - chrono::Duration::minutes(1));
+        expiring.expires_at = Some(Timestamp::now() - SignedDuration::from_mins(1));
         store.raise(ws, expiring).await.expect("raise");
     }
 

@@ -11,7 +11,8 @@
 pub mod email;
 pub mod postgres;
 
-use chrono::{DateTime, Utc};
+use outturn_core::time::SignedDuration;
+use outturn_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -69,11 +70,11 @@ pub struct Trigger {
     pub account: Option<String>,
     pub owner_id: Option<Uuid>,
     pub max_per_hour: i32,
-    pub last_at: Option<DateTime<Utc>>,
+    pub last_at: Option<Timestamp>,
     pub last_status: Option<String>,
     pub last_error: Option<String>,
     pub refused: i32,
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -213,8 +214,8 @@ pub fn verify(
     timestamp: Option<&str>,
     token: Option<&str>,
     authorization: Option<&str>,
-    now: DateTime<Utc>,
-) -> Result<Option<DateTime<Utc>>, Refusal> {
+    now: Timestamp,
+) -> Result<Option<Timestamp>, Refusal> {
     // A scheme that checks a secret never matches an empty one: an empty
     // token or password would otherwise be the credential.
     if trigger.scheme != "path" && trigger.secret.is_empty() {
@@ -263,7 +264,7 @@ pub fn verify(
             // cannot be shown to be inside the window, so it is refused.
             let sent: i64 = timestamp.parse().map_err(|_| Refusal::StaleTimestamp)?;
             let within = now
-                .timestamp()
+                .unix_secs()
                 .checked_sub(sent)
                 .and_then(i64::checked_abs)
                 .is_some_and(|drift| drift <= TIMESTAMP_TOLERANCE_SECS);
@@ -284,11 +285,11 @@ pub fn verify(
                 // check above makes it unreachable today, which is exactly
                 // the kind of reasoning that stops being true two refactors
                 // later. "Could not verify" means refused; see docs/invariants.md.
-                let Some(at) = DateTime::from_timestamp(sent, 0) else {
+                let Some(at) = Timestamp::from_unix(sent, 0) else {
                     return Err(Refusal::StaleTimestamp);
                 };
                 Ok(Some(
-                    at + chrono::Duration::seconds(TIMESTAMP_TOLERANCE_SECS),
+                    at + SignedDuration::from_secs(TIMESTAMP_TOLERANCE_SECS),
                 ))
             } else {
                 Err(Refusal::BadSignature)
@@ -376,12 +377,12 @@ mod tests {
             last_status: None,
             last_error: None,
             refused: 0,
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
         }
     }
 
-    fn signed_now(secret: &str, body: &[u8], now: DateTime<Utc>) -> (String, String) {
-        let ts = now.timestamp().to_string();
+    fn signed_now(secret: &str, body: &[u8], now: Timestamp) -> (String, String) {
+        let ts = now.unix_secs().to_string();
         let mut signed = ts.as_bytes().to_vec();
         signed.push(b'.');
         signed.extend_from_slice(body);
@@ -394,7 +395,7 @@ mod tests {
     #[test]
     fn a_correctly_signed_delivery_is_accepted() {
         let t = trigger("hmac", "shh");
-        let now = Utc::now();
+        let now = Timestamp::now();
         let body = br#"{"event":"booking.created"}"#;
         let (sig, ts) = signed_now("shh", body, now);
         assert!(verify(&t, body, Some(&sig), Some(&ts), None, None, now).is_ok());
@@ -405,7 +406,7 @@ mod tests {
         // The whole point of signing the body rather than sending a token: a
         // captured request cannot be replayed carrying a different payload.
         let t = trigger("hmac", "shh");
-        let now = Utc::now();
+        let now = Timestamp::now();
         let (sig, ts) = signed_now("shh", br#"{"amount":10}"#, now);
         let tampered = br#"{"amount":99999}"#;
         assert_eq!(
@@ -417,11 +418,19 @@ mod tests {
     #[test]
     fn an_old_delivery_is_refused_however_well_signed() {
         let t = trigger("hmac", "shh");
-        let signed_at = Utc::now() - chrono::Duration::hours(2);
+        let signed_at = Timestamp::now() - SignedDuration::from_hours(2);
         let body = b"{}";
         let (sig, ts) = signed_now("shh", body, signed_at);
         assert_eq!(
-            verify(&t, body, Some(&sig), Some(&ts), None, None, Utc::now()),
+            verify(
+                &t,
+                body,
+                Some(&sig),
+                Some(&ts),
+                None,
+                None,
+                Timestamp::now()
+            ),
             Err(Refusal::StaleTimestamp)
         );
     }
@@ -430,12 +439,12 @@ mod tests {
     fn a_delivery_with_no_credential_is_refused_rather_than_let_through() {
         let t = trigger("hmac", "shh");
         assert_eq!(
-            verify(&t, b"{}", None, None, None, None, Utc::now()),
+            verify(&t, b"{}", None, None, None, None, Timestamp::now()),
             Err(Refusal::MissingCredential)
         );
         let s = trigger("shared_secret", "shh");
         assert_eq!(
-            verify(&s, b"{}", None, None, None, None, Utc::now()),
+            verify(&s, b"{}", None, None, None, None, Timestamp::now()),
             Err(Refusal::MissingCredential)
         );
     }
@@ -446,7 +455,7 @@ mod tests {
         // is not accepted by a signing one. Falling back to whichever the
         // caller offered is how having two schemes turns into having the
         // weaker one.
-        let now = Utc::now();
+        let now = Timestamp::now();
         let body = b"{}";
         let (sig, ts) = signed_now("shh", body, now);
 
@@ -468,9 +477,9 @@ mod tests {
     #[test]
     fn a_shared_secret_delivery_is_accepted_on_the_token_alone() {
         let t = trigger("shared_secret", "shh");
-        assert!(verify(&t, b"{}", None, None, Some("shh"), None, Utc::now()).is_ok());
+        assert!(verify(&t, b"{}", None, None, Some("shh"), None, Timestamp::now()).is_ok());
         assert_eq!(
-            verify(&t, b"{}", None, None, Some("wrong"), None, Utc::now()),
+            verify(&t, b"{}", None, None, Some("wrong"), None, Timestamp::now()),
             Err(Refusal::BadSignature)
         );
     }
@@ -534,7 +543,7 @@ mod email_schemes {
             last_status: None,
             last_error: None,
             refused: 0,
-            created_at: Utc::now(),
+            created_at: Timestamp::now(),
         }
     }
 
@@ -547,9 +556,20 @@ mod email_schemes {
                 base64::engine::general_purpose::STANDARD.encode(pair)
             )
         };
-        assert!(verify(&hook("path"), b"", None, None, None, None, Utc::now()).is_ok());
+        assert!(verify(&hook("path"), b"", None, None, None, None, Timestamp::now()).is_ok());
         let ok = basic("anyone:shh");
-        assert!(verify(&hook("basic"), b"", None, None, None, Some(&ok), Utc::now()).is_ok());
+        assert!(
+            verify(
+                &hook("basic"),
+                b"",
+                None,
+                None,
+                None,
+                Some(&ok),
+                Timestamp::now()
+            )
+            .is_ok()
+        );
         let wrong = basic("anyone:nope");
         assert!(
             verify(
@@ -559,11 +579,22 @@ mod email_schemes {
                 None,
                 None,
                 Some(&wrong),
-                Utc::now()
+                Timestamp::now()
             )
             .is_err()
         );
-        assert!(verify(&hook("basic"), b"", None, None, None, None, Utc::now()).is_err());
+        assert!(
+            verify(
+                &hook("basic"),
+                b"",
+                None,
+                None,
+                None,
+                None,
+                Timestamp::now()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -575,10 +606,21 @@ mod email_schemes {
             "Basic {}",
             base64::engine::general_purpose::STANDARD.encode("u:")
         );
-        assert!(verify(&basic, b"", None, None, None, Some(&empty), Utc::now()).is_err());
+        assert!(
+            verify(
+                &basic,
+                b"",
+                None,
+                None,
+                None,
+                Some(&empty),
+                Timestamp::now()
+            )
+            .is_err()
+        );
         let mut token = hook("shared_secret");
         token.secret = String::new();
-        assert!(verify(&token, b"", None, None, Some(""), None, Utc::now()).is_err());
+        assert!(verify(&token, b"", None, None, Some(""), None, Timestamp::now()).is_err());
     }
 
     #[test]
@@ -587,6 +629,6 @@ mod email_schemes {
         // them; a webhook stays signed or tokened.
         let mut webhook = hook("path");
         webhook.kind = "webhook".into();
-        assert!(verify(&webhook, b"", None, None, None, None, Utc::now()).is_err());
+        assert!(verify(&webhook, b"", None, None, None, None, Timestamp::now()).is_err());
     }
 }

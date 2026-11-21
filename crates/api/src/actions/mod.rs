@@ -30,6 +30,7 @@ pub use bus::{ActionBus, ActionHint, spawn as spawn_action_bus};
 pub use postgres::{CHANNEL, PostgresActionStore};
 
 use async_trait::async_trait;
+use outturn_core::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -155,8 +156,8 @@ pub struct ActionItem {
     /// What whoever settled it wanted recorded. Absent on an open item, and on a
     /// settlement that came with no explanation.
     pub resolved_note: Option<String>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: Timestamp,
+    pub expires_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,7 +230,7 @@ pub struct NewItem {
     pub inhibitor_id: Option<Uuid>,
     pub payload: serde_json::Value,
     pub targets: Vec<Target>,
-    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub expires_at: Option<Timestamp>,
 }
 
 #[derive(Debug, thiserror::Error)]
